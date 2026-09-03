@@ -80,6 +80,14 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Desktop notification preferences (which events notify, sound on/off).",
   },
   {
+    key: "rt.notify.eventBridges",
+    type: "array",
+    scopes: ["user"],
+    default: [],
+    merge: "replace",
+    description: "Event-bus glob rules that raise a desktop notification: [{pattern, category, title, message}]. pattern is matched against the events-bus topic (Bun.Glob semantics); title/message may interpolate `{field}` from the event payload. A fresh key, not an ownership-latch port, so a default is fine here.",
+  },
+  {
     key: "rt.cron",
     type: "object",
     scopes: ["machine"],

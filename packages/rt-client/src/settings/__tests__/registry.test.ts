@@ -276,8 +276,9 @@ describe("settings/registry", () => {
         "agent.extraArgs",
         "rt.trustedBrowserOrigins",
         "rt.daemonPath",
+        "rt.notify.eventBridges",
       ];
-      expect(suiteKeys).toHaveLength(52);
+      expect(suiteKeys).toHaveLength(53);
 
       expect(allDefs().map((d) => d.key).sort()).toEqual(
         [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),

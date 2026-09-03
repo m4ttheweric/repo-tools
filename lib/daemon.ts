@@ -52,7 +52,7 @@ import { unknownCommandReply } from "./daemon/unknown-command.ts";
 // ./state/db.ts directly: importing the barrel is what guarantees every
 // store module has registered its legacy-JSON importer before the one-shot
 // v0->v1 migration runs (see lib/state/index.ts).
-import { getBranchCacheStore, getStateDb, closeStateDb, persistOrWarn, prunePresence, pruneMessages, pruneAgents, snapshotRegistryDeps, quickCheck, backupTo, stampedBackupPath, pruneStateBackups, setBusyLogSink, type BranchCacheStore } from "./state/index.ts";
+import { getBranchCacheStore, getStateDb, closeStateDb, persistOrWarn, prunePresence, pruneMessages, pruneAgents, snapshotRegistryDeps, quickCheck, backupTo, stampedBackupPath, pruneStateBackups, setBusyLogSink, enqueueNotification, type BranchCacheStore } from "./state/index.ts";
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
 import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex } from "./daemon/repo-index.ts";
@@ -69,6 +69,9 @@ import { loadCronConfig, startCron } from "./daemon/cron.ts";
 import { startPollers } from "./daemon/pollers.ts";
 import { startHomeSnapshot } from "./daemon/home-snapshot.ts";
 import { startAgentStatusPoller } from "./daemon/agent-status-poller.ts";
+import { startNotifyBridge, type EventBridgeRule } from "./notify-bridge.ts";
+import { herdrRequest } from "./herdr/client.ts";
+import type { HerdrSnapshot } from "./daemon/handlers/pane.ts";
 import {
   initFreshness,
   reconcileFreshness,
@@ -279,6 +282,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
   let refreshCache: () => Promise<void>;
   let homeSnapshot: ReturnType<typeof startHomeSnapshot>;
   let agentStatusPoller: ReturnType<typeof startAgentStatusPoller>;
+  let notifyBridgeStop: (() => void) | undefined;
   let healthSampler: ReturnType<typeof createHealthSampler>;
   let healthInterval: ReturnType<typeof setInterval> | null = null;
   let loopMon: ReturnType<typeof startLoopMonitor>;
@@ -723,6 +727,56 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           log: loggerHandle.childLogger("agent-status"),
         });
 
+        // Settings-driven notifier event bridge: turns a matching
+        // events-bus broadcast into a queued desktop notification,
+        // suppressed when the event's paneId is the currently focused
+        // herdr pane. rules() re-reads rt.notify.eventBridges per event so
+        // a settings edit takes effect live, without a daemon restart.
+        const notifyBridgeLog = loggerHandle.childLogger("notify-bridge");
+        notifyBridgeStop = startNotifyBridge({
+          onBroadcast: eventsBus.onBroadcast,
+          rules: (): EventBridgeRule[] => {
+            let raw: unknown;
+            try {
+              raw = getSetting<unknown>("rt.notify.eventBridges").value;
+            } catch (err) {
+              notifyBridgeLog.warn({ err }, "rt.notify.eventBridges: getSetting threw");
+              return [];
+            }
+            if (raw === undefined) return [];
+            if (!Array.isArray(raw)) {
+              notifyBridgeLog.warn({ raw }, "rt.notify.eventBridges must be an array; ignoring");
+              return [];
+            }
+            const rules: EventBridgeRule[] = [];
+            for (const entry of raw) {
+              const e = entry as Partial<EventBridgeRule> | null;
+              if (
+                e && typeof e === "object" &&
+                typeof e.pattern === "string" && typeof e.category === "string" &&
+                typeof e.title === "string" && typeof e.message === "string"
+              ) {
+                rules.push({ pattern: e.pattern, category: e.category, title: e.title, message: e.message });
+              } else {
+                notifyBridgeLog.warn({ entry }, "rt.notify.eventBridges: skipping invalid rule entry");
+              }
+            }
+            return rules;
+          },
+          enqueue: enqueueNotification,
+          paneFocused: async (paneId: string): Promise<boolean> => {
+            try {
+              const snap = await herdrRequest<{ snapshot: HerdrSnapshot }>("session.snapshot", {});
+              if (!snap.ok) return false;
+              const pane = snap.result.snapshot.panes.find((p) => p.pane_id === paneId);
+              return pane?.focused === true;
+            } catch {
+              return false;
+            }
+          },
+          log: notifyBridgeLog,
+        });
+
         // 5-min metrics log + the two cached signals health needs.
         healthSampler = createHealthSampler({
           log,
@@ -746,6 +800,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         loopMon?.stop();
         if (healthInterval) clearInterval(healthInterval);
         agentStatusPoller?.stop();
+        notifyBridgeStop?.();
         homeSnapshot?.stop();
         for (const h of sweepHandles) h.stop();
         cron?.dispose();
