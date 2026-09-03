@@ -64,6 +64,7 @@ Delivery section revised on them. What every later task inherits:
 
 **Files:**
 - Create: `lib/daemon/gates-store.ts`
+- Modify: `packages/rt-client/src/commands.ts` (the wire TYPE declarations only — `GateStatus`, `GateQuestion`, `GateAnswer`, `GateRow`; the `gate:*` command rows and whitelist land in Task 5)
 - Test: `lib/daemon/__tests__/gates-store.test.ts`
 
 **Interfaces:**
@@ -216,11 +217,18 @@ test("close is terminal; closing an answered gate is a no-op rejection; answer a
   if (!r.ok) expect(r.reason).toBe("closed");
 });
 
-test("a losing answer FROM THE GATE'S OWN PANE marks it released", () => {
+test("ANY answer attempt from the gate's own pane marks it released: the CAS loser...", () => {
   const s = store();
   const { row } = s.open({ subject: "run:r1", kind: "clarify", questions: qs(), pane: "pane-7" });
   s.answer(row.id, { q: "a" }, "console");
   s.answer(row.id, { q: "b" }, "pane"); // loses, but proves the pane reconciled
+  expect(s.get(row.id)?.released).toBe(true);
+});
+
+test("...and the winner too (a pane that decides has obviously reconciled)", () => {
+  const s = store();
+  const { row } = s.open({ subject: "run:r1", kind: "clarify", questions: qs(), pane: "pane-7" });
+  s.answer(row.id, { q: "a" }, "pane"); // wins
   expect(s.get(row.id)?.released).toBe(true);
 });
 
@@ -234,7 +242,7 @@ test("list filters by open, subjectPrefix, kind", () => {
 ```
 
 - [ ] **Step 2: Run to verify failure.** `bun test lib/daemon/__tests__/gates-store.test.ts`
-- [ ] **Step 3: Implement.** Each transition is a guarded single UPDATE (`... WHERE id=? AND status IN (...)`) checking `changes`; on zero changes re-read the row to classify the rejection. `answer` accepts from `open` and `parked`; sets `answer` JSON, `status='answered'`. The released-on-losing-pane-answer rule lives inside `answer`'s rejection path: when the losing `by` is `"pane"` and the row has a `pane` ref, `markReleased`. `list` builds WHERE from the filter (`subject LIKE prefix || '%'`).
+- [ ] **Step 3: Implement.** Each transition is a guarded single UPDATE (`... WHERE id=? AND status IN (...)`) checking `changes`; on zero changes re-read the row to classify the rejection. `answer` accepts from `open` and `parked`; sets `answer` JSON, `status='answered'`. The release rule covers BOTH paths: any `answer` call with `by === "pane"` on a row carrying a `pane` ref marks released, whether it wins (same transaction) or loses (the rejection path calls `markReleased`) — a pane that decided or read the winner has provably reconciled. `list` builds WHERE from the filter (`subject LIKE prefix || '%'`).
 - [ ] **Step 4: Run to verify pass.** Same command.
 - [ ] **Step 5: Run the full suite + typecheck; commit.**
 
@@ -597,13 +605,19 @@ git commit -m "rt gate CLI: open/answer/wait/list/park/close/subscribe/unsubscri
 - [ ] **Step 1: Write the automated race/lifecycle e2e tests:**
 
 ```ts
-test("CAS race: two concurrent answers, exactly one wins, loser gets the winner", async () => {
+test("CAS race: two concurrent answers, exactly one non-conflict winner, the loser carries the winner", async () => {
   const { handlers } = harness(); const id = (await open(handlers)).id;
   const [a, b] = await Promise.all([
     handlers["gate:answer"]({ id, answers: { q: "a" }, by: "console" }),
     handlers["gate:answer"]({ id, answers: { q: "b" }, by: "board" }),
   ]);
-  expect([a.ok, b.ok].filter(Boolean).length).toBe(1);
+  expect(a.ok && b.ok).toBe(true); // conflict is a defined outcome, not an error
+  const results = [a, b].filter((r): r is typeof r & { ok: true } => r.ok);
+  const winners = results.filter((r) => !r.data.conflict);
+  const losers = results.filter((r) => r.data.conflict);
+  expect(winners.length).toBe(1);
+  expect(losers.length).toBe(1);
+  expect(losers[0]!.data.row.answer?.by).toBe(winners[0]!.data.row.answer?.by);
 });
 
 test("close releases waiters with status closed", async () => {

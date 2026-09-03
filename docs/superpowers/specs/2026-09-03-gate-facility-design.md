@@ -510,10 +510,13 @@ operator's go.
   reaction); clean review one-click approve; the REQUIRED park, answer,
   resume test (fresh pane posts from the report file, no re-review, no
   hang); daemon-down degraded form.
-- **W3:** block a run at a self-review gate, answer from the console, watch
-  the pane's form dismiss and the run proceed; a shepherd herd question
-  answered from the console; a doctor escalation answered from the board;
-  respond's two gates end to end.
+- **W3:** block a herd-spawned worker at a self-review gate (unattended:
+  no form), answer from the console, and watch the blocked wait return and
+  the run proceed with no message ever sent; an attended `:work` pane
+  answered from the console reconciles at the human's next touch (queued
+  doorbell, registry verify); a shepherd herd question answered from the
+  console; a doctor escalation answered from the board; respond's two
+  gates end to end.
 
 Skill prose has no unit tests; the writing runs under the writing-skills
 discipline, and the smokes above are the behavioral checks.
