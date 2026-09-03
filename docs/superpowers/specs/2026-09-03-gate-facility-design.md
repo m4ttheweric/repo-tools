@@ -20,7 +20,8 @@ island:
 - Respond and doctor have their own decision mechanics (in-pane posting
   gates; terminal `error` escalations that dead-end until a human relaunches).
 - Shepherdr hand-rolls a question relay between the herd and the user, scoped
-  to the shepherd pane and lost if the shepherd dies.
+  to the shepherd pane; the questions persist in the herd DB but the relay
+  path dies with the shepherd, and no other surface can pick them up.
 
 Every new surface would re-solve waiting, conflict arbitration, parking, and
 resume. The console cannot help at all.
@@ -51,7 +52,7 @@ The daemon owns gate state:
 | `openedAt`, `parkedAt`, `closedAt` | timestamps |
 | `agent`, `pane` | opener's refs, for focus, push delivery, and resume |
 | `nudge` | optional push-delivery spec recorded by the opener (how to reach an attended pane; unattended panes need none, they block in `gate wait`) |
-| `delivery` | outcome of the last push attempt (`delivered`, `refused`, `dead-pane`), recorded by the daemon so a failed delivery is observable, never silent |
+| `delivery` | outcome of the last PANE push attempt (`delivered`, `refused`, `dead-pane`) plus a `released` marker set when the pane provably reconciled; subscription-push outcomes live on the subscription rows, not here |
 
 The registry is persisted (SQLite beside the events journal) and survives
 daemon restarts; gates outlive any surface AND the daemon itself. A
@@ -101,7 +102,12 @@ restarted daemon serves `gate list`/`wait` from the persisted rows.
 - `gate subscribe --subject-prefix <mr:|run:...> --session <addr>` registers
   a push subscription: the daemon delivers `gate/opened` and `gate/answered`
   notifications for matching subjects directly into the subscriber's session
-  (delivery below). Registered once; never re-armed.
+  (delivery below). Registered once; never re-armed. Subscriptions are
+  persisted rows like gates (a daemon restart never silently voids a
+  shepherd's coverage), each recording its last-delivery outcome;
+  `gate unsubscribe <id>` removes one, and a subscription whose session is
+  gone or whose delivery keeps failing is marked dead and pruned, with the
+  outcome on the row so the loss is observable, never silent.
 
 ### Events
 
@@ -115,7 +121,9 @@ cross `/`: the pattern for all gate events is `gate/**` (the held board
 branch already tripped on exactly this).
 
 Payloads are specified in W1: `opened` carries `{id, subject, kind,
-questions, agent, pane, label}` (the label human-renderable, from `meta`);
+questions, meta, agent, pane, label}` (the label human-renderable, from
+`meta`; `meta` included so live cards can render pane-only options
+disabled without a registry round-trip);
 `answered` carries `{id, subject, kind, answers, by, paneId}`. The
 notifier's `rt.notify.eventBridges` routes these like any other event, and
 `paneId` is what its suppression and tray focus action key off; bridge
@@ -167,20 +175,27 @@ exists is NOT assumed to be the backend. Every push attempt records its
 outcome on the gate row (`delivered`, `refused`, `dead-pane`). When
 delivery to an attended pane fails, nothing is lost: the human is present
 by definition, their eventual form answer CAS-rejects, and the verb
-proceeds on the recorded answer; meanwhile any surface rendering the gate
-shows "answered, pane not yet released" from the recorded outcome instead
-of silently clearing the badge. **Stale-push rule:** a push for a gate the
-pane has already reconciled is discarded; push text is a fixed phrasing
-the verb recognizes and treats as a signal to re-read the registry, never
-as free-form instructions to act on.
+proceeds on the recorded answer. **Release tracking makes the gap
+renderable and self-clearing:** a successful push marks the gate
+`released`, and so does ANY `gate answer` attempt arriving from the gate's
+own pane, winner or CAS-loser, since a losing attempt proves the pane
+reconciled. Surfaces render answered-but-unreleased gates ("answered, pane
+not yet released") alongside open ones instead of silently clearing the
+badge, and the marker clears itself the moment the pane converges.
+**Stale-push rule:** a push for a gate the pane has already reconciled is
+discarded; push text is a fixed phrasing the verb recognizes and treats as
+a signal to re-read the registry, never as free-form instructions to act
+on.
 
 A dead pane gets no delivery; resume handles it (below).
 
 **Spike (first task of W1, before any dependent build):** prove the delivery
 mechanics end to end. (1) A socket-protocol push lands in a session on a
 DIFFERENT Claude Code account with no rt chat sign-in, and dismisses a
-pending structured form. (2) A worker blocked in `gate wait` receives the
-answer as the tool result and its stop hook stays quiet; observe whether the
+pending structured form. (2) A worker blocked in a
+throwaway stub of `gate wait` (the real verbs land after the spike; any
+blocking daemon call answered externally suffices) receives the answer as
+the tool result and its stop hook stays quiet; observe whether the
 blocking wait starves permission prompts. (3) A subscription push arrives
 mid-turn in a busy session and the notification survives to be acted on.
 Failure of any leg revises this section before W1 proceeds.
@@ -266,8 +281,13 @@ human-invoked verb):
 surface):
 
 1. Block in `gate wait`; the answer returns as the tool result. No form.
+   A `closed` result means the decision site is abandoned: the verb ends
+   that path cleanly per its own policy (a closed clarify gate ends the
+   run's asking, never invents an answer).
 2. A human who opens the pane can interrupt the wait and answer
-   conversationally: `gate answer --by pane`, then proceed.
+   conversationally: `gate answer --by pane`. On a CAS rejection the
+   answer already landed elsewhere; say so and proceed on the recorded
+   one, exactly as the attended branch does.
 
 **Daemon down** (either mode): form-only in-pane, exactly today's behavior.
 
@@ -361,10 +381,12 @@ fixes, post) to two facility gates, answerable from any surface:
 
 - Gate 1, the plan: per-thread questions (reply, fix, skip) built from the
   fill's adjudication and recommendations, plus the code-changes approval.
-  Grouped with the in-pane form's question cap in mind (a many-thread MR
-  groups threads per question rather than one question per thread); board
-  and console cards render the full list either way, and however the pane
-  chunks its presentation, exactly one atomic `gate answer` lands.
+  Grouped with the in-pane form's question cap in mind, WITHOUT losing
+  per-thread decidability: every thread remains individually selectable
+  (options carry thread ids), grouping only bounds how many questions any
+  one form chunk carries. Board and console cards render the full list
+  either way, and however the pane chunks its presentation, exactly one
+  atomic `gate answer` lands.
 - Gate 2, the posting: after fixes, post replies and disposition.
 
 The receive-review verb restructures to adjudicate and execute, never
