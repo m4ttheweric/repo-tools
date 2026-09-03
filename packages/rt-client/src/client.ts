@@ -325,6 +325,30 @@ export function eventsHead(o: RtClientOptions = {}): Promise<RtResponse<{ cursor
   return rtCommand<{ cursor: number }>("events:head", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
+export function eventsEmit(
+  topic: string,
+  payload?: unknown,
+  o: RtClientOptions = {},
+): Promise<RtResponse<{ id: number }>> {
+  const p: Record<string, unknown> = { topic };
+  if (payload !== undefined) p.payload = payload;
+  return rtCommand<{ id: number }>("events:emit", p, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function eventsWait(
+  payload: Commands["events:wait"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["events:wait"]["data"]>> {
+  return rtCommand<Commands["events:wait"]["data"]>("events:wait", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 250_000 });
+}
+
+export function eventsList(
+  payload: Commands["events:list"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["events:list"]["data"]>> {
+  return rtCommand<Commands["events:list"]["data"]>("events:list", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
 // ─── Agent handoff (rt agent) ─────────────────────────────────────────────
 
 export function agentStart(
