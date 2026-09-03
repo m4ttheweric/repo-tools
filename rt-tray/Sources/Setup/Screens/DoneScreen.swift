@@ -42,7 +42,13 @@ struct DoneScreen: View {
         }
         .padding(24)
         .task { await readiness.recheckAll() }
-        .sheet(isPresented: Binding(get: { steps != nil }, set: { if !$0 { steps = nil } })) {
+        .sheet(isPresented: Binding(get: { steps != nil }, set: { presented in
+            guard !presented else { return }
+            steps = nil
+            // The row's real state changes outside the app (Chrome, a
+            // download) -- only the sheet's dismissal tells us to look again.
+            Task { await readiness.recheckAll() }
+        })) {
             if let steps { StepsSheet(title: steps.title, steps: steps.steps) }
         }
         // .contain: without it, the plain HStack's buttons (Open the board,
@@ -59,8 +65,9 @@ struct DoneScreen: View {
 
     private func show(_ row: PlanRow) {
         guard let action = row.action else { return }
-        if action.type == .openURL, let raw = action.url, let url = URL(string: raw) {
+        if action.type == .openURL, let raw = action.url, let url = URL(string: raw), url.scheme?.hasPrefix("http") == true {
             NSWorkspace.shared.open(url)
+            Task { await readiness.recheckAll() }
             return
         }
         steps = (title: row.title, steps: action.steps ?? [])
