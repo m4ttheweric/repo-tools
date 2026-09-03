@@ -832,9 +832,48 @@ describe("teamSyncRow", () => {
 });
 
 describe("rtHealthRows: team.sync wiring", () => {
+  const SNAPSHOT_SETTINGS = { enabled: true, debounceSec: 20, pushDelaySec: 60, janitorThresholdHours: 6, janitorIntervalMin: 30, pullIntervalSec: 300 };
+
   test("no team cloned: no team.sync row, row order unchanged", async () => {
     const rows = await rtHealthRows(fakeProbes({ home: "/fake-home" }), { ci: false });
     expect(rows.find((r) => r.id === "team.sync")).toBeUndefined();
+  });
+
+  // buildGroup turns a throw out of rtHealthRows into a single group-error
+  // row, so a settings read on a machine with nothing to sync would put
+  // tool.rt, tool.daemon, tool.app and home.backup at the mercy of a
+  // hand-edited rt.teamSnapshot.
+  test("no team cloned: rt.teamSnapshot is never read", async () => {
+    let reads = 0;
+    const rows = await rtHealthRows(fakeProbes({ home: "/fake-home" }), { ci: false }, () => {
+      reads++;
+      throw new Error("rt.teamSnapshot must not be read when nothing is cloned");
+    });
+    expect(reads).toBe(0);
+    expect(rows.map((r) => r.id)).toEqual(ROW_ORDER);
+  });
+
+  test("a cloned team: rt.teamSnapshot is read once, and its pullIntervalSec decides staleness", async () => {
+    let reads = 0;
+    const at = new Date("2026-01-01T00:00:00Z");
+    const p = fakeProbes({
+      home: "/fake-home",
+      now: at,
+      files: { "/fake-home/.mattstack/teams/acme/mattstack/settings.team.jsonc": "{}" },
+      dirs: { "/fake-home/.mattstack/teams": ["acme"] },
+      daemon: async (cmd) => {
+        if (cmd === "team:snapshot-status") return { ok: true, data: [{ slug: "acme", lastPullAt: at.getTime() - 300_000, pushPending: false, lastPushError: null, conflicted: null }] };
+        return null;
+      },
+    });
+    const rows = await rtHealthRows(p, { ci: false }, () => {
+      reads++;
+      return { ...SNAPSHOT_SETTINGS, pullIntervalSec: 30 };
+    });
+    expect(reads).toBe(1);
+    // 5 minutes since the last pull is well past two 30s intervals; it would
+    // read ready against the 300s default.
+    expect(rows.find((r) => r.id === "team.sync")?.status).toBe("needs-you");
   });
 
   test("a cloned team reads status through p.daemon and produces a team.sync row", async () => {

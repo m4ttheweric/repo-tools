@@ -516,17 +516,32 @@ export async function teamSyncRow(
 
 // ─── entry point ────────────────────────────────────────────────────────────
 
-export async function rtHealthRows(p: Probes, opts: { ci: boolean }): Promise<Row[]> {
-  const teamSync = await teamSyncRow(
-    discoverTeams(p),
-    async () => {
-      const res = await p.daemon("team:snapshot-status");
-      if (!res || !res.ok) return null;
-      return res.data as TeamSnapshotEntry[];
-    },
-    () => p.now().getTime(),
-    getSetting<TeamSnapshotSettings>("rt.teamSnapshot").value?.pullIntervalSec ?? PULL_INTERVAL_FALLBACK_SEC,
-  );
+function readTeamSnapshotSettings(): TeamSnapshotSettings | undefined {
+  return getSetting<TeamSnapshotSettings>("rt.teamSnapshot").value;
+}
+
+export async function rtHealthRows(
+  p: Probes,
+  opts: { ci: boolean },
+  readSnapshotSettings: () => TeamSnapshotSettings | undefined = readTeamSnapshotSettings,
+): Promise<Row[]> {
+  // The settings read resolves the ambient HOME, and `buildGroup` turns a
+  // throw here into one group-error row that replaces every row below, so it
+  // stays behind the only condition that needs it.
+  const slugs = discoverTeams(p);
+  const teamSync =
+    slugs.length === 0
+      ? null
+      : await teamSyncRow(
+          slugs,
+          async () => {
+            const res = await p.daemon("team:snapshot-status");
+            if (!res || !res.ok) return null;
+            return res.data as TeamSnapshotEntry[];
+          },
+          () => p.now().getTime(),
+          readSnapshotSettings()?.pullIntervalSec ?? PULL_INTERVAL_FALLBACK_SEC,
+        );
 
   return [
     await rtRow(p),
