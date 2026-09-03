@@ -55,18 +55,20 @@ export const STEPS: StepDef[] = [
   gitIdentityStep,
   pathLinkStep,
   settingsSeedStep,
-  // intercepts.install reads the repo index, so it must stay behind
-  // repos.clone: ahead of it the index is empty on a fresh machine and the
-  // step silently writes an empty rules cache.
   reposCloneStep,
-  interceptsInstallStep,
   servicesRegisterStep,
   proxyInstallStep,
   deckManagedStep,
   skillsMaterializeStep,
   skillsLinkStep,
   boardKeysStep,
+  // cron.triage is the last settings-store write in apply order.
+  // intercepts.install must stay behind both repos.clone (the repo index
+  // it reads) and this step: staleIntercepts() compares the rules cache's
+  // generatedAt against these stores' mtimes, so a cache generated before
+  // them reports itself stale the moment it is written.
   cronTriageStep,
+  interceptsInstallStep,
   pluginsInstallStep,
   fastbrowserSetupStep,
   herdrIntegrationStep,
