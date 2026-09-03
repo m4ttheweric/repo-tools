@@ -33,10 +33,9 @@ green on both joiners (runs `20260902-125703`, `20260902-130744`).
 `--scenario headless` is green too. Still unproven: the `update` phase
 (`--update-dir`).
 
-The team pass has two hand steps the product does not do yet (MAT-405):
-the owner's commit + `rt team publish` after `members sync`, and the
-joiner's pull. `team-propagate.sh` performs both so the assertions measure
-propagation, not the missing daemon half.
+The team pass now runs only `members sync` on the owner and waits for the
+daemon's push, then `rt team pull` on the joiner: the daemon moves every
+byte, and `team-propagate.sh` runs no git commit/push/pull of its own.
 
 Facts a join run depends on:
 

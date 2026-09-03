@@ -15,6 +15,17 @@ TEAM="$HOME/.mattstack/teams/$SLUG"
 
 [ -d "$TEAM/.git" ] && ok "team clone at $TEAM ($(git -C "$TEAM" rev-parse --short HEAD))" || bad "no team clone at $TEAM"
 
+# The setup checklist's team.sync row is the daemon's own readiness signal.
+SETUP_JSON=$("$RT" setup status --json 2>/dev/null | tail -1)
+ROW=$(printf '%s' "$SETUP_JSON" | jq -c '.groups[]?.rows[]? | select(.id == "team.sync")' 2>/dev/null | head -1)
+if [ -n "$ROW" ]; then
+  ROW_STATUS=$(printf '%s' "$ROW" | jq -r '.status')
+  ROW_DETAIL=$(printf '%s' "$ROW" | jq -r '.detail // empty')
+  if [ "$ROW_STATUS" = "ready" ]; then ok "team.sync row ready"; else bad "team.sync row $ROW_STATUS: $ROW_DETAIL"; fi
+else
+  bad "team.sync row absent"
+fi
+
 # Tracked repos: repos.clone puts each under the first rt.repoRoots entry.
 ROOT=$("$RT" settings get rt.repoRoots --json 2>/dev/null | jq -r '.value[0] // empty')
 for repo in $(jq -r '.repos[]?' "$EXPECT"); do
