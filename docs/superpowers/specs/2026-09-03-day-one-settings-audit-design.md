@@ -45,12 +45,16 @@ Verdicts:
   they want the behavior.
 - **GAP** ... something a joiner needs is missing, wrong, or silently absent.
 
+A row marked **GAP** records what the audit found at the time, not the state
+after this branch: its "Day-one state" cell describes the bug, and its
+Correction column names the fix that landed to close it.
+
 ## The audit table
 
 ### `rt.*`, per-repo (repo-scoped sections under `repos.<identity>`)
 
 These live in whichever store declares them and apply only once the repo is
-cloned AND indexed. `repos.clone` (step 10) does both, awaiting
+cloned AND indexed. `repos.clone` (step 9) does both, awaiting
 `updateRepoIndexAsync` before it returns.
 
 | Key | Scopes | Who writes it | Day-one state for a joiner | Verdict | Correction |
@@ -61,8 +65,8 @@ cloned AND indexed. `repos.clone` (step 10) does both, awaiting
 | `rt.worktreeReadyApproval` | user/team/machine | `rt worktree` on first approval | unset; the joiner approves a team-authored ready ladder once, by design | by hand | none |
 | `rt.sync` | user/team/machine | team owner, by hand | inherited | travels | none |
 | `rt.branchNaming` | user/team/machine | team owner, by hand | inherited | travels | none |
-| `rt.variations` | user/team/machine | team owner, by hand | inherited | travels | none |
-| `rt.presets` | user/team/machine | the operator, by hand | unset; personal | by hand | none |
+| `rt.variations` | user/team/machine | `saveVariation` (`lib/variations.ts`) | inherited | travels | none |
+| `rt.presets` | user/team/machine | `savePreset` (`lib/run-presets.ts`) | unset; personal | by hand | none |
 | `rt.dopplerTemplate` | user/team/machine | team owner, by hand | inherited | travels | none |
 | `rt.hooks` | user/team/machine | `rt hooks` | unset until the joiner enables one | by hand | none |
 
@@ -71,13 +75,13 @@ cloned AND indexed. `repos.clone` (step 10) does both, awaiting
 | Key | Scopes | Who writes it | Day-one state for a joiner | Verdict | Correction |
 |---|---|---|---|---|---|
 | `rt.repoIdentityOverrides` | machine | by hand | unset; only forks and multi-remote checkouts need it | by hand | none |
-| `rt.repoRoots` | machine | `settings.seed` (step 9) | seeded from a detected candidate dir, or `~/Documents/GitHub` created when the team declares repos | seeded | none |
+| `rt.repoRoots` | machine | `settings.seed` (step 8) | seeded from a detected candidate dir, or `~/Documents/GitHub` created when the team declares repos | seeded | none |
 | `rt.notifications` | user | `rt notifications` | unset; the notifier falls back to its own defaults | by hand | none |
-| `rt.cron` | machine | `cron.triage` (step 17) | one trigger when `board.triage.enabled`, else nothing | seeded | none |
+| `rt.cron` | machine | `cron.triage` (step 16) | one trigger when `board.triage.enabled`, else nothing | seeded | none |
 | `rt.repoTracking` | machine | `rt daemon track` | unset, and correct: `loadRepoTracking` folds the team's `mattstack.tracking` in for every cloned+indexed repo | travels | none |
 | `rt.runsPruneDays` | machine | default 30 | 30 | default | none |
-| `rt.runaway` | machine | by hand | unset; guard uses its own thresholds | by hand | none |
-| `rt.workspacePrefs` | machine | by hand | unset; the joiner picks an editor when they first open a tree | by hand | none |
+| `rt.runaway` | machine | the settings command (`commands/settings.ts`) | unset; guard uses its own thresholds | by hand | none |
+| `rt.workspacePrefs` | machine | `savePrefs` (`commands/code.ts`) | unset; the joiner picks an editor when they first open a tree | by hand | none |
 | `rt.homeSnapshot` | machine | default | enabled, 20s debounce, 60s push delay | default | none |
 | `rt.teamSnapshot` | machine | default | enabled, 300s pull interval; this is what makes the team store propagate | default | none |
 | `rt.worktreeApp` | machine | the worktree hook installer | set once the joiner installs the hook | app-owned | none |
@@ -149,7 +153,7 @@ store-ownership latch.
 | Key | Scopes | Who writes it | Day-one state for a joiner | Verdict | Correction |
 |---|---|---|---|---|---|
 | `board.claudeCommand` | machine | by hand | unset; board falls back to a plain `claude` | by hand | none |
-| `board.cwds` | machine | `board.keys` (step 16) | seeded to the first tracked repo under `rt.repoRoots[0]`, else logged and left unset | seeded | none |
+| `board.cwds` | machine | `board.keys` (step 15) | seeded to the first tracked repo under `rt.repoRoots[0]`, else logged and left unset | seeded | none |
 | `board.triageMaxConcurrent` | machine | by hand | unset; board uses its own cap | by hand | none |
 | `board.switchboardUrl` | machine | **nobody in rt** | unset; a team fact at machine scope, duplicating `mattstack.integrations.switchboard.url`, which the team store already carries (C4) | note | recorded, MAT-399 |
 
@@ -226,12 +230,18 @@ The failure is silent in both directions a joiner could notice it:
 Net: a team that declares `rt.intercepts` for its repo gets no shim on any
 joiner's machine, and every surface that could say so says the opposite.
 
-**Correction.** Move `intercepts.install` to sit immediately after
-`repos.clone` in `STEP_IDS` and in `STEPS` (`lib/setup/steps/index.ts`), which
-must stay in lockstep. `path.link` (step 7) already created `~/.local/bin` and
-put it on PATH, and nothing between the two positions depends on the shims, so
-the move has no other consequence. `repos.clone` awaits
-`updateRepoIndexAsync` before returning, so the index is populated, not racing.
+**Correction.** Move `intercepts.install` in `STEP_IDS` and in `STEPS`
+(`lib/setup/steps/index.ts`), which must stay in lockstep, to sit immediately
+after `cron.triage`, the last settings-store write in the apply order.
+`staleIntercepts()` compares the rules cache's `generatedAt` against the mtime
+of the same settings-store files `board.keys` and `cron.triage` write, so a
+cache generated before either of them reads back as stale the moment it is
+written; sitting right after `repos.clone` alone (this branch's first
+attempt) still left it ahead of both. `path.link` (step 7) already created
+`~/.local/bin` and put it on PATH, and nothing between `repos.clone` and
+`cron.triage` depends on the shims, so the later position has no other
+consequence. `repos.clone` awaits `updateRepoIndexAsync` before returning, so
+the index is populated, not racing.
 
 The pinned order is asserted in `lib/setup/__tests__/contract.test.ts`; that
 assertion moves with it. The step list in
@@ -259,7 +269,7 @@ act on it:
 **Correction.** Seed the key at Install from the joiner's forge login.
 `forgeLogin(p, provider, host, token)` already exists in `lib/team/forge.ts`
 and is what `joinRedeem` uses to prove the joiner's handle, so this adds no new
-mechanism. The seed goes in `board.keys` (step 16), which already owns the
+mechanism. The seed goes in `board.keys` (step 15), which already owns the
 "resolve a fact, write it only when the key is unset" idiom and runs after both
 the team clone and the forge connect. It degrades the way that step's other
 branches do: no forge connected, or no login resolvable, logs a line and leaves
