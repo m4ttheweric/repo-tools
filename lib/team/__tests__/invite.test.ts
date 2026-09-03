@@ -197,23 +197,51 @@ describe("mintInvite", () => {
 
     await mintInvite(p, relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
 
-    expect(writeCalls).toHaveLength(1);
-    expect(writeCalls[0]).toEqual({
-      key: "board.members",
+    expect(writeCalls).toEqual([
+      { key: "board.members", value: [{ username: "zaphod" }], scope: "team", opts: { team: SLUG } },
+      { key: "mattstack.roster", value: [{ username: "zaphod" }], scope: "team", opts: { team: SLUG } },
+    ]);
+  });
+
+  test("does not re-add a handle already on the team's own roster", async () => {
+    const p = probesWithRemote(REMOTE);
+    const { seams, writeCalls } = baseSeams({
+      readTeamStore: () => ({ "board.members": [{ username: "zaphod" }], "mattstack.roster": [{ username: "zaphod" }] }),
+    });
+    const relay = fakeRelayClient();
+
+    await mintInvite(p, relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
+
+    expect(writeCalls).toHaveLength(0);
+  });
+
+  test("also appends the handle to mattstack.roster, the cross-app roster", async () => {
+    const p = probesWithRemote(REMOTE);
+    const { seams, writeCalls } = baseSeams();
+    const relay = fakeRelayClient();
+
+    await mintInvite(p, relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
+
+    expect(writeCalls).toContainEqual({
+      key: "mattstack.roster",
       value: [{ username: "zaphod" }],
       scope: "team",
       opts: { team: SLUG },
     });
   });
 
-  test("does not re-add a handle already on the team's own roster", async () => {
+  test("each roster key is judged on its own contents: a handle on one and not the other gets the missing write only", async () => {
     const p = probesWithRemote(REMOTE);
-    const { seams, writeCalls } = baseSeams({ readTeamStore: () => ({ "board.members": [{ username: "zaphod" }] }) });
+    const { seams, writeCalls } = baseSeams({
+      readTeamStore: () => ({ "board.members": [{ username: "zaphod" }], "mattstack.roster": [] }),
+    });
     const relay = fakeRelayClient();
 
     await mintInvite(p, relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
 
-    expect(writeCalls).toHaveLength(0);
+    expect(writeCalls).toEqual([
+      { key: "mattstack.roster", value: [{ username: "zaphod" }], scope: "team", opts: { team: SLUG } },
+    ]);
   });
 
   test("addToRoster consults the team's OWN store, not the multi-team overlay `read` exposes", async () => {
@@ -231,7 +259,7 @@ describe("mintInvite", () => {
 
     await mintInvite(p, relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
 
-    expect(writeCalls).toHaveLength(1);
+    expect(writeCalls.map((c) => c.key)).toEqual(["board.members", "mattstack.roster"]);
   });
 
   test("replace-on-mint creates the new invite before revoking the old one; a failed old-delete does not wedge the mint", async () => {
