@@ -113,10 +113,14 @@ The team instance differs from the home one in three ways:
 - **Pull.** Before every push, at daemon boot and every `pullIntervalSec`, it
   fetches `origin` with rt's stored forge token (env, never argv) and either
   fast-forwards or rebases its own commits onto the remote. A rebase that stops
-  on a conflict is aborted, the clone stops pushing and pulling, and the
-  `team.sync` checklist row names it: rebase and `rt team publish` by hand, or
-  reset to origin, and the next tick resumes. A rebase that never started (an
-  index lock, unstaged edits outside the scope) is skipped and retried.
+  on a conflict is aborted and the clone stops pushing and stops applying
+  pulls, but it keeps fetching every tick: that fetch is how it notices the
+  branch is no longer ahead (which clears the marker) and what keeps
+  `lastPull` fresh, so the row reports the conflict rather than staleness on
+  top of it. The `team.sync` checklist row names it: rebase and
+  `rt team publish` by hand, or reset to origin, and the next tick resumes. A
+  rebase that never started (an index lock, unstaged edits outside the scope)
+  is skipped and retried.
 - **Identity.** Commits need a committer git can resolve. Install's
   `git.identity` step writes the global `user.name`/`user.email` from the forge
   profile when none is configured; the engine itself only asks git

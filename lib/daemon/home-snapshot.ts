@@ -96,7 +96,7 @@ export interface SnapshotStatus {
   lastPullError: string | null;
   /** The most recent pull's skip reason (e.g. a rebase refused for a dirty `src/`); null after any non-skipped pull. */
   lastPullSkipped: string | null;
-  /** A rebase that stopped mid-way. Cleared once the clone is no longer ahead of origin (a hand rebase then `rt team publish`, or a reset to origin); pushes and pulls stay suspended until then. */
+  /** A rebase that stopped mid-way. Cleared once the clone is no longer ahead of origin (a hand rebase then `rt team publish`, or a reset to origin); pushes and the applying of pulls stay suspended until then, while the fetch itself keeps running, since that is what observes the clearing condition. */
   conflicted: { at: number; detail: string } | null;
   claimedZones: string[];
   firstSeenDirty: Record<string, number>;
@@ -760,7 +760,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     }
     if (pushTimer) { deps.clearTimeout(pushTimer); pushTimer = null; }
     if (pushRetryTimer) { deps.clearTimeout(pushRetryTimer); pushRetryTimer = null; }
-    deps.log.warn({ id: spec.id, detail }, `${label}: rebase conflict; pushes and pulls suspended until you rebase and \`rt team publish\` by hand, or reset the clone to origin`);
+    deps.log.warn({ id: spec.id, detail }, `${label}: rebase conflict; still fetching, but not applying pulls or pushing until you rebase and \`rt team publish\` by hand, or reset the clone to origin`);
     deps.broadcast(`${spec.eventPrefix}:conflict`, { id: spec.id, detail });
     return { outcome: "conflict", detail };
   }
