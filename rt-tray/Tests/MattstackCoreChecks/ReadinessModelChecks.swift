@@ -80,8 +80,8 @@ func makePlan(fda: RowStatus = .needsYou, gitlab: RowStatus = .missing, chrome: 
                 canInstall: canInstallOverride ?? missing.isEmpty, requiredMissing: missing)
 }
 
-func makeManualPlan(extensionStatus: RowStatus, chromeStatus: RowStatus = .ready) -> Plan {
-    let rows = [
+func makeManualPlan(extensionStatus: RowStatus, chromeStatus: RowStatus = .ready, requiredNotReady: Bool = false) -> Plan {
+    var rows = [
         PlanRow(id: "tool.fast-browser", kind: .tool, title: "Fast Browser", why: "w", required: true, status: .ready, recheck: .onActivate),
         PlanRow(id: "tool.fast-browser-extension", kind: .tool, title: "Fast Browser extension", why: "w", required: false,
                 optionalNote: "You load this into Chrome yourself; Install cannot do it for you.", status: extensionStatus,
@@ -91,6 +91,11 @@ func makeManualPlan(extensionStatus: RowStatus, chromeStatus: RowStatus = .ready
         PlanRow(id: "tool.mission-control", kind: .tool, title: "Mission Control shortcut", why: "w", required: false, status: .needsYou,
                 action: RowAction(type: .openSettings, label: "Open Keyboard Settings...", target: "keyboard"), recheck: .onActivate),
     ]
+    if requiredNotReady {
+        rows.append(PlanRow(id: "tool.required-manual", kind: .tool, title: "Required manual tool", why: "w", required: true,
+                             status: .needsYou, action: RowAction(type: .steps, label: "Show steps...", steps: ["Do the thing"]),
+                             recheck: .onActivate))
+    }
     let missing = rows.filter { $0.required && $0.status != .ready }.map(\.id)
     return Plan(at: "t", team: TeamInfo(slug: "acme", name: "Acme", mode: .join),
                 groups: [PlanGroup(id: "tools", title: "Tools", rows: rows)],
@@ -327,6 +332,14 @@ let readinessModelChecks: [Check] = [
         let m = await MainActor.run { ReadinessModel(plans: FakePlans([makeManualPlan(extensionStatus: .skipped)]), permissions: FakePermissions(), ticker: FakeTicker()) }
         await m.load()
         await MainActor.run { c.expectEqual(m.outstandingManualRows.count, 0, "a skipped extension is nothing the user owes") }
+    },
+    Check("outstandingManualRows excludes a required, not-ready row even with a steps action") { c in
+        let m = await MainActor.run { ReadinessModel(plans: FakePlans([makeManualPlan(extensionStatus: .skipped, requiredNotReady: true)]), permissions: FakePermissions(), ticker: FakeTicker()) }
+        await m.load()
+        await MainActor.run {
+            c.expect(!m.outstandingManualRows.map(\.id).contains("tool.required-manual"),
+                      "a required row is Install's own job, not something to hand the user")
+        }
     },
     Check("StatusGlyph follows the spec's symbols") { c in
         c.expectEqual(StatusGlyph.symbol(for: .ready), "checkmark.circle.fill")
