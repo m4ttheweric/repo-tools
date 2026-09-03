@@ -331,7 +331,7 @@ function persistPushRecord(spec: SnapshotSpec, db: Database, record: HomePushRec
   }
 }
 
-export const TEAM_SCOPE_ROOTS = ["mattstack", ".sops.yaml", ".claude-plugin"] as const;
+const TEAM_SCOPE_ROOTS = ["mattstack", ".sops.yaml", ".claude-plugin"] as const;
 
 /** A team clone can also be a working repo (claimview-tools carries src/ and docs/); only the store, the recipients file and the marketplace are the daemon's to commit. */
 export function teamScope(relPath: string): boolean {

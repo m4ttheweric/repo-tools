@@ -729,7 +729,7 @@ describe("teamSyncRow", () => {
   test("every clone pulled within the interval and nothing pending: ready", async () => {
     const r = await teamSyncRow(
       ["acme"],
-      async () => [{ slug: "acme", lastPullAt: 900_000, pushPending: false, lastPushError: null, conflicted: null } as never],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPushError: null, conflicted: null } as never],
       now,
       300,
     );
@@ -740,7 +740,7 @@ describe("teamSyncRow", () => {
   });
 
   test("a hand-edited pullIntervalSec cannot break staleness: an out-of-range or non-numeric value still reads a fresh clone as ready and a dead one as needs-you", async () => {
-    const clone = (lastPullAt: number) => [{ slug: "acme", lastPullAt, pushPending: false, lastPushError: null, conflicted: null } as never];
+    const clone = (lastPullAt: number) => [{ slug: "acme", lastPullAt, lastPushError: null, conflicted: null } as never];
     for (const bad of [0, -5, Number.NaN, "abc" as unknown as number]) {
       expect((await teamSyncRow(["acme"], async () => clone(now() - 60_000), now, bad))?.status).toBe("ready");
       expect((await teamSyncRow(["acme"], async () => clone(now() - 86_400_000), now, bad))?.status).toBe("needs-you");
@@ -785,7 +785,7 @@ describe("teamSyncRow", () => {
   test("a conflict names the clone and is needs-you", async () => {
     const r = await teamSyncRow(
       ["acme"],
-      async () => [{ slug: "acme", lastPullAt: 900_000, pushPending: false, lastPushError: null, conflicted: { at: 1, detail: "CONFLICT settings.team.jsonc" } } as never],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPushError: null, conflicted: { at: 1, detail: "CONFLICT settings.team.jsonc" } } as never],
       now,
       300,
     );
@@ -797,7 +797,7 @@ describe("teamSyncRow", () => {
   test("a standing fetch error is needs-you even when the last successful pull was recent", async () => {
     const r = await teamSyncRow(
       ["acme"],
-      async () => [{ slug: "acme", lastPullAt: 900_000, lastPullError: "remote: HTTP Basic: Access denied", pushPending: false, lastPushError: null, conflicted: null } as never],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPullError: "remote: HTTP Basic: Access denied", lastPushError: null, conflicted: null } as never],
       now,
       300,
     );
@@ -808,7 +808,7 @@ describe("teamSyncRow", () => {
   test("an empty-string fetch error still trips needs-you (lastPullError != null, not truthiness)", async () => {
     const r = await teamSyncRow(
       ["acme"],
-      async () => [{ slug: "acme", lastPullAt: 900_000, lastPullError: "", pushPending: false, lastPushError: null, conflicted: null } as never],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPullError: "", lastPushError: null, conflicted: null } as never],
       now,
       300,
     );
@@ -819,7 +819,7 @@ describe("teamSyncRow", () => {
   test("an empty-string push error still trips needs-you (lastPushError != null, not truthiness): same redactCredentials(stderr) shape as the fetch error", async () => {
     const r = await teamSyncRow(
       ["acme"],
-      async () => [{ slug: "acme", lastPullAt: 900_000, pushPending: true, lastPushError: "", conflicted: null } as never],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPushError: "", conflicted: null } as never],
       now,
       300,
     );
@@ -827,10 +827,22 @@ describe("teamSyncRow", () => {
     expect(r?.detail).toContain("push failed");
   });
 
+  // The row reads outcomes, not queue depth: a push the engine has scheduled
+  // but not yet sent is the normal state seconds after any store edit.
+  test("a push still pending, with nothing failing, is ready", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [{ slug: "acme", lastPullAt: 900_000, pushPending: true, lastPushError: null, conflicted: null } as never],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("ready");
+  });
+
   test("a stale pull (older than two intervals) or a standing push error is needs-you", async () => {
     const stale = await teamSyncRow(
       ["acme"],
-      async () => [{ slug: "acme", lastPullAt: 0, pushPending: false, lastPushError: null, conflicted: null } as never],
+      async () => [{ slug: "acme", lastPullAt: 0, lastPushError: null, conflicted: null } as never],
       now,
       300,
     );
@@ -839,7 +851,7 @@ describe("teamSyncRow", () => {
 
     const failing = await teamSyncRow(
       ["acme"],
-      async () => [{ slug: "acme", lastPullAt: 900_000, pushPending: true, lastPushError: "denied", conflicted: null } as never],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPushError: "denied", conflicted: null } as never],
       now,
       300,
     );
@@ -853,8 +865,8 @@ describe("teamSyncRow", () => {
     const r = await teamSyncRow(
       ["acme", "beta"],
       async () => [
-        { slug: "acme", lastPullAt: 0, pushPending: false, lastPushError: null, conflicted: null } as never,
-        { slug: "beta", lastPullAt: 900_000, pushPending: false, lastPushError: "denied", conflicted: null } as never,
+        { slug: "acme", lastPullAt: 0, lastPushError: null, conflicted: null } as never,
+        { slug: "beta", lastPullAt: 900_000, lastPushError: "denied", conflicted: null } as never,
       ],
       now,
       300,
@@ -867,7 +879,7 @@ describe("teamSyncRow", () => {
   test("a pull skipped this tick is not a failure, but it is named in the ready detail without changing the status", async () => {
     const r = await teamSyncRow(
       ["acme"],
-      async () => [{ slug: "acme", lastPullAt: 900_000, pushPending: false, lastPushError: null, conflicted: null, lastPullSkipped: "dirty src/" } as never],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPushError: null, conflicted: null, lastPullSkipped: "dirty src/" } as never],
       now,
       300,
     );
@@ -907,7 +919,7 @@ describe("rtHealthRows: team.sync wiring", () => {
       files: { "/fake-home/.mattstack/teams/acme/mattstack/settings.team.jsonc": "{}" },
       dirs: { "/fake-home/.mattstack/teams": ["acme"] },
       daemon: async (cmd) => {
-        if (cmd === "team:snapshot-status") return { ok: true, data: [{ slug: "acme", lastPullAt: at.getTime() - 300_000, pushPending: false, lastPushError: null, conflicted: null }] };
+        if (cmd === "team:snapshot-status") return { ok: true, data: [{ slug: "acme", lastPullAt: at.getTime() - 300_000, lastPushError: null, conflicted: null }] };
         return null;
       },
     });
@@ -940,7 +952,7 @@ describe("rtHealthRows: team.sync wiring", () => {
       files: { "/fake-home/.mattstack/teams/acme/mattstack/settings.team.jsonc": "{}" },
       dirs: { "/fake-home/.mattstack/teams": ["acme"] },
       daemon: async (cmd) => {
-        if (cmd === "team:snapshot-status") return { ok: true, data: [{ slug: "acme", lastPullAt: Date.now(), pushPending: false, lastPushError: null, conflicted: null }] };
+        if (cmd === "team:snapshot-status") return { ok: true, data: [{ slug: "acme", lastPullAt: Date.now(), lastPushError: null, conflicted: null }] };
         return null;
       },
     });
