@@ -86,9 +86,13 @@ relaunch_app() {  # same shape as install-app.sh launch, with walkthrough.sh's u
 
 # Exec from guest-local disk: the compiled server is ~60MB and demand-paging it
 # over the virtiofs share can take longer than any single reachability probe.
-cp "$UPD/appcast-server" /tmp/appcast-server && chmod +x /tmp/appcast-server
-/tmp/appcast-server "$UPD" "$VM_APPCAST_PORT" 2>>"$LOGS/appcast-server.log" &
-SRV=$!; trap 'kill $SRV 2>/dev/null || true' EXIT INT TERM HUP
+# A private mktemp dir, not a fixed /tmp path: a failed cp must never leave a
+# stale copy for the reachability probe to bless.
+SRV_DIR=$(mktemp -d) || { bad "mktemp failed for appcast-server staging"; finish 1; }
+cp "$UPD/appcast-server" "$SRV_DIR/appcast-server" && chmod +x "$SRV_DIR/appcast-server" \
+  || { bad "failed to stage appcast-server into $SRV_DIR"; rm -rf "$SRV_DIR"; finish 1; }
+"$SRV_DIR/appcast-server" "$UPD" "$VM_APPCAST_PORT" 2>>"$LOGS/appcast-server.log" &
+SRV=$!; trap 'kill $SRV 2>/dev/null || true; rm -rf "$SRV_DIR"' EXIT INT TERM HUP
 up=""
 for i in $(seq 1 15); do
   if curl -s --max-time 2 "http://127.0.0.1:$VM_APPCAST_PORT/appcast.xml" | grep -q '<rss'; then up=1; break; fi

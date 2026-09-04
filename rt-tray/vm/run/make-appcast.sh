@@ -53,10 +53,12 @@ if [ "$SIGN" = "-" ]; then
 fi
 
 # Inside-out re-sign: every nested Mach-O first, then the bundle (never --deep).
+# No exec-bit filter: a framework dylib shipped without u+x would keep its stale
+# signature and fail Library Validation at launch; `file` alone decides.
 while IFS= read -r f; do
   file -b "$f" | grep -q Mach-O || continue
   codesign "${NESTED_SIGN[@]}" "$f" 2>/dev/null || vm_die "codesign failed on ${f#$STAGE/}"
-done < <(find "$STAGE/mattstack.app/Contents" -type f -perm -u+x -not -path '*/Info.plist')
+done < <(find "$STAGE/mattstack.app/Contents" -type f -not -path '*/Info.plist')
 codesign "${APP_SIGN[@]}" "$STAGE/mattstack.app"
 
 # Postconditions, not trust: both of these are invisible to `codesign --verify --deep --strict`,
