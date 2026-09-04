@@ -10,7 +10,7 @@ public enum SetupStep: Int, CaseIterable, Sendable {
         case .team: return "Your team"
         case .checklist: return "Before we begin"
         case .install: return "Installing"
-        case .done: return "Everything's working"
+        case .done: return "Installed"
         }
     }
     public var indicator: String { "Step \(rawValue + 1) of \(SetupStep.allCases.count)" }

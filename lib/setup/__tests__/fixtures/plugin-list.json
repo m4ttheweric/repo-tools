@@ -1,0 +1,152 @@
+[
+  {
+    "id": "chat@mattstack",
+    "version": "0.3.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/user/.claude/plugins/cache/mattstack/chat/0.3.0",
+    "installedAt": "2026-08-26T13:28:09.485Z",
+    "lastUpdated": "2026-08-29T00:48:42.236Z"
+  },
+  {
+    "id": "analytics@example-team",
+    "version": "0.5.18",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/user/.claude/plugins/cache/example-team/analytics/0.5.18",
+    "installedAt": "2026-08-19T21:04:10.433Z",
+    "lastUpdated": "2026-09-02T20:38:58.791Z"
+  },
+  {
+    "id": "workflow@example-vendor",
+    "version": "3.18.0",
+    "scope": "user",
+    "enabled": false,
+    "installPath": "/Users/user/.claude/plugins/cache/example-vendor/workflow/3.18.0",
+    "installedAt": "2026-07-06T17:04:03.402Z",
+    "lastUpdated": "2026-07-06T17:04:03.402Z"
+  },
+  {
+    "id": "fast-browser@mattstack",
+    "version": "0.1.0-alpha.17",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/user/.claude/plugins/cache/mattstack/fast-browser/0.1.0-alpha.17",
+    "installedAt": "2026-08-25T03:05:51.891Z",
+    "lastUpdated": "2026-08-26T00:45:59.108Z",
+    "mcpServers": {
+      "fast-browser": {
+        "command": "node",
+        "args": [
+          "${CLAUDE_PLUGIN_ROOT}/bin/fast-browser-mcp.mjs"
+        ]
+      }
+    }
+  },
+  {
+    "id": "design@example-official",
+    "version": "2.2.107",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/user/.claude/plugins/cache/example-official/design/2.2.107",
+    "installedAt": "2026-05-28T21:37:58.092Z",
+    "lastUpdated": "2026-09-02T15:29:42.675Z",
+    "mcpServers": {
+      "design": {
+        "type": "http",
+        "url": "https://mcp.example.com/mcp",
+        "headers": {
+          "X-Example-Bundle": "example_prod@1_0_0"
+        }
+      }
+    }
+  },
+  {
+    "id": "metrics@example-vendor",
+    "version": "0.1.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/user/.claude/plugins/cache/example-vendor/metrics/0.1.0",
+    "installedAt": "2026-08-05T18:12:04.971Z",
+    "lastUpdated": "2026-08-05T18:12:04.971Z",
+    "mcpServers": {
+      "metrics": {
+        "type": "http",
+        "url": "https://api.example.com/mcp/metrics"
+      }
+    }
+  },
+  {
+    "id": "mattstack@mattstack",
+    "version": "0.13.6",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/user/.claude/plugins/cache/mattstack/mattstack/0.13.6",
+    "installedAt": "2026-08-25T03:05:48.719Z",
+    "lastUpdated": "2026-09-03T02:53:46.063Z"
+  },
+  {
+    "id": "python-lsp@example-official",
+    "version": "1.0.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/user/.claude/plugins/cache/example-official/python-lsp/1.0.0",
+    "installedAt": "2026-07-24T15:02:30.550Z",
+    "lastUpdated": "2026-07-24T15:02:30.550Z"
+  },
+  {
+    "id": "rust-lsp@example-official",
+    "version": "1.0.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/user/.claude/plugins/cache/example-official/rust-lsp/1.0.0",
+    "installedAt": "2026-05-30T18:11:28.103Z",
+    "lastUpdated": "2026-05-30T18:11:28.103Z"
+  },
+  {
+    "id": "messaging@example-official",
+    "version": "1.2.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/user/.claude/plugins/cache/example-official/messaging/1.2.0",
+    "installedAt": "2026-06-11T16:19:11.108Z",
+    "lastUpdated": "2026-08-03T20:40:36.717Z",
+    "mcpServers": {
+      "messaging": {
+        "type": "http",
+        "url": "https://mcp.example.com/mcp",
+        "oauth": {
+          "clientId": "0000000000000.0000000000000",
+          "callbackPort": 3000
+        }
+      }
+    }
+  },
+  {
+    "id": "toolkit@example-official",
+    "version": "6.3.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/user/.claude/plugins/cache/example-official/toolkit/6.3.0",
+    "installedAt": "2026-04-25T03:43:09.552Z",
+    "lastUpdated": "2026-08-12T19:56:27.670Z"
+  },
+  {
+    "id": "swift-lsp@example-official",
+    "version": "1.0.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/user/.claude/plugins/cache/example-official/swift-lsp/1.0.0",
+    "installedAt": "2026-07-01T13:34:23.001Z",
+    "lastUpdated": "2026-07-01T13:34:23.001Z"
+  },
+  {
+    "id": "typescript-lsp@example-official",
+    "version": "1.0.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/Users/user/.claude/plugins/cache/example-official/typescript-lsp/1.0.0",
+    "installedAt": "2026-07-24T15:02:30.550Z",
+    "lastUpdated": "2026-07-24T15:02:30.550Z"
+  }
+]

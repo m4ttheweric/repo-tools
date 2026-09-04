@@ -18,6 +18,7 @@
 
 import { resolveTool } from "../../deps/resolve.ts";
 import { detectEditors } from "../../editors.ts";
+import { BASE_PLUGINS } from "../base-plugins.ts";
 import { row, type Action, type Row } from "../contract.ts";
 import type { ExecResult, Probes } from "../probes.ts";
 import type { PackRequirements, ToolRequirement } from "../requirements.ts";
@@ -32,11 +33,6 @@ const CHROME_PATHS = (home: string): string[] => ["/Applications/Google Chrome.a
 const CLAUDE_SIGNIN_STEPS: Action = { type: "steps", label: "Show steps…", steps: ["Open a terminal", "Run: claude", "Follow the sign-in prompt"] };
 /** Signing in is interactive and happens after Install; only the claude binary itself gates Install. */
 const SIGNIN_LATER = { required: false, optionalNote: "Sign in after Install: run claude once." };
-const FAST_BROWSER_EXTENSION_STEPS: Action = {
-  type: "steps",
-  label: "Show steps…",
-  steps: ["Open chrome://extensions", "Turn on Developer mode", "Load unpacked → ~/.fast-browser/extension/current/unpacked"],
-};
 const CHROME_DOWNLOAD_ACTION: Action = { type: "open-url", label: "Download", url: "https://www.google.com/chrome/" };
 const MISSION_CONTROL_SETTINGS_ACTION: Action = { type: "open-settings", label: "Open Keyboard Settings…", target: "keyboard" };
 
@@ -162,49 +158,131 @@ async function claudeRow(p: Probes, opts: { hasBrew: boolean }): Promise<Row> {
   return row({ ...base, status: "error", detail: "claude auth status returned an unexpected response" });
 }
 
-// ─── tool.fast-browser ─────────────────────────────────────────────────────
+// ─── tool.fast-browser / tool.fast-browser-extension ───────────────────────
 
-interface FastBrowserDoctor {
-  runtime?: { ok?: boolean };
-  extension?: { loaded?: boolean };
-  pairing?: { ok?: boolean };
+interface FastBrowserCheck {
+  id: string;
+  status: string;
+  message?: string;
+  remediation?: string | null;
 }
 
-async function fastBrowserRow(p: Probes, seams: ToolsSeams): Promise<Row> {
-  const base = { id: "tool.fast-browser", kind: "tool" as const, title: "Fast Browser", why: "Backs rt's macro-first browser automation.", required: true, recheck: "on-activate" as const };
+/** The real envelope from `fast-browser doctor --json`: a flat `checks` array keyed by id, not the nested `{runtime, extension, pairing}` shape this used to declare (which no installed fast-browser has ever produced). */
+interface FastBrowserDoctor {
+  schemaVersion?: number;
+  ok?: boolean;
+  profile?: string;
+  checks?: FastBrowserCheck[];
+}
 
+type CheckState = "pass" | "fail" | "absent";
+
+/** Absent (an id doctor's schema doesn't carry, older or newer than this build expects) is its own state, never folded into "fail": a check rt cannot find is not a check that failed. */
+function checkState(doctor: FastBrowserDoctor | null, id: string): CheckState {
+  const found = doctor?.checks?.find((c) => c.id === id);
+  if (!found) return "absent";
+  return found.status === "pass" ? "pass" : "fail";
+}
+
+interface FastBrowserProbe {
+  resolvable: boolean;
+  doctor: FastBrowserDoctor | null;
+  /** Set only when fast-browser resolved but its report could not be read. */
+  failure: string | null;
+}
+
+/** One `doctor` run feeds both rows: they read different fields of the same report, and a second spawn would double the bounded wait on every plan. */
+async function probeFastBrowser(p: Probes, seams: ToolsSeams): Promise<FastBrowserProbe> {
   const resolved = seams.resolveTool(p, "fast-browser");
-  if (!resolved.exec) return row({ ...base, status: "missing", detail: "fast-browser not found", action: { type: "link-bundled", label: "Use mattstack's", tool: "fast-browser" } });
+  if (!resolved.exec) return { resolvable: false, doctor: null, failure: null };
 
   const res = await exec(p, [...resolved.exec, "doctor", "--json"]);
-  if (res.code === 124) return row({ ...base, status: "error", detail: "fast-browser doctor timed out" });
+  if (res.code === 124) return { resolvable: true, doctor: null, failure: "fast-browser doctor timed out" };
 
   // `doctor` is a health check: it commonly exits non-zero BECAUSE it found a
-  // problem, while still printing its JSON report — so a parseable payload
-  // is honored regardless of exit code, and only a genuinely empty/garbled
-  // response falls through to "error".
-  let doctor: FastBrowserDoctor | null = null;
+  // problem, while still printing its JSON report, so a parseable payload is
+  // honored regardless of exit code.
   if (res.stdout.trim() !== "") {
     try {
-      doctor = JSON.parse(res.stdout) as FastBrowserDoctor;
+      return { resolvable: true, doctor: JSON.parse(res.stdout) as FastBrowserDoctor, failure: null };
     } catch {
-      doctor = null;
+      // An unparseable payload is the failure below, not a silent empty report.
     }
   }
-  if (!doctor) {
-    const head = res.stderr.trim().split("\n")[0] || `exit ${res.code}`;
-    return row({ ...base, status: "error", detail: `fast-browser doctor failed: ${head}` });
-  }
+  const head = res.stderr.trim().split("\n")[0] || `exit ${res.code}`;
+  return { resolvable: true, doctor: null, failure: `fast-browser doctor failed: ${head}` };
+}
 
-  const runtimeOk = doctor.runtime?.ok === true;
-  const extensionLoaded = doctor.extension?.loaded === true;
-  if (runtimeOk && extensionLoaded) return row({ ...base, status: "ready", detail: "runtime ok, extension loaded" });
-  // Loading the extension needs Chrome, and Chrome is optional: without it
-  // this row cannot gate Install, or a Chrome-less Mac never installs.
-  const chromeInstalled = CHROME_PATHS(p.home).some((path) => p.exists(path));
-  const gate = chromeInstalled ? {} : { required: false, optionalNote: "Works without this until Google Chrome is installed." };
-  if (!extensionLoaded) return row({ ...base, ...gate, status: "needs-you", detail: "Chrome extension not loaded", action: FAST_BROWSER_EXTENSION_STEPS });
-  return row({ ...base, ...gate, status: "needs-you", detail: "runtime not ready", action: FAST_BROWSER_EXTENSION_STEPS });
+const FAST_BROWSER_SETUP_ACTION: Action = { type: "run", label: "Run setup", verb: ["tools", "setup", "fast-browser"] };
+
+/**
+ * Everything past the binary is created by the `fastbrowser.setup` Install
+ * step, so none of it may gate Install: before Install neither the runtime nor
+ * the extension directory exists, and no action on this screen can create
+ * them. Same shape as herdrRow above, and the same ruling: binaries gate,
+ * follow-ups don't.
+ */
+const FASTBROWSER_SETUP_NOTE = "Installed by Install (fastbrowser.setup).";
+
+function fastBrowserRow(probe: FastBrowserProbe): Row {
+  const base = { id: "tool.fast-browser", kind: "tool" as const, title: "Fast Browser", why: "Backs rt's macro-first browser automation.", required: true, recheck: "on-activate" as const };
+  if (!probe.resolvable) return row({ ...base, status: "missing", detail: "fast-browser not found", action: { type: "link-bundled", label: "Use mattstack's", tool: "fast-browser" } });
+
+  const pending = { required: false, optionalNote: FASTBROWSER_SETUP_NOTE };
+  if (probe.failure) return row({ ...base, ...pending, status: "error", detail: probe.failure });
+
+  const runtime = checkState(probe.doctor, "runtime-checksum");
+  if (runtime === "pass") return row({ ...base, status: "ready", detail: "runtime ok" });
+  if (runtime === "absent") return row({ ...base, ...pending, status: "error", detail: "fast-browser doctor report has no runtime-checksum check" });
+  return row({ ...base, ...pending, status: "needs-you", detail: "runtime not ready", action: FAST_BROWSER_SETUP_ACTION });
+}
+
+const PAIRING_STEPS = [
+  "Click the Fast Browser icon in Chrome and copy its reconnect token",
+  "Run: fast-browser configure --connection auto, then paste the token into the Keychain prompt",
+  "Run: fast-browser doctor",
+];
+const FAST_BROWSER_LOAD_STEPS: Action = {
+  type: "steps",
+  label: "Show steps…",
+  steps: ["Open chrome://extensions", "Turn on Developer mode", "Load unpacked → ~/.fast-browser/extension/current/unpacked", ...PAIRING_STEPS],
+};
+const FAST_BROWSER_PAIR_STEPS: Action = { type: "steps", label: "Show steps…", steps: PAIRING_STEPS };
+
+/**
+ * Never gates Install in any Chrome state. Loading an unpacked extension is a
+ * Chrome step rt cannot perform: fast-browser ships no CRX and has no Web
+ * Store listing, and Chrome's unattended paths accept neither an unpacked
+ * directory nor a signing key rt holds. The Done screen names it instead.
+ */
+function fastBrowserExtensionRow(p: Probes, probe: FastBrowserProbe): Row {
+  const base = {
+    id: "tool.fast-browser-extension",
+    kind: "tool" as const,
+    title: "Fast Browser extension",
+    why: "Fast Browser drives your real Chrome session through this extension.",
+    required: false,
+    optionalNote: "You load this into Chrome yourself; Install cannot do it for you.",
+    recheck: "on-activate" as const,
+  };
+
+  if (!CHROME_PATHS(p.home).some((path) => p.exists(path))) return row({ ...base, status: "skipped", detail: "no Google Chrome to load it into" });
+  // tool.fast-browser already reports an unreadable doctor; repeating it here
+  // would be two rows for one fact.
+  if (!probe.doctor) return row({ ...base, status: "skipped", detail: "fast-browser doctor could not be read (see Fast Browser)" });
+
+  const extension = checkState(probe.doctor, "extension-loaded");
+  if (extension === "absent") return row({ ...base, status: "error", detail: "fast-browser doctor report has no extension-loaded check" });
+  if (extension === "fail") return row({ ...base, status: "needs-you", detail: "not loaded in Chrome", action: FAST_BROWSER_LOAD_STEPS });
+
+  // Trust doctor's own pairing check rather than a separate rule: pairing
+  // passes whenever the connection mode isn't auto, and manual is the
+  // documented default, so a loaded-but-unpaired manual-mode machine is not
+  // an outstanding step.
+  const pairing = checkState(probe.doctor, "pairing");
+  if (pairing === "absent") return row({ ...base, status: "error", detail: "fast-browser doctor report has no pairing check" });
+  if (pairing === "fail") return row({ ...base, status: "needs-you", detail: "loaded but not paired", action: FAST_BROWSER_PAIR_STEPS });
+  return row({ ...base, status: "ready", detail: "loaded and paired" });
 }
 
 // ─── tool.editor ───────────────────────────────────────────────────────────
@@ -349,11 +427,25 @@ async function teamToolRow(p: Probes, req: ToolRequirement, hasBrew: boolean): P
 
 // ─── pack.<pack> ────────────────────────────────────────────────────────────
 
-/** Anchored at the entry's own start (start of line, optional leading whitespace) so a pack named "view" can never match inside "acme@acme". */
-function pluginListHasPack(stdout: string, pack: string): boolean {
-  const needle = `${pack}@`;
-  return stdout.split("\n").some((line) => line.trim().startsWith(needle));
+/** One entry of `claude plugin list --json`; only the fields this module reads. The real listing carries more (version, scope, installPath, installedAt, lastUpdated, mcpServers) that nothing here needs. */
+interface PluginListEntry {
+  id: string;
+  enabled: boolean;
 }
+
+/** `claude plugin list` (no flag) prints a chevron glyph before each name, never the bare id, so a human-format scrape can never match `BASE_PLUGINS`. The parsed `id` field is the only reliable match surface. */
+function parsePluginList(stdout: string): PluginListEntry[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  return Array.isArray(parsed) ? (parsed as PluginListEntry[]) : null;
+}
+
+const INSTALL_PLUGINS_ACTION: Action = { type: "run", label: "Install plugins", verb: ["setup", "pack"] };
+const ENABLE_PLUGINS_ACTION: Action = { type: "run", label: "Enable plugins", verb: ["setup", "pack"] };
 
 /** Shared with plan.ts's install-satisfied flip so the two never drift apart into two different wordings for the same fact. */
 export const INSTALLED_BY_INSTALL_NOTE = "Installed by Install (plugins.install).";
@@ -376,17 +468,54 @@ function packRow(req: PackRequirements, pluginList: ExecResult): Row {
   // is a real failure this module could not determine past — "skipped"
   // reads as "nothing to check here", which a genuine failure is not.
   if (pluginList.code !== 0) return row({ ...base, status: "error", detail: `claude plugin list failed (exit ${pluginList.code})` });
-  if (pluginListHasPack(pluginList.stdout, req.pack)) return row({ ...base, status: "ready", detail: "installed" });
+
+  const entries = parsePluginList(pluginList.stdout);
+  if (!entries) return row({ ...base, status: "error", detail: "claude plugin list --json output could not be read" });
+  if (entries.some((e) => typeof e.id === "string" && e.id.startsWith(`${req.pack}@`))) return row({ ...base, status: "ready", detail: "installed" });
   return row({ ...base, status: "missing", detail: "installed by Install (plugins.install)" });
+}
+
+// ─── tool.plugins ───────────────────────────────────────────────────────────
+
+/** Exactly the classification packRow uses, so the two rows never disagree about what a `claude plugin list --json` result means. */
+function pluginsRow(pluginList: ExecResult): Row {
+  const base = {
+    id: "tool.plugins",
+    kind: "tool" as const,
+    title: "Claude plugins",
+    why: "rt's skills, Fast Browser's and rt chat's all reach Claude Code as marketplace plugins.",
+    required: false,
+    optionalNote: INSTALLED_BY_INSTALL_NOTE,
+  };
+  if (pluginList.code === 127) return row({ ...base, status: "skipped", detail: "claude not installed" });
+  if (pluginList.code === 124) return row({ ...base, status: "error", detail: "claude plugin list timed out" });
+  if (pluginList.code !== 0) return row({ ...base, status: "error", detail: `claude plugin list failed (exit ${pluginList.code})` });
+
+  const entries = parsePluginList(pluginList.stdout);
+  if (!entries) return row({ ...base, status: "error", detail: "claude plugin list --json output could not be read" });
+
+  const byId = new Map(entries.map((e) => [e.id, e]));
+  const absent = BASE_PLUGINS.filter((id) => !byId.has(id));
+  if (absent.length > 0) return row({ ...base, status: "missing", detail: `not installed: ${absent.join(", ")}`, action: INSTALL_PLUGINS_ACTION });
+
+  // `plugins.install` only enables a plugin best-effort, and disabling one is
+  // a deliberate user choice rather than a broken install: needs-you (not
+  // invalid) so verify names it and nags without going critical.
+  const disabled = BASE_PLUGINS.filter((id) => byId.get(id)!.enabled !== true);
+  if (disabled.length > 0) return row({ ...base, status: "needs-you", detail: `disabled: ${disabled.join(", ")}`, action: ENABLE_PLUGINS_ACTION });
+
+  return row({ ...base, status: "ready", detail: `${BASE_PLUGINS.length} plugins installed` });
 }
 
 // ─── entry point ────────────────────────────────────────────────────────────
 
 export async function toolRows(p: Probes, reqs: PackRequirements[], opts: { hasBrew: boolean }, seams: ToolsSeams = REAL_SEAMS): Promise<Row[]> {
+  const fastBrowser = await probeFastBrowser(p, seams);
   const rows: Row[] = [
     await herdrRow(p, opts),
     await claudeRow(p, opts),
-    await fastBrowserRow(p, seams),
+    fastBrowserRow(fastBrowser),
+    fastBrowserExtensionRow(p, fastBrowser),
     editorRow(seams),
     chromeRow(p, reqs),
   ];
@@ -398,12 +527,11 @@ export async function toolRows(p: Probes, reqs: PackRequirements[], opts: { hasB
 
   for (const tool of dedupeTeamTools(reqs)) rows.push(await teamToolRow(p, tool, opts.hasBrew));
 
-  // No point spawning (or waiting on) `claude plugin list` when there are no
-  // pack rows to check it against.
-  if (reqs.length > 0) {
-    const pluginList = await exec(p, ["claude", "plugin", "list"]);
-    for (const req of reqs) rows.push(packRow(req, pluginList));
-  }
+  // One listing feeds tool.plugins and every pack row; tool.plugins is
+  // unconditional, so there is no longer a case where nothing needs it.
+  const pluginList = await exec(p, ["claude", "plugin", "list", "--json"]);
+  rows.push(pluginsRow(pluginList));
+  for (const req of reqs) rows.push(packRow(req, pluginList));
 
   return rows;
 }

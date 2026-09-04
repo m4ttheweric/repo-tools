@@ -185,4 +185,29 @@ describe("composePlan — install-satisfied flip", () => {
     expect(daemon.required).toBe(true);
     expect(daemon.optionalNote).toBeNull();
   });
+
+  test("tool.plugins flips required across plan and status mode", async () => {
+    const p = fakeProbes({ exec: readyExec, tray: grantedTray });
+    const planned = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "plan", teams: [] });
+    const plannedRow = planned.groups.find((g) => g.id === "tools")!.rows.find((r) => r.id === "tool.plugins")!;
+    expect(plannedRow.required).toBe(false);
+    expect(plannedRow.optionalNote).not.toBeNull();
+
+    const status = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status", teams: [] });
+    const statusRow = status.groups.find((g) => g.id === "tools")!.rows.find((r) => r.id === "tool.plugins")!;
+    expect(statusRow.required).toBe(true);
+    expect(statusRow.optionalNote).toBeNull();
+  });
+
+  // The extension is loaded by hand in Chrome, so it must never reach
+  // requiredMissing in either mode: status mode is what the verify Install
+  // step runs, and a critical failure there would end every successful
+  // install in failure.
+  test("tool.fast-browser-extension never counts against canInstall, in either mode", async () => {
+    const p = fakeProbes({ exec: readyExec, tray: grantedTray });
+    for (const mode of ["plan", "status"] as const) {
+      const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode, teams: [] });
+      expect(plan.requiredMissing).not.toContain("tool.fast-browser-extension");
+    }
+  });
 });
