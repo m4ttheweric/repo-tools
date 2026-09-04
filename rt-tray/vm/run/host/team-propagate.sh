@@ -79,8 +79,18 @@ echo "joiner clone at $(git rev-parse --short HEAD)"
 # so rm -f runs whether or not the connect succeeded; its own output is
 # suppressed since a failure envelope could carry the value back into the log.
 if [ -f /tmp/linear-key.txt ]; then
-  RT_BATCH=1 "$RT" setup linear connect --json < /tmp/linear-key.txt >/dev/null 2>&1 \
-    && echo "joiner: linear connected" || echo "joiner: linear connect failed"
+  if RT_BATCH=1 "$RT" setup linear connect --json < /tmp/linear-key.txt >/dev/null 2>&1; then
+    echo "joiner: linear connected"
+    # --from resumes Install from linear.mcp onward (fastbrowser.setup,
+    # herdr.integration, extension.install, services.start, snapshot.push,
+    # verify on this branch), not just the one step: Install already ran
+    # once at join time, before this key existed, so linear.mcp skipped and
+    # never wrote the mcpServers entry. This is what makes it write it now.
+    RT_BATCH=1 "$RT" setup apply --from linear.mcp --json >/dev/null 2>&1 \
+      && echo "joiner: linear.mcp applied" || echo "joiner: linear.mcp apply failed"
+  else
+    echo "joiner: linear connect failed"
+  fi
   rm -f /tmp/linear-key.txt
 fi
 

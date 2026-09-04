@@ -196,9 +196,13 @@ joiner by `vm_scp`, over stdin into `rt setup linear connect --json`, and is
 removed from the guest right after (`rm -f`, run whether or not connect
 succeeded). It is never echoed, never in argv, never committed, and a run
 with no key file at that path simply skips the Linear leg rather than
-failing. Setting `"linearMcp": true` in a fixture's `expect.json` is what
-turns the `assert-team.sh` Linear MCP block on; every other fixture leaves it
-unset and the block stays inert.
+failing. On a successful connect, the joiner also resumes Install from
+`linear.mcp` (`rt setup apply --from linear.mcp --json`) so the
+`mcpServers.linear` entry actually gets written: Install already ran once at
+join time, before the key existed, so `linear.mcp` skipped it then and
+nothing else re-runs Install. Setting `"linearMcp": true` in a fixture's
+`expect.json` is what turns the `assert-team.sh` Linear MCP block on; every
+other fixture leaves it unset and the block stays inert.
 
 ## Costs (fill in after the first builds)
 
