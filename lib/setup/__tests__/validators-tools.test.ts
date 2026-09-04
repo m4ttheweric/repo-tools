@@ -995,6 +995,14 @@ describe("toolRows: tool.linear-mcp", () => {
     expect(r.detail).toContain("linear-matt");
   });
 
+  test("a Linear MCP under another name with no key -> needs-you, since Install would skip", async () => {
+    const r = await rowFor(conf({ mcpServers: { "linear-matt": hosted } }), NO_SECRETS);
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toContain("linear-matt");
+    expect(r.detail).toContain("connect Linear so Install can add linear");
+    expect(r.action?.type).toBe("connect");
+  });
+
   test("nothing configured and no key -> needs-you with a connect action", async () => {
     const r = await rowFor(conf({}), NO_SECRETS);
     expect(r.status).toBe("needs-you");
@@ -1015,6 +1023,28 @@ describe("toolRows: tool.linear-mcp", () => {
     const r = await rowFor({ [`${HOME}/.claude.json`]: "{ not json" }, HAS_KEY);
     expect(r.status).toBe("error");
     expect(r.detail).toContain(".claude.json");
+  });
+
+  test("a config that exists but cannot be read -> error naming the file", async () => {
+    const path = `${HOME}/.claude.json`;
+    const p = fakeProbes({ home: HOME, env: {}, files: conf({}), unreadable: [path] });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: HAS_KEY }, NOOP_SEAMS), "tool.linear-mcp");
+    expect([r.status, r.required]).toEqual(["error", false]);
+    expect(r.detail).toContain(".claude.json");
+  });
+
+  test("a secrets seam that throws degrades this row alone, leaving the rest of the group standing", async () => {
+    const exploding: SecretPresence = {
+      has: async () => {
+        throw new Error("keychain locked");
+      },
+    };
+    const rows = await toolRows(fakeProbes({ home: HOME, env: {}, files: conf({}) }), [], { hasBrew: true, secrets: exploding }, NOOP_SEAMS);
+    const r = rows.find((row) => row.id === "tool.linear-mcp")!;
+    expect([r.status, r.required]).toEqual(["error", false]);
+    expect(r.detail).toContain("keychain locked");
+    expect(rows.some((row) => row.id === "tool.herdr")).toBe(true);
+    expect(rows.some((row) => row.id === "tool.plugins")).toBe(true);
   });
 
   test("never required, so it can neither block Install nor fail verify", async () => {

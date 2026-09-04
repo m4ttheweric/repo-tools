@@ -576,17 +576,33 @@ async function linearMcpRow(p: Probes, secrets: SecretPresence): Promise<Row> {
   const path = claudeJsonPath(p);
   const read = readClaudeConfig(p, path);
   if (!read.ok && read.reason === "unparsable") return row({ ...base, status: "error", detail: `${path} is not valid JSON` });
+  if (!read.ok && read.reason === "unreadable") return row({ ...base, status: "error", detail: `${path} could not be read` });
 
   const config = read.ok ? read.config : {};
   if (callableBySkills(config)) return row({ ...base, status: "ready", detail: "linear" });
   if (nameTaken(config)) return row({ ...base, status: "needs-you", detail: "a server named linear is not a Linear MCP" });
 
-  const others = linearServerNames(config);
-  if (others.length > 0) return row({ ...base, status: "missing", detail: `Linear MCP present as ${others.join(", ")}; skills call mcp__linear__*` });
-
-  if ((await secrets.has("rt", "linearApiKey")) === null) {
-    return row({ ...base, status: "needs-you", detail: "no Linear account connected", action: CONNECT_LINEAR_ACTION });
+  // Every remaining state depends on the key, because Install skips without
+  // one: a row promising Install will act, on a machine where it would not,
+  // leaves the user with no next step anywhere. The seam throwing (a locked
+  // keychain, a bad recipient, a corrupt sops file) degrades this row alone;
+  // uncaught it would take the whole tools group down with it.
+  let hasKey: boolean;
+  try {
+    hasKey = (await secrets.has("rt", "linearApiKey")) !== null;
+  } catch (err) {
+    return row({ ...base, status: "error", detail: err instanceof Error ? err.message : String(err) });
   }
+
+  const others = linearServerNames(config);
+  if (others.length > 0) {
+    const present = `Linear MCP present as ${others.join(", ")}`;
+    return hasKey
+      ? row({ ...base, status: "missing", detail: `${present}; skills call mcp__linear__*` })
+      : row({ ...base, status: "needs-you", detail: `${present}; connect Linear so Install can add linear`, action: CONNECT_LINEAR_ACTION });
+  }
+
+  if (!hasKey) return row({ ...base, status: "needs-you", detail: "no Linear account connected", action: CONNECT_LINEAR_ACTION });
   return row({ ...base, status: "missing", detail: "installed by Install (linear.mcp)" });
 }
 

@@ -18,6 +18,11 @@ async function linearMcpRun(ctx: ApplyContext): Promise<StepOutcome> {
   if (!read.ok && read.reason === "unparsable") {
     return { state: "failed", detail: `${path} is not valid JSON`, remedy: "Fix or remove that file, then Retry." };
   }
+  if (!read.ok && read.reason === "unreadable") {
+    return { state: "failed", detail: `${path} could not be read`, remedy: "Check that file's permissions, then Retry." };
+  }
+  // Only `absent` may reach the empty config: every other reason means a file
+  // is there, and the write below replaces whatever is at the path.
   const config = read.ok ? read.config : {};
   if (nameTaken(config)) return { state: "skipped", detail: "already configured" };
 

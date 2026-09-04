@@ -55,9 +55,25 @@ describe("readClaudeConfig", () => {
     const p = fakeProbes({ files: { "/h/.claude.json": "42" } });
     expect(readClaudeConfig(p, "/h/.claude.json")).toEqual({ ok: false, reason: "unparsable" });
   });
+  test("a file that exists but cannot be read is unreadable, never absent", () => {
+    const p = fakeProbes({ files: { "/h/.claude.json": JSON.stringify({ numStartups: 3 }) }, unreadable: ["/h/.claude.json"] });
+    expect(readClaudeConfig(p, "/h/.claude.json")).toEqual({ ok: false, reason: "unreadable" });
+  });
   test("parses", () => {
     const p = fakeProbes({ files: { "/h/.claude.json": JSON.stringify({ numStartups: 3 }) } });
     expect(readClaudeConfig(p, "/h/.claude.json")).toEqual({ ok: true, config: { numStartups: 3 } });
+  });
+  test("an mcpServers that is not a plain object is unparsable, never merged over", () => {
+    for (const servers of ["[]", '"x"', "7"]) {
+      const p = fakeProbes({ files: { "/h/.claude.json": `{"mcpServers": ${servers}}` } });
+      expect(readClaudeConfig(p, "/h/.claude.json")).toEqual({ ok: false, reason: "unparsable" });
+    }
+  });
+  test("a null or missing mcpServers still parses", () => {
+    const nulled = fakeProbes({ files: { "/h/.claude.json": '{"mcpServers": null}' } });
+    expect(readClaudeConfig(nulled, "/h/.claude.json").ok).toBe(true);
+    const empty = fakeProbes({ files: { "/h/.claude.json": "{}" } });
+    expect(readClaudeConfig(empty, "/h/.claude.json")).toEqual({ ok: true, config: {} });
   });
 });
 
@@ -115,9 +131,29 @@ describe("writeClaudeConfig", () => {
     expect(p.readFile("/h/.claude.json")).toBe('{\n  "a": 1\n}\n');
   });
 
-  test("the temp file is created 0600 so a rename cannot widen a token-bearing file", () => {
+  test("the config lands 0600, since the rename carries the temp file's mode", () => {
     const p = fakeProbes({});
     writeClaudeConfig(p, "/h/.claude.json", { a: 1 });
-    expect(p.calls.modes["/h/.claude.json.rt-tmp"]).toBe(0o600);
+    expect(p.calls.modes["/h/.claude.json"]).toBe(0o600);
+  });
+
+  test("a leftover world-readable temp file cannot carry its mode onto the token-bearing config", () => {
+    const p = fakeProbes({ files: { "/h/.claude.json.rt-tmp": "{}\n" } });
+    p.chmod("/h/.claude.json.rt-tmp", 0o644); // the mode an earlier failed rename left behind
+    writeClaudeConfig(p, "/h/.claude.json", { a: 1 });
+    expect(p.calls.modes["/h/.claude.json"]).toBe(0o600);
+  });
+
+  test("a rename that throws takes the token-bearing temp file with it", () => {
+    const p = fakeProbes({});
+    const throwing = {
+      ...p,
+      rename() {
+        throw new Error("EXDEV");
+      },
+    };
+    expect(() => writeClaudeConfig(throwing, "/h/.claude.json", { a: 1 })).toThrow("EXDEV");
+    expect(p.calls.removed).toContain("/h/.claude.json.rt-tmp");
+    expect(p.readFile("/h/.claude.json.rt-tmp")).toBeNull();
   });
 });

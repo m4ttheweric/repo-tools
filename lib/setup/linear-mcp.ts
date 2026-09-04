@@ -56,11 +56,22 @@ export function isLinearMcp(entry: unknown): boolean {
   return argv.includes("linear-mcp");
 }
 
-export type ConfigRead = { ok: true; config: ClaudeConfig } | { ok: false; reason: "absent" } | { ok: false; reason: "unparsable" };
+export type ConfigRead =
+  | { ok: true; config: ClaudeConfig }
+  | { ok: false; reason: "absent" }
+  | { ok: false; reason: "unreadable" }
+  | { ok: false; reason: "unparsable" };
 
-export function readClaudeConfig(p: Pick<Probes, "readFile">, path: string): ConfigRead {
+/**
+ * `absent` is the one reason a caller may answer by writing the path, so it
+ * must be proven, not assumed: the readFile probe collapses EVERY error into
+ * null (a root-owned file, mode 0000, an ELOOPing symlink chain, a transient
+ * EMFILE), which without the exists check is indistinguishable from no file
+ * at all, and the file being replaced is Claude Code's live session state.
+ */
+export function readClaudeConfig(p: Pick<Probes, "readFile" | "exists">, path: string): ConfigRead {
   const raw = p.readFile(path);
-  if (raw === null) return { ok: false, reason: "absent" };
+  if (raw === null) return { ok: false, reason: p.exists(path) ? "unreadable" : "absent" };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -70,6 +81,11 @@ export function readClaudeConfig(p: Pick<Probes, "readFile">, path: string): Con
   // JSON.parse accepts any value: a bare number or array is valid JSON and
   // an invalid config, and merging into one would destroy the file.
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { ok: false, reason: "unparsable" };
+  // The merge spreads mcpServers, so a present-but-not-plain-object value
+  // there would be dropped on write rather than merged into. Refuse the file
+  // instead; null and missing both mean "no servers" and merge correctly.
+  const servers = (parsed as ClaudeConfig).mcpServers;
+  if (servers !== undefined && servers !== null && (typeof servers !== "object" || Array.isArray(servers))) return { ok: false, reason: "unparsable" };
   return { ok: true, config: parsed as ClaudeConfig };
 }
 
@@ -103,11 +119,20 @@ export function withLinearEntry(config: ClaudeConfig, apiKey: string): ClaudeCon
  * The target is Claude Code's live state file (hundreds of KB of session
  * state), so the replace is atomic: a partial write over it would leave the
  * user with a corrupt config. 0600 on the temp file because the rename
- * carries the temp file's own mode onto a path holding an API token.
+ * carries the temp file's own mode onto a path holding an API token, and the
+ * explicit chmod because writeFile's mode only lands on a freshly created
+ * inode: a temp file left behind by an earlier failed rename is reused at
+ * whatever mode it already had.
  */
-export function writeClaudeConfig(p: Pick<Probes, "mkdirp" | "writeFile" | "rename">, path: string, config: ClaudeConfig): void {
+export function writeClaudeConfig(p: Pick<Probes, "mkdirp" | "writeFile" | "rename" | "chmod" | "removeFile">, path: string, config: ClaudeConfig): void {
   const tmp = `${path}.rt-tmp`;
   p.mkdirp(dirname(path));
   p.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", 0o600);
-  p.rename(tmp, path);
+  p.chmod(tmp, 0o600);
+  try {
+    p.rename(tmp, path);
+  } catch (err) {
+    p.removeFile(tmp); // a failed rename must not leave the token in a stray file
+    throw err;
+  }
 }

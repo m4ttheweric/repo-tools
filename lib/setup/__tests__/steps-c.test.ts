@@ -1058,6 +1058,17 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
       expect(p.readFile(`${home}/.claude.json`)).toBe("{ not json");
     });
 
+    test("a config that exists but cannot be read is failed, never replaced", async () => {
+      const path = `${home}/.claude.json`;
+      const p = fakeProbes({ home, env: {}, files: { [path]: JSON.stringify({ numStartups: 7 }) }, unreadable: [path] });
+      const { ctx } = makeCtx(p, { secretPresence: withKey });
+      const outcome = await linearMcpStep.run(ctx);
+      expect(outcome.state).toBe("failed");
+      expect(detailOf(outcome)).toContain("could not be read");
+      expect(p.calls.writes).toEqual({});
+      expect(p.calls.renames).toEqual([]);
+    });
+
     test("CLAUDE_CONFIG_DIR is honored", async () => {
       const p = fakeProbes({ home, env: { CLAUDE_CONFIG_DIR: `${home}/alt` } });
       const { ctx } = makeCtx(p, { secretPresence: withKey });
