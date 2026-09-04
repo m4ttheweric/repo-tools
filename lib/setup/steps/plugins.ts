@@ -18,6 +18,7 @@ import { stripJsonc } from "../../jsonc.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
+import { BASE_PLUGINS } from "../base-plugins.ts";
 import { materializeSkills } from "../skills-materialize.ts";
 import type { Probes } from "../probes.ts";
 import { updateSetupState } from "../state.ts";
@@ -25,7 +26,6 @@ import { claudeConfigDirs } from "../tools-install.ts";
 import { toFailedOutcome } from "./step-utils.ts";
 
 export const MATTSTACK_MARKETPLACE_SOURCE = "https://github.com/m4ttstack/mattstack-marketplace";
-const BASE_PLUGINS = ["mattstack@mattstack", "fast-browser@mattstack", "chat@mattstack"];
 const PLUGIN_EXEC_TIMEOUT_MS = 60_000;
 const RETRY_REMEDY = "Open Claude Code once so it finishes first-run, then Retry.";
 

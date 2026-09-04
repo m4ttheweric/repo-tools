@@ -1,0 +1,67 @@
+Installed plugins:
+
+  ❯ chat@mattstack
+    Version: 0.3.0
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ analytics@example-team
+    Version: 0.5.18
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ workflow@example-vendor
+    Version: 3.18.0
+    Scope: user
+    Status: ✘ disabled
+
+  ❯ fast-browser@mattstack
+    Version: 0.1.0-alpha.17
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ design@example-official
+    Version: 2.2.107
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ metrics@example-vendor
+    Version: 0.1.0
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ mattstack@mattstack
+    Version: 0.13.6
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ python-lsp@example-official
+    Version: 1.0.0
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ rust-lsp@example-official
+    Version: 1.0.0
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ messaging@example-official
+    Version: 1.2.0
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ toolkit@example-official
+    Version: 6.3.0
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ swift-lsp@example-official
+    Version: 1.0.0
+    Scope: user
+    Status: ✔ enabled
+
+  ❯ typescript-lsp@example-official
+    Version: 1.0.0
+    Scope: user
+    Status: ✔ enabled
+

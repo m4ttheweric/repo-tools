@@ -64,23 +64,25 @@ function actionHint(action: Action | null): string {
  *
  * - `tool.claude` / `tool.herdr` are not bundled; nothing in the headless
  *   install installs them, so their absence on a runner is the designed shape.
- * - `tool.fast-browser` IS bundled and resolves fine, but its `doctor` needs a
- *   real Chrome with the extension loaded and paired — impossible headless.
- *
- * Deliberately NOT a blanket `tool.*` exemption. A `missing` fast-browser means
- * the BUNDLE is broken, which is precisely the class of defect this pipeline
- * exists to catch, so presence failures stay critical and only the
- * needs-a-GUI-to-be-healthy states are forgiven.
+ * - `tool.plugins` reaching this check at all means claude IS present
+ *   (its own 127 already short-circuits to "skipped" above, which never
+ *   fails); a runner can carry a bare claude with none of the baseline
+ *   plugins installed, and that is still the designed shape, not a break.
  */
-const CI_UNSATISFIABLE_TOOLS = new Set(["tool.claude", "tool.herdr"]);
+const CI_UNSATISFIABLE_TOOLS = new Set(["tool.claude", "tool.herdr", "tool.plugins"]);
 
 function ciNeverCritical(r: Row, ci: boolean): boolean {
   if (!ci) return false;
   if (r.id.startsWith("perm.") || r.id.startsWith("account.") || r.id.startsWith("access.")) return true;
   if (CI_UNSATISFIABLE_TOOLS.has(r.id)) return true;
-  // Bundled, so `missing` still fails — that would mean the bundle is broken.
-  if (r.id === "tool.fast-browser" && r.status !== "missing") return true;
   return r.id === "tool.daemon" && r.status === "needs-you";
+}
+
+/** A state a person chose on purpose. verify names it and nags; a deliberate choice is not a broken install. */
+const DELIBERATE_STATES: ReadonlySet<string> = new Set(["tool.plugins:needs-you"]);
+
+function deliberateChoice(r: Row): boolean {
+  return DELIBERATE_STATES.has(`${r.id}:${r.status}`);
 }
 
 function rowToCheck(r: Row, opts: { ci: boolean }): CheckResult {
@@ -90,7 +92,7 @@ function rowToCheck(r: Row, opts: { ci: boolean }): CheckResult {
   if (r.status === "skipped" || r.status === "checking") return { name: r.id, status: "skip", detail, severity: "info" };
 
   // missing | invalid | error | needs-you
-  if (r.required && !ciNeverCritical(r, opts.ci)) return { name: r.id, status: "fail", detail, severity: "critical" };
+  if (r.required && !ciNeverCritical(r, opts.ci) && !deliberateChoice(r)) return { name: r.id, status: "fail", detail, severity: "critical" };
   return { name: r.id, status: "warn", detail, severity: "warning" };
 }
 
