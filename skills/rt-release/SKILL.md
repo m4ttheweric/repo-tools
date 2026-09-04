@@ -96,7 +96,7 @@ left as-is or reduced to a pointer here.
    gh run download <run-id> -n release-dry-run -D /tmp/release-dry-run
    bash rt-tray/vm/run/walkthrough.sh --ver 26 \
      --dmg /tmp/release-dry-run/mattstack-v0.0.0-ci<run>.dmg \
-     --scenario create --no-graphics
+     --scenario create --fresh-team-repo --no-graphics
    ```
    It needs the `mattstack-golden-26` image and takes about 25 minutes. The gate
    is the report's `screens` and `assert` phases both `pass` — a `skip` is not

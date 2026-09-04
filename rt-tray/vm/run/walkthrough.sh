@@ -98,21 +98,30 @@ if [ -n "$UPD" ]; then
 fi
 [ "$SCENARIO" = join ] && [ ! -f "${CODE_FILE:-/nonexistent}" ] && { vm_phase_end preflight fail "join needs --invite-code-file"; exit 1; }
 if [ "$FRESH_REPO" = 1 ] && [ "$DRY" = 0 ]; then
-  FRESH_NAME="mattstack-vmtest-team-$(date +%H%M%S)"
+  [ -n "${!PAT_ENV:-}" ] || { vm_phase_end preflight fail "--fresh-team-repo needs \$$PAT_ENV set — an empty token can fall back to the operator's own stored forge credentials"; exit 1; }
+  FRESH_NAME="mattstack-vmtest-team-$(date +%Y%m%d-%H%M%S)-$$"
   case "$FORGE" in
     gitlab)
       vm_require_cmd glab "brew install glab"
       FRESH_GROUP="${MATTSTACK_VMTEST_GITLAB_GROUP:-}"
       [ -n "$FRESH_GROUP" ] || { vm_phase_end preflight fail "--fresh-team-repo with --forge gitlab needs MATTSTACK_VMTEST_GITLAB_GROUP"; exit 1; }
-      GITLAB_TOKEN="${!PAT_ENV:-}" glab repo create "$FRESH_NAME" --group "$FRESH_GROUP" --private >/dev/null 2>&1 \
+      GITLAB_TOKEN="${!PAT_ENV}" glab repo create "$FRESH_NAME" --group "$FRESH_GROUP" --private >/dev/null 2>&1 \
         || { vm_phase_end preflight fail "glab repo create $FRESH_GROUP/$FRESH_NAME failed"; exit 1; }
       TEAM_REMOTE="https://gitlab.com/$FRESH_GROUP/$FRESH_NAME.git";;
-    *)
+    ""|github)
       vm_require_cmd gh "brew install gh"
       FRESH_ORG="${MATTSTACK_VMTEST_ORG:-mattstack-vmtest}"
-      GH_TOKEN="${!PAT_ENV:-}" gh repo create "$FRESH_ORG/$FRESH_NAME" --private >/dev/null 2>&1 \
+      # Same throwaway-org guard as team-setup.sh reset: a repo is only minted in
+      # an org that is visibly a vmtest org, or one the operator confirmed by name.
+      case "$FRESH_ORG" in
+        *vmtest*) ;;
+        *) [ "${MATTSTACK_VMTEST_ORG_CONFIRM:-}" = "$FRESH_ORG" ] || { vm_phase_end preflight fail "org $FRESH_ORG lacks 'vmtest'; set MATTSTACK_VMTEST_ORG_CONFIRM=$FRESH_ORG to confirm"; exit 1; };;
+      esac
+      GH_TOKEN="${!PAT_ENV}" gh repo create "$FRESH_ORG/$FRESH_NAME" --private >/dev/null 2>&1 \
         || { vm_phase_end preflight fail "gh repo create $FRESH_ORG/$FRESH_NAME failed"; exit 1; }
       TEAM_REMOTE="https://github.com/$FRESH_ORG/$FRESH_NAME.git";;
+    *)
+      vm_phase_end preflight fail "--fresh-team-repo: unknown --forge '$FORGE' (github|gitlab)"; exit 1;;
   esac
   # Recorded for later archival sweeps; team-setup.sh reset retires by rename,
   # never deletes, and the same convention applies to these.
