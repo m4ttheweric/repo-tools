@@ -90,6 +90,18 @@ left as-is or reduced to a pointer here.
    the only thing that finds them cheaply — a tag that fails halfway has already
    re-signed the app and cost the user their TCC grants.
 
+   Then walk the rehearsal's own artifact through the local clean room. GitHub
+   runners cannot nest virtualization, so this leg runs only on this machine:
+   ```
+   gh run download <run-id> -n release-dry-run -D /tmp/release-dry-run
+   bash rt-tray/vm/run/walkthrough.sh --ver 26 \
+     --dmg /tmp/release-dry-run/mattstack-v0.0.0-ci<run>.dmg \
+     --scenario create --fresh-team-repo --no-graphics
+   ```
+   It needs the `mattstack-golden-26` image and takes about 25 minutes. The gate
+   is the report's `screens` and `assert` phases both `pass` — a `skip` is not
+   green. Tag only when the dispatch run and this walkthrough are both green.
+
 9. **Tag and push.**
    ```
    git tag -a <tag> -m "<tag>"
