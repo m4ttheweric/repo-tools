@@ -50,7 +50,10 @@ struct DoneScreen: View {
         .padding(24)
         .task {
             await readiness.recheckAll()
-            hasCheckedSincePostInstall = true
+            // A failed refresh leaves `readiness` holding the stale pre-Install
+            // plan; the gate must stay closed rather than presenting that as
+            // freshly confirmed.
+            if !readiness.lastRefreshFailed { hasCheckedSincePostInstall = true }
         }
         .sheet(isPresented: Binding(get: { steps != nil }, set: { presented in
             guard !presented else { return }

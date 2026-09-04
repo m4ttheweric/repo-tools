@@ -427,6 +427,49 @@ describe("toolRows - tool.fast-browser-extension", () => {
   });
 });
 
+describe("toolRows — well-formed-JSON-but-wrong-shape doctor payloads: no throw, honest could-not-read path", () => {
+  function fastBrowserSeams(): ToolsSeams {
+    return { ...NOOP_SEAMS, resolveTool: (_p, tool) => (tool === "fast-browser" ? { tool, bundled: "node", exec: ["node", "fast-browser.mjs"], userCopy: null, linked: false, chosen: "node" } : noopResolution(tool)) };
+  }
+  function doctorExec(report: unknown): ExecScript {
+    return (argv) => (argv[2] === "doctor" && argv[3] === "--json" ? ok(JSON.stringify(report)) : ok());
+  }
+  function withChrome(exec: ExecScript) {
+    const p = fakeProbes({ exec });
+    p.mkdirp("/Applications/Google Chrome.app");
+    return p;
+  }
+
+  async function assertCouldNotBeRead(report: unknown) {
+    const rows = await toolRows(withChrome(doctorExec(report)), [], { hasBrew: true }, fastBrowserSeams());
+    const main = rows.find((r) => r.id === "tool.fast-browser")!;
+    expect(main.status).toBe("error");
+    const extension = rows.find((r) => r.id === "tool.fast-browser-extension")!;
+    expect(extension.status).toBe("skipped");
+    expect(extension.detail).toBe("fast-browser doctor could not be read (see Fast Browser)");
+  }
+
+  // `checks` present but not an array at all: {}.find is not a function is
+  // the exact throw this shape used to cause.
+  test("checks is an object, not an array -> could-not-read on both rows, never a thrown TypeError", async () => {
+    await assertCouldNotBeRead({ checks: {} });
+  });
+
+  test("checks is an array whose element is null -> could-not-read on both rows", async () => {
+    await assertCouldNotBeRead({ checks: [null] });
+  });
+
+  test("checks is an array whose element has no string id -> could-not-read on both rows", async () => {
+    await assertCouldNotBeRead({ checks: [{ status: "pass" }] });
+  });
+
+  test("valid fixture is unaffected by the shape hardening (regression guard)", async () => {
+    const rows = await toolRows(withChrome(doctorExec(REAL_DOCTOR)), [], { hasBrew: true }, fastBrowserSeams());
+    expect(rows.find((r) => r.id === "tool.fast-browser")?.status).toBe("ready");
+    expect(rows.find((r) => r.id === "tool.fast-browser-extension")?.status).toBe("ready");
+  });
+});
+
 describe("toolRows - tool.plugins", () => {
   function listExec(result: ExecResult): ExecScript {
     return (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? result : ok());
@@ -505,6 +548,43 @@ describe("toolRows - tool.plugins", () => {
     const reqs: PackRequirements[] = [{ pack: "acme", tools: [], integrations: [] }];
     await toolRows(p, reqs, { hasBrew: true }, NOOP_SEAMS);
     expect(p.calls.exec.filter((argv) => argv[1] === "plugin" && argv[2] === "list").length).toBe(1);
+  });
+});
+
+describe("toolRows — well-formed-JSON-but-wrong-shape plugin list payloads: no throw, honest error path", () => {
+  function listExec(result: ExecResult): ExecScript {
+    return (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? result : ok());
+  }
+
+  async function assertErrorPath(stdout: string) {
+    const reqs: PackRequirements[] = [{ pack: "acme", integrations: [], tools: [] }];
+    const rows = await toolRows(fakeProbes({ exec: listExec(ok(stdout)) }), reqs, { hasBrew: true }, NOOP_SEAMS);
+    const plugins = rows.find((r) => r.id === "tool.plugins")!;
+    expect(plugins.status).toBe("error");
+    expect(plugins.detail).toBe("claude plugin list --json output could not be read");
+    const pack = rows.find((r) => r.id === "pack.acme")!;
+    expect(pack.status).toBe("error");
+    expect(pack.detail).toBe("claude plugin list --json output could not be read");
+  }
+
+  // `entries.map((e) => [e.id, e])` and `.some((e) => ... e.id ...)` both read
+  // `id` off whatever `[null]` hands them — this is the exact throw source.
+  test("[null] -> error path on tool.plugins and every pack row, never a thrown TypeError", async () => {
+    await assertErrorPath(JSON.stringify([null]));
+  });
+
+  test("an element with no string id -> error path", async () => {
+    await assertErrorPath(JSON.stringify([{ enabled: true }]));
+  });
+
+  test("top level is an object, not an array -> error path", async () => {
+    await assertErrorPath(JSON.stringify({ plugins: [] }));
+  });
+
+  test("valid fixture is unaffected by the shape hardening (regression guard)", async () => {
+    const reqs: PackRequirements[] = [{ pack: "acme", integrations: [], tools: [] }];
+    const rows = await toolRows(fakeProbes({ exec: listExec(ok(REAL_PLUGIN_LIST_JSON)) }), reqs, { hasBrew: true }, NOOP_SEAMS);
+    expect(rows.find((r) => r.id === "tool.plugins")?.status).toBe("ready");
   });
 });
 
