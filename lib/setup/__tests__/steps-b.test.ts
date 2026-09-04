@@ -788,15 +788,23 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
   // ─── cron.triage ────────────────────────────────────────────────────────
 
   describe("cron.triage", () => {
-    test("board.triage unset -> skipped, never installs a trigger", async () => {
-      const p = fakeProbes({ home });
+    test("board.reReview explicitly disabled -> skipped, never installs a trigger", async () => {
+      setSetting("board.reReview", { enabled: false }, "user");
+      const p = bundledProbes({ tools: ["board"] });
       const { ctx } = makeCtx(p);
-      expect(await cronTriageStep.run(ctx)).toEqual({ state: "skipped", detail: "board.triage not enabled" });
+      expect(await cronTriageStep.run(ctx)).toEqual({ state: "skipped", detail: "board.reReview disabled" });
       expect(getSetting("rt.cron").value).toBeUndefined();
     });
 
+    test("board.reReview unset -> registry default enables the trigger (default-on)", async () => {
+      const p = bundledProbes({ tools: ["board"] });
+      const { ctx } = makeCtx(p);
+      const outcome = await cronTriageStep.run(ctx);
+      expect(outcome).toEqual({ state: "done", detail: "installed board-triage" });
+    });
+
     test("enabled, board only bundled (no checkout) -> installs the trigger against the bundled binary's triage subcommand", async () => {
-      setSetting("board.triage", { enabled: true }, "user");
+      setSetting("board.reReview", { enabled: true }, "user");
       const p = bundledProbes({ tools: ["board"] });
       const { ctx } = makeCtx(p);
 
@@ -808,7 +816,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
     });
 
     test("enabled, board not resolvable at all -> skipped, board-missing wording", async () => {
-      setSetting("board.triage", { enabled: true }, "user");
+      setSetting("board.reReview", { enabled: true }, "user");
       const p = fakeProbes({ home });
       const { ctx } = makeCtx(p);
 
@@ -817,7 +825,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
     });
 
     test("enabled, a registered board checkout carrying bin/triage.ts -> done, installs the trigger", async () => {
-      setSetting("board.triage", { enabled: true }, "user");
+      setSetting("board.reReview", { enabled: true }, "user");
       const boardCheckout = mkdtempSync(join(home, "board-"));
       mkdirSync(join(boardCheckout, "bin"), { recursive: true });
       writeFileSync(join(boardCheckout, "bin", "triage.ts"), "// triage");
@@ -836,7 +844,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
     });
 
     test("idempotent re-run: installing the same trigger twice still leaves exactly one", async () => {
-      setSetting("board.triage", { enabled: true }, "user");
+      setSetting("board.reReview", { enabled: true }, "user");
       const boardCheckout = mkdtempSync(join(home, "board-"));
       mkdirSync(join(boardCheckout, "bin"), { recursive: true });
       writeFileSync(join(boardCheckout, "bin", "triage.ts"), "// triage");

@@ -197,11 +197,11 @@ export const boardKeysStep: StepDef = {
 // ─── cron.triage ─────────────────────────────────────────────────────────────
 
 async function cronTriageRun(ctx: ApplyContext): Promise<StepOutcome> {
-  const def = getDef("board.triage");
-  if (!def) return { state: "skipped", detail: "board.triage not registered" };
+  const def = getDef("board.reReview");
+  if (!def) return { state: "skipped", detail: "board.reReview not registered" };
 
-  const enabled = getSetting<{ enabled?: boolean }>("board.triage").value?.enabled === true;
-  if (!enabled) return { state: "skipped", detail: "board.triage not enabled" };
+  const enabled = getSetting<{ enabled?: boolean }>("board.reReview").value?.enabled === true;
+  if (!enabled) return { state: "skipped", detail: "board.reReview disabled" };
 
   const board = resolveTool(ctx.p, "board").exec;
   const resolution = resolveBoardTriage(ctx.p, getKnownRepos(), board);

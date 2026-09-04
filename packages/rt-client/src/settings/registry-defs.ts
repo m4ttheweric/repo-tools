@@ -473,6 +473,14 @@ export const REGISTRY: readonly SettingDef[] = [
     merge: "deep",
     description: "This developer's triage user-intent flags (which triage sweeps run automatically); a sibling flat key of board.triage.doctorSkill, not its container — the board reader assembles the two independently.",
   },
+  {
+    key: "board.reReview",
+    type: "object",
+    scopes: ["user", "team"],
+    merge: "deep",
+    default: { enabled: true },
+    description: "Gate for the board's automatic re-review sweep ({enabled}); rt's cron.triage step installs the board-triage trigger only while this is on. A fresh key, not an ownership-latch port, so a default is fine here.",
+  },
 
   // --- board (machine) ---------------------------------------------------
   {
