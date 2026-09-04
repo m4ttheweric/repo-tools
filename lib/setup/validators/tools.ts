@@ -445,6 +445,7 @@ function parsePluginList(stdout: string): PluginListEntry[] | null {
 }
 
 const INSTALL_PLUGINS_ACTION: Action = { type: "run", label: "Install plugins", verb: ["setup", "pack"] };
+const ENABLE_PLUGINS_ACTION: Action = { type: "run", label: "Enable plugins", verb: ["setup", "pack"] };
 
 /** Shared with plan.ts's install-satisfied flip so the two never drift apart into two different wordings for the same fact. */
 export const INSTALLED_BY_INSTALL_NOTE = "Installed by Install (plugins.install).";
@@ -497,10 +498,11 @@ function pluginsRow(pluginList: ExecResult): Row {
   const absent = BASE_PLUGINS.filter((id) => !byId.has(id));
   if (absent.length > 0) return row({ ...base, status: "missing", detail: `not installed: ${absent.join(", ")}`, action: INSTALL_PLUGINS_ACTION });
 
-  // `plugins.install` only enables a plugin best-effort: an installed but
-  // disabled baseline plugin is inert and must not read the same as ready.
+  // `plugins.install` only enables a plugin best-effort, and disabling one is
+  // a deliberate user choice rather than a broken install: needs-you (not
+  // invalid) so verify names it and nags without going critical.
   const disabled = BASE_PLUGINS.filter((id) => byId.get(id)!.enabled !== true);
-  if (disabled.length > 0) return row({ ...base, status: "invalid", detail: `disabled: ${disabled.join(", ")}`, action: INSTALL_PLUGINS_ACTION });
+  if (disabled.length > 0) return row({ ...base, status: "needs-you", detail: `disabled: ${disabled.join(", ")}`, action: ENABLE_PLUGINS_ACTION });
 
   return row({ ...base, status: "ready", detail: `${BASE_PLUGINS.length} plugins installed` });
 }

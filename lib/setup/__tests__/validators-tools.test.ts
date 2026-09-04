@@ -465,14 +465,16 @@ describe("toolRows - tool.plugins", () => {
     expect(r.detail).toContain("chat@mattstack");
   });
 
-  // `plugins.install` only enables a plugin best-effort: an installed but
-  // disabled baseline plugin is inert and must not read the same as ready.
-  test("every baseline plugin present but one is disabled -> invalid, naming it", async () => {
+  // `plugins.install` only enables a plugin best-effort, and disabling a
+  // plugin is a deliberate user choice: an installed but disabled baseline
+  // plugin is inert, so verify names it and nags, but it must never read as
+  // a broken install (that would make it critical in status mode).
+  test("every baseline plugin present but one is disabled -> needs-you, naming it, with an enable action", async () => {
     const list = pluginListJsonWithDisabled("fast-browser@mattstack");
     const r = await pickRow(toolRows(fakeProbes({ exec: listExec(ok(list)) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
-    expect(r.status).toBe("invalid");
+    expect(r.status).toBe("needs-you");
     expect(r.detail).toContain("fast-browser@mattstack");
-    expect(r.action).toEqual({ type: "run", label: "Install plugins", verb: ["setup", "pack"] });
+    expect(r.action).toEqual({ type: "run", label: "Enable plugins", verb: ["setup", "pack"] });
   });
 
   test("claude not installed -> skipped", async () => {

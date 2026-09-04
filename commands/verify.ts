@@ -78,6 +78,13 @@ function ciNeverCritical(r: Row, ci: boolean): boolean {
   return r.id === "tool.daemon" && r.status === "needs-you";
 }
 
+/** A state a person chose on purpose. verify names it and nags; a deliberate choice is not a broken install. */
+const DELIBERATE_STATES: ReadonlySet<string> = new Set(["tool.plugins:needs-you"]);
+
+function deliberateChoice(r: Row): boolean {
+  return DELIBERATE_STATES.has(`${r.id}:${r.status}`);
+}
+
 function rowToCheck(r: Row, opts: { ci: boolean }): CheckResult {
   const detail = `${r.detail}${actionHint(r.action)}`;
 
@@ -85,7 +92,7 @@ function rowToCheck(r: Row, opts: { ci: boolean }): CheckResult {
   if (r.status === "skipped" || r.status === "checking") return { name: r.id, status: "skip", detail, severity: "info" };
 
   // missing | invalid | error | needs-you
-  if (r.required && !ciNeverCritical(r, opts.ci)) return { name: r.id, status: "fail", detail, severity: "critical" };
+  if (r.required && !ciNeverCritical(r, opts.ci) && !deliberateChoice(r)) return { name: r.id, status: "fail", detail, severity: "critical" };
   return { name: r.id, status: "warn", detail, severity: "warning" };
 }
 

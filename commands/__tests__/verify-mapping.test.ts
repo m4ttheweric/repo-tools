@@ -100,6 +100,29 @@ describe("rowsToChecks", () => {
     expect(oneCheck([baseRow({ id: "tool.plugins", status: "missing", required: true })], { ci: true }).status).toBe("warn");
   });
 
+  // Disabling a plugin is a deliberate user choice, not a broken install:
+  // verify names it and nags, but it must never go red, in either mode.
+  test("tool.plugins needs-you (disabled baseline plugin) -> warn, never critical, ci false", () => {
+    const check = oneCheck([baseRow({ id: "tool.plugins", status: "needs-you", required: true, detail: "disabled: fast-browser@mattstack" })], { ci: false });
+    expect(check.status).toBe("warn");
+    expect(check.severity).toBe("warning");
+  });
+
+  test("tool.plugins needs-you (disabled baseline plugin) -> warn, never critical, ci true", () => {
+    const check = oneCheck([baseRow({ id: "tool.plugins", status: "needs-you", required: true, detail: "disabled: fast-browser@mattstack" })], { ci: true });
+    expect(check.status).toBe("warn");
+    expect(check.severity).toBe("warning");
+  });
+
+  // A genuinely missing baseline plugin is a different fact than a disabled
+  // one, and stays critical in status mode so the two cases cannot drift
+  // together.
+  test("tool.plugins MISSING (not needs-you) stays critical in status mode", () => {
+    const check = oneCheck([baseRow({ id: "tool.plugins", status: "missing", required: true, detail: "not installed: fast-browser@mattstack" })], { ci: false });
+    expect(check.status).toBe("fail");
+    expect(check.severity).toBe("critical");
+  });
+
   test("these exemptions are ci-only, all still fail interactively", () => {
     for (const id of ["tool.claude", "tool.herdr", "tool.fast-browser", "tool.plugins"]) {
       expect(oneCheck([baseRow({ id, status: "missing", required: true })], { ci: false }).status).toBe("fail");
