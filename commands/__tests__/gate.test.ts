@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, spyOn } from "bun:test";
 import {
   buildOpenPayload,
   buildAnswerPayload,
@@ -81,6 +81,19 @@ describe("buildListPayload", () => {
 
   test("limit and cursor are numeric (F7)", () => {
     expect(buildListPayload(["--limit", "50", "--cursor", "12"])).toEqual({ limit: 50, cursor: 12 });
+  });
+
+  test("a non-numeric --limit fails fast instead of silently becoming NaN (daemon-omitted)", () => {
+    const exitSpy = spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`exit:${code}`);
+    }) as never);
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(() => buildListPayload(["--limit", "abc"])).toThrow("exit:1");
+    } finally {
+      exitSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 });
 

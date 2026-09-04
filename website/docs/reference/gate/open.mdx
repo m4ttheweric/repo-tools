@@ -24,7 +24,7 @@ rt gate open [flags]
 | `--questions` | text |  | JSON array of questions |
 | `--meta` | text |  | Optional JSON metadata |
 | [`--agent`](/guides/common-flags) | text |  | Optional opening agent id |
-| `--pane` | text |  | Optional herdr pane id to deliver into |
+| `--pane` | text |  | Optional herdr pane id, kept as a focus/resume reference (delivery binds to --nudge) |
 | `--nudge` | text |  | Optional JSON nudge target |
 
 _See code: [commands/gate.ts › gateOpen](https://github.com/m4ttstack/rt/blob/main/commands/gate.ts)_

@@ -214,10 +214,18 @@ export function buildListPayload(args: string[]): Commands["gate:list"]["payload
   if (subjectPrefix !== undefined) payload.subjectPrefix = subjectPrefix;
   const kind = flagValue(args, "--kind");
   if (kind !== undefined) payload.kind = kind;
-  const limit = flagValue(args, "--limit");
-  if (limit !== undefined) payload.limit = Number(limit);
-  const cursor = flagValue(args, "--cursor");
-  if (cursor !== undefined) payload.cursor = Number(cursor);
+  const limitRaw = flagValue(args, "--limit");
+  if (limitRaw !== undefined) {
+    const limit = Number(limitRaw);
+    if (!Number.isFinite(limit)) fail("--limit must be a number");
+    payload.limit = limit;
+  }
+  const cursorRaw = flagValue(args, "--cursor");
+  if (cursorRaw !== undefined) {
+    const cursor = Number(cursorRaw);
+    if (!Number.isFinite(cursor)) fail("--cursor must be a number");
+    payload.cursor = cursor;
+  }
   return payload;
 }
 

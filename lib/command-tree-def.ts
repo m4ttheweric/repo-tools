@@ -64,7 +64,7 @@ const gateSubcommands: Record<string, CommandNode> = {
       { name: "Questions", flag: "--questions", type: "text", placeholder: "[{\"id\":\"q1\",\"label\":\"...\",\"multi\":false,\"options\":[\"yes\",\"no\"]}]", hint: "JSON array of questions" },
       { name: "Meta", flag: "--meta", type: "text", placeholder: "{\"label\":\"...\"}", hint: "Optional JSON metadata" },
       { name: "Agent", flag: "--agent", type: "text", placeholder: "ag-1a2b3c4d", hint: "Optional opening agent id" },
-      { name: "Pane", flag: "--pane", type: "text", placeholder: "!7", hint: "Optional herdr pane id to deliver into" },
+      { name: "Pane", flag: "--pane", type: "text", placeholder: "w7A:pY", hint: "Optional herdr pane id, kept as a focus/resume reference (delivery binds to --nudge)" },
       { name: "Nudge", flag: "--nudge", type: "text", placeholder: "{\"session\":\"...\"}", hint: "Optional JSON nudge target" },
     ],
   },
