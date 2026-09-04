@@ -135,6 +135,13 @@ Shape written, matching the entries that work today verbatim:
 } } }
 ```
 
+A config that exists but cannot be read is its own outcome, never "absent". The
+`Probes` seam collapses every read error into `null`, so absence has to be proven with
+`exists` before anything overwrites the path: a root-owned, unreadable or
+transiently-failing config that read as absent would be replaced by a five-line file,
+destroying the user's whole Claude Code state. A present-but-unreadable file is a
+failed step and an `error` row, never a write.
+
 Merge rules: parse the whole file, add exactly one key under `mcpServers`
 (creating that object only if absent), re-serialize with 2-space indent, and
 write. Every other key in the file survives byte-for-byte in value, including
@@ -188,12 +195,19 @@ read and update Linear tickets reach them through this MCP server."
 
 | Condition | Status | Detail |
 |---|---|---|
-| Config file present but unparsable | `error` | names the file |
+| Config file present but unparsable, or present but unreadable | `error` | names the file |
 | `linear` present and Linear-shaped | `ready` | "linear" |
 | `linear` present, not Linear-shaped | `needs-you` | "a server named linear is not a Linear MCP" |
-| No `linear`, another Linear MCP present | `missing` | "Linear MCP present as X; skills call mcp__linear__*" |
+| No `linear`, another Linear MCP present, key stored | `missing` | "Linear MCP present as X; skills call mcp__linear__*" |
+| No `linear`, another Linear MCP present, no key | `needs-you` | same, plus "connect Linear so Install can add linear", action: connect linear |
 | No `linear`, none present, no key stored | `needs-you` | "no Linear account connected", action: connect linear |
 | No `linear`, none present, key stored | `missing` | "installed by Install (linear.mcp)" |
+
+Every branch carries `optionalNote: "Installed by Install (linear.mcp)."`, so a state
+Install cannot actually resolve must not report `missing`: without a stored key there
+is nothing for Install to write, and the row owes the user the connect action instead
+of a promise. That is why the key is read before the other-server branch resolves,
+and still only after `ready` has had its chance to short-circuit.
 
 **The row is `required: false` in every state**, carrying
 `optionalNote: "Installed by Install (linear.mcp)."`. It is therefore not
