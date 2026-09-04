@@ -154,7 +154,7 @@ export async function composePlan(i: PlanInputs): Promise<Plan> {
     buildGroup("access", () => accessRows(i.p, snapshot, intent, userOverrides, i.secrets)),
     buildGroup("tools", async () => {
       const [hasBrew, healthRows] = await Promise.all([detectHasBrew(i.p), rtHealthRows(i.p, { ci: i.ci })]);
-      const tools = await toolRows(i.p, reqs, { hasBrew });
+      const tools = await toolRows(i.p, reqs, { hasBrew, secrets: i.secrets });
       return [...tools, ...healthRows];
     }),
   ]);
