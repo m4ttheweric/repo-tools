@@ -7,7 +7,7 @@ usage() { sed -n '2p' "$0"; cat <<'EOF'
 usage: walkthrough.sh --ver <14|15|26> (--dmg <path> | --app <mattstack.app>)
          [--scenario create|join|headless] [--team-slug vmtest] [--pat-env MATTSTACK_VMTEST_PAT]
          [--invite-code-file <p>] [--team-remote <url>] [--forge github|gitlab] [--update-dir <dir>] [--update-version <v>]
-         [--no-quarantine] [--no-graphics] [--keep] [--dry-run] [--verify-golden]
+         [--fresh-team-repo] [--no-quarantine] [--no-graphics] [--keep] [--dry-run] [--verify-golden]
 EOF
 exit 2; }
 
@@ -15,16 +15,20 @@ VER=""; DMG=""; APP=""; SCENARIO=create; SLUG=vmtest; PAT_ENV=MATTSTACK_VMTEST_P
 # The create card's pasted-URL path (a fresh guest has no gh identity yet): the throwaway
 # org's team repo, same naming as run/team-setup.sh.
 TEAM_REMOTE="${TEAM_REMOTE:-https://github.com/${MATTSTACK_VMTEST_ORG:-mattstack-vmtest}/${MATTSTACK_VMTEST_TEAM_REPO:-mattstack-vmtest-team}.git}"
-UPD=""; UPDV=""; QUAR=1; GRAPHICS=1; KEEP=0; DRY=0; VERIFY_GOLDEN=0
+UPD=""; UPDV=""; QUAR=1; GRAPHICS=1; KEEP=0; DRY=0; VERIFY_GOLDEN=0; FRESH_REPO=0
 while [ $# -gt 0 ]; do case "$1" in
   --ver) VER="$2"; shift 2;; --dmg) DMG="$2"; shift 2;; --app) APP="$2"; shift 2;;
   --scenario) SCENARIO="$2"; shift 2;; --team-slug) SLUG="$2"; shift 2;; --pat-env) PAT_ENV="$2"; shift 2;;
   --invite-code-file) CODE_FILE="$2"; shift 2;; --team-remote) TEAM_REMOTE="$2"; shift 2;; --forge) FORGE="$2"; shift 2;;
   --update-dir) UPD="$2"; shift 2;; --update-version) UPDV="$2"; shift 2;;
+  --fresh-team-repo) FRESH_REPO=1; shift;;
   --no-quarantine) QUAR=0; shift;; --no-graphics) GRAPHICS=0; shift;; --keep) KEEP=1; shift;; --dry-run) DRY=1; shift;;
   --verify-golden) VERIFY_GOLDEN=1; shift;; -h|--help) usage;; *) vm_warn "unknown arg $1"; usage;; esac; done
 [ -n "$VER" ] || usage
 [ -n "$DMG" ] || [ -n "$APP" ] || usage
+# `rt team create` refuses a remote with commits, so only the create scenario
+# can consume a freshly minted repo; a joiner's remote already has the team.
+[ "$FRESH_REPO" = 1 ] && [ "$SCENARIO" != create ] && { vm_warn "--fresh-team-repo only applies to --scenario create"; usage; }
 
 GOLDEN=$(vm_golden_name "$VER")
 vm_run_init "walk-$VER-$SCENARIO"
@@ -93,6 +97,28 @@ if [ -n "$UPD" ]; then
   fi
 fi
 [ "$SCENARIO" = join ] && [ ! -f "${CODE_FILE:-/nonexistent}" ] && { vm_phase_end preflight fail "join needs --invite-code-file"; exit 1; }
+if [ "$FRESH_REPO" = 1 ] && [ "$DRY" = 0 ]; then
+  FRESH_NAME="mattstack-vmtest-team-$(date +%H%M%S)"
+  case "$FORGE" in
+    gitlab)
+      vm_require_cmd glab "brew install glab"
+      FRESH_GROUP="${MATTSTACK_VMTEST_GITLAB_GROUP:-}"
+      [ -n "$FRESH_GROUP" ] || { vm_phase_end preflight fail "--fresh-team-repo with --forge gitlab needs MATTSTACK_VMTEST_GITLAB_GROUP"; exit 1; }
+      GITLAB_TOKEN="${!PAT_ENV:-}" glab repo create "$FRESH_NAME" --group "$FRESH_GROUP" --private >/dev/null 2>&1 \
+        || { vm_phase_end preflight fail "glab repo create $FRESH_GROUP/$FRESH_NAME failed"; exit 1; }
+      TEAM_REMOTE="https://gitlab.com/$FRESH_GROUP/$FRESH_NAME.git";;
+    *)
+      vm_require_cmd gh "brew install gh"
+      FRESH_ORG="${MATTSTACK_VMTEST_ORG:-mattstack-vmtest}"
+      GH_TOKEN="${!PAT_ENV:-}" gh repo create "$FRESH_ORG/$FRESH_NAME" --private >/dev/null 2>&1 \
+        || { vm_phase_end preflight fail "gh repo create $FRESH_ORG/$FRESH_NAME failed"; exit 1; }
+      TEAM_REMOTE="https://github.com/$FRESH_ORG/$FRESH_NAME.git";;
+  esac
+  # Recorded for later archival sweeps; team-setup.sh reset retires by rename,
+  # never deletes, and the same convention applies to these.
+  echo "$TEAM_REMOTE" > "$VM_RUN_DIR/in/team-repo.txt"
+  vm_log "fresh team repo: $TEAM_REMOTE"
+fi
 if [ "$SCENARIO" != headless ] && [ -z "${!PAT_ENV:-}" ]; then vm_warn "\$$PAT_ENV empty — the forge account row cannot be connected; the screens phase will fail there if the app shows it"; fi
 cp -R "$VM_ROOT/run/guest" "$VM_RUN_DIR/in/guest"; cp "$VM_ROOT/../../scripts/e2e-cleanroom.sh" "$VM_RUN_DIR/in/guest/" 2>/dev/null || true
 # The headless recipe's check-bundle step parses deps.lock with bun; CI gets

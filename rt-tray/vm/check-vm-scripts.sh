@@ -14,6 +14,10 @@ t "build-golden --xcode --dry-run selects the xcode image" bash -c \
   'out=$(bash golden/build-golden.sh 26 --xcode --dry-run 2>&1) && printf "%s" "$out" | grep -q "clone ghcr.io/cirruslabs/macos-tahoe-xcode:latest mattstack-golden-26-xcode"'
 t "walkthrough --dry-run"        env VM_ARTIFACTS=/tmp/vmcheck-art bash run/walkthrough.sh --ver 26 --app ../mattstack.app --dry-run
 t "walkthrough usage"            bash -c '! bash run/walkthrough.sh >/dev/null 2>&1'
+t "walkthrough --fresh-team-repo --dry-run creates nothing" bash -c \
+  'out=$(env VM_ARTIFACTS=/tmp/vmcheck-art bash run/walkthrough.sh --ver 26 --app ../mattstack.app --fresh-team-repo --dry-run 2>&1) && ! printf "%s" "$out" | grep -q "unknown arg"'
+t "walkthrough --fresh-team-repo refuses join" bash -c \
+  '! env VM_ARTIFACTS=/tmp/vmcheck-art bash run/walkthrough.sh --ver 26 --app ../mattstack.app --scenario join --fresh-team-repo --dry-run >/dev/null 2>&1'
 t "xcuitest.sh usage (missing args)" bash -c \
   'out=$(bash run/xcuitest.sh 2>&1); rc=$?; [ "$rc" -ne 0 ] && printf "%s" "$out" | grep -q "usage: xcuitest.sh"'
 # --ver 99 keeps this deterministic: no ghcr image maps to 99, so no real -xcode golden can
