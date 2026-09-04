@@ -27,10 +27,18 @@ click_button() {  # <name>
   end timeout" >/dev/null 2>&1
 }
 
-"$UPD/appcast-server" "$UPD" "$VM_APPCAST_PORT" 2>>"$LOGS/appcast-server.log" &
+# Exec from guest-local disk: the compiled server is ~60MB and demand-paging it
+# over the virtiofs share can take longer than any single reachability probe.
+cp "$UPD/appcast-server" /tmp/appcast-server && chmod +x /tmp/appcast-server
+/tmp/appcast-server "$UPD" "$VM_APPCAST_PORT" 2>>"$LOGS/appcast-server.log" &
 SRV=$!; trap 'kill $SRV 2>/dev/null || true' EXIT INT TERM HUP
-sleep 1
-curl -s --max-time 3 "http://127.0.0.1:$VM_APPCAST_PORT/appcast.xml" | grep -q '<rss' && ok "appcast served on loopback" || { bad "appcast server not reachable"; finish 1; }
+up=""
+for i in $(seq 1 15); do
+  if curl -s --max-time 2 "http://127.0.0.1:$VM_APPCAST_PORT/appcast.xml" | grep -q '<rss'; then up=1; break; fi
+  kill -0 "$SRV" 2>/dev/null || break
+  sleep 2
+done
+[ -n "$up" ] && ok "appcast served on loopback" || { bad "appcast server not reachable ($( [ -n "$(cat "$LOGS/appcast-server.log" 2>/dev/null)" ] && tail -c 200 "$LOGS/appcast-server.log" || echo "server wrote nothing, alive=$(kill -0 $SRV 2>/dev/null && echo yes || echo no)"))"; finish 1; }
 
 before_pid=$(launchctl print "gui/$(id -u)/com.mattstack.daemon" 2>/dev/null | grep -oE 'pid = [0-9]+' | head -1 | awk '{print $3}')
 before_ver=$(curl -s --max-time 3 --unix-socket "$SOCK" http://localhost/version 2>/dev/null | tr -d '\n')
