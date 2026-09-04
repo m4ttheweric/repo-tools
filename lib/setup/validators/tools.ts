@@ -70,6 +70,11 @@ function exec(p: Probes, argv: string[]): Promise<ExecResult> {
   return p.exec(argv, { timeoutMs: PROBE_TIMEOUT_MS });
 }
 
+/** Narrows past "parses as JSON" to "has fields worth dereferencing" — an array and null both pass typeof "object" in JS. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // ─── tool.herdr ────────────────────────────────────────────────────────────
 
 /**
@@ -175,6 +180,30 @@ interface FastBrowserDoctor {
   checks?: FastBrowserCheck[];
 }
 
+/** A well-formed-JSON-but-wrong-shape check must fail this before checkState ever dereferences it. */
+function isValidDoctorCheck(value: unknown): value is FastBrowserCheck {
+  return isPlainObject(value) && typeof value.id === "string";
+}
+
+/**
+ * The parse boundary for `fast-browser doctor --json`: a payload whose
+ * `checks` is present but isn't an array of id-bearing objects (older/newer
+ * schema, a wrong CLI on the same name, a truncated print) is rejected here
+ * as null, the same as unparsable JSON, so no later `.checks.find` can ever
+ * run against a non-array.
+ */
+function parseFastBrowserDoctor(stdout: string): FastBrowserDoctor | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(parsed)) return null;
+  if (parsed.checks !== undefined && !(Array.isArray(parsed.checks) && parsed.checks.every(isValidDoctorCheck))) return null;
+  return parsed as FastBrowserDoctor;
+}
+
 type CheckState = "pass" | "fail" | "absent";
 
 /** Absent (an id doctor's schema doesn't carry, older or newer than this build expects) is its own state, never folded into "fail": a check rt cannot find is not a check that failed. */
@@ -200,14 +229,11 @@ async function probeFastBrowser(p: Probes, seams: ToolsSeams): Promise<FastBrows
   if (res.code === 124) return { resolvable: true, doctor: null, failure: "fast-browser doctor timed out" };
 
   // `doctor` is a health check: it commonly exits non-zero BECAUSE it found a
-  // problem, while still printing its JSON report, so a parseable payload is
-  // honored regardless of exit code.
+  // problem, while still printing its JSON report, so a parseable, well-shaped
+  // payload is honored regardless of exit code.
   if (res.stdout.trim() !== "") {
-    try {
-      return { resolvable: true, doctor: JSON.parse(res.stdout) as FastBrowserDoctor, failure: null };
-    } catch {
-      // An unparseable payload is the failure below, not a silent empty report.
-    }
+    const doctor = parseFastBrowserDoctor(res.stdout);
+    if (doctor) return { resolvable: true, doctor, failure: null };
   }
   const head = res.stderr.trim().split("\n")[0] || `exit ${res.code}`;
   return { resolvable: true, doctor: null, failure: `fast-browser doctor failed: ${head}` };
@@ -433,7 +459,24 @@ interface PluginListEntry {
   enabled: boolean;
 }
 
-/** `claude plugin list` (no flag) prints a chevron glyph before each name, never the bare id, so a human-format scrape can never match `BASE_PLUGINS`. The parsed `id` field is the only reliable match surface. */
+/** True only for an element this module can safely read `.id` off; `enabled` is normalized by the caller rather than checked here, since a missing or non-boolean one is not a shape violation. */
+function isPluginListElement(value: unknown): value is { id: string; enabled?: unknown } {
+  return isPlainObject(value) && typeof value.id === "string";
+}
+
+/**
+ * `claude plugin list` (no flag) prints a chevron glyph before each name,
+ * never the bare id, so a human-format scrape can never match `BASE_PLUGINS`.
+ * The parsed `id` field is the only reliable match surface.
+ *
+ * The parse boundary: any element missing a string `id` rejects the whole
+ * payload as null (same as unparsable JSON), rather than dropping just that
+ * element — a schema violation anywhere means the payload's shape can't be
+ * trusted, so the honest answer is "could not be read", not a silently
+ * incomplete list. A missing or non-boolean `enabled` is not such a
+ * violation: it already drives the disabled-vs-ready split, so it is
+ * normalized to `false` here rather than rejecting the payload over it.
+ */
 function parsePluginList(stdout: string): PluginListEntry[] | null {
   let parsed: unknown;
   try {
@@ -441,7 +484,13 @@ function parsePluginList(stdout: string): PluginListEntry[] | null {
   } catch {
     return null;
   }
-  return Array.isArray(parsed) ? (parsed as PluginListEntry[]) : null;
+  if (!Array.isArray(parsed)) return null;
+  const entries: PluginListEntry[] = [];
+  for (const item of parsed) {
+    if (!isPluginListElement(item)) return null;
+    entries.push({ id: item.id, enabled: item.enabled === true });
+  }
+  return entries;
 }
 
 const INSTALL_PLUGINS_ACTION: Action = { type: "run", label: "Install plugins", verb: ["setup", "pack"] };
