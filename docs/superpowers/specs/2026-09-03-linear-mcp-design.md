@@ -57,33 +57,56 @@ has no `jq` on its PATH.
 
 ## Design
 
-### The name: setup writes `linear`
+### Detection is by shape; the name is what the skills can call
 
-The step writes the server under the name the skills call, `linear`. The
-alternative half of the fix, editing the ClaimView skills to call
-`mcp__linear-matt__*`, is rejected on two grounds: those skills live in
-another repo and outside this branch's fence, and no single existing name is
-right for everyone (`linear-matt` is one person's account). One canonical
-name that setup owns is the only shape that works for a joiner who has
-nothing.
+Two different questions, and the row answers both.
 
-**An entry named `linear` is never overwritten.** If one exists, the step
-does nothing at all, whatever it points at. Existing `linear-matt` /
-`linear-work` entries are never read for auth, never renamed, never removed.
-The write is purely additive: one new key under `mcpServers`.
+**Is a Linear MCP server present?** Answered by shape, never by name.
+`linear-matt` and `linear-work` are one person's artifacts and nobody else
+will have them, so no name is special-cased. An entry counts as a Linear MCP
+when either:
 
-**A linear-ish entry under another name does not make the row ready.** This
-departs from the letter of the "detection accepts any working `linear*`
-server" ruling, and it is deliberate: on a machine carrying only
-`linear-matt`, `mcp__linear__get_issue` does not resolve, so a `ready` row
-there would be a false green for precisely the failure MAT-406 exists to
-remove. The row instead reports `missing` and names what it found, so the
-detection still happens and nothing is silently trampled. The cost is honest
-and stated: a machine with `linear-matt` and a stored key grows a second
-Linear MCP server (duplicate tool surface in every session) when Install
-runs, and the user can delete whichever one they no longer want. The
-never-clobber half of the ruling holds in full; only the "counts as
-satisfied" half is narrowed, and it is narrowed to keep the row truthful.
+- it is a remote server (`type: "http"` or `"sse"`) whose `url` host is
+  `mcp.linear.app`, whatever the path or the auth style, or
+- it is a stdio server whose command line mentions `linear-mcp`, which covers
+  the `npx -y @anthropic-ai/linear-mcp-server` shape `onboard/SKILL.md` still
+  documents.
+
+Auth is deliberately not part of the predicate. The hosted server is equally
+valid with a bearer header (what this step writes, because it is what a stored
+key can produce non-interactively) and with Claude Code's own OAuth, which
+stores no header in this file at all. Demanding an `Authorization` key would
+red-flag every OAuth user.
+
+**Can the skills call it?** Only if it is named `linear`, because
+`mcp__linear__get_issue` resolves on the server name and nothing else. So
+`ready` means: an entry named `linear` that is a Linear MCP by shape.
+
+The step writes the server under `linear` for the same reason. The other half
+of the name fix, editing the ClaimView skills to call some existing name, is
+rejected: those skills are in another repo and outside this fence, and no
+existing name is right for everyone.
+
+**The name `linear` is never taken over.** If an entry called `linear` already
+exists, the step does nothing at all, whatever that entry is. That covers both
+an existing Linear MCP (already correct, leave it) and, less likely, someone
+else's unrelated server that happens to hold the name (not ours to move).
+Every other entry, Linear-shaped or not, is never read for auth, never
+renamed, never removed. The write is purely additive: one new key.
+
+**A Linear MCP under another name does not make the row ready, and does not
+stop the write.** This is the one place the "treat an existing server as
+satisfied" ruling is narrowed, and it is narrowed in the direction of the
+stated goal: on a machine whose only Linear MCP is `linear-matt`,
+`mcp__linear__get_issue` does not resolve, so `ready` there would be a false
+green for exactly the failure MAT-406 exists to remove. The row reports
+`missing` and names the server it found, and Install adds `linear` alongside
+it. For the general joiner this branch never runs: they have no Linear MCP at
+all, so they simply get `linear`. For the rare machine that does, the choice
+is between a duplicate tool surface and skills that stay broken, and working
+skills win. The duplicate is visible, named in the row detail, and the user
+can delete whichever entry they no longer want. Never-clobber holds in full
+either way: nothing existing is modified.
 
 ### The file
 
@@ -147,9 +170,12 @@ Outcomes:
 | Condition | Outcome |
 |---|---|
 | Config file present but does not parse | `failed`, remedy naming the file |
-| `mcpServers.linear` already present | `skipped`, "already configured" |
+| The name `linear` is already taken | `skipped`, "already configured" |
 | No stored `rt`/`linearApiKey` | `skipped`, "no Linear key stored (connect Linear, then Retry)" |
 | Otherwise | `done`, "added linear to `<path>`" |
+
+The step writes even when another Linear MCP is present under a different
+name, per the name decision above.
 
 A missing key is `skipped`, not `failed`: per the ruling, an unconnected
 Linear is a thing the user has not done yet, never an install error. `skipped`
@@ -163,11 +189,11 @@ read and update Linear tickets reach them through this MCP server."
 | Condition | Status | Detail |
 |---|---|---|
 | Config file present but unparsable | `error` | names the file |
-| `mcpServers.linear` present with an `Authorization` header | `ready` | `linear` |
-| `mcpServers.linear` present without auth | `needs-you` | "linear configured without an Authorization header" |
-| No `linear`, other `linear*` entries present | `missing` | "linear-matt configured; skills call mcp__linear__*" |
-| No `linear`, no key stored | `needs-you` | "no Linear account connected", action: connect linear |
-| No `linear`, key stored | `missing` | "installed by Install (linear.mcp)" |
+| `linear` present and Linear-shaped | `ready` | "linear" |
+| `linear` present, not Linear-shaped | `needs-you` | "a server named linear is not a Linear MCP" |
+| No `linear`, another Linear MCP present | `missing` | "Linear MCP present as X; skills call mcp__linear__*" |
+| No `linear`, none present, no key stored | `needs-you` | "no Linear account connected", action: connect linear |
+| No `linear`, none present, key stored | `missing` | "installed by Install (linear.mcp)" |
 
 **The row is `required: false` in every state**, carrying
 `optionalNote: "Installed by Install (linear.mcp)."`. It is therefore not
@@ -242,14 +268,18 @@ One test asserts exactly that: given a fake home, the set of written paths
 contains no path outside it.
 
 - `lib/setup/__tests__/linear-mcp.test.ts` for the shared module: path
-  resolution with and without `CLAUDE_CONFIG_DIR`, detection across
-  (`linear`, `linear-matt`, both, neither, `linear` without auth), and the
+  resolution with and without `CLAUDE_CONFIG_DIR`; shape detection over an
+  http `mcp.linear.app` entry, an sse one, a stdio `linear-mcp` command, a
+  hosted entry with no auth header (OAuth, still Linear), and a non-Linear
+  server; the callable-by-skills question across (`linear` present and
+  Linear-shaped, `linear` present and not, another name only, none); and the
   merge preserving unrelated `mcpServers` entries plus unrelated top-level
   keys.
 - Step tests in the `steps-*` suite: the four outcomes above, plus
   **idempotence proven directly** by running the step twice and asserting the
   second run writes nothing and returns `skipped`, and **an existing
-  `linear-matt` survives untouched** across a run that adds `linear`.
+  differently-named Linear MCP survives untouched** across a run that adds
+  `linear`.
 - `validators-tools.test.ts`: all six row states.
 - `contract.test.ts`: the hard-coded step-id array grows to 25, in order.
 - `check-vm-scripts.sh` already `bash -n`s every guest script, so the
