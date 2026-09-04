@@ -20,6 +20,7 @@ import type { Probes } from "../probes.ts";
 
 import { MATTSTACK_MARKETPLACE_SOURCE, pluginsInstallStep } from "../steps/plugins.ts";
 import { gitIdentityStep } from "../steps/git-identity.ts";
+import { linearMcpStep } from "../steps/linear-mcp.ts";
 import {
   extensionInstallRun,
   extensionInstallStep,
@@ -993,6 +994,84 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
         await verifyStep.run(ctx);
         expect(calls).toBeGreaterThan(0);
       });
+    });
+  });
+
+  describe("linear.mcp", () => {
+    const KEY = "lin_api_testkey";
+    const hosted = { type: "http", url: "https://mcp.linear.app/mcp", headers: { Authorization: `Bearer ${KEY}` } };
+    const withKey = { has: async () => KEY };
+    const noKey = { has: async () => null };
+
+    test("no stored key -> skipped, nothing written", async () => {
+      const p = fakeProbes({ home, env: {} });
+      const { ctx } = makeCtx(p, { secretPresence: noKey });
+      expect(await linearMcpStep.run(ctx)).toEqual({ state: "skipped", detail: "no Linear key stored (connect Linear, then Retry)" });
+      expect(p.calls.writes).toEqual({});
+    });
+
+    test("key stored, no config file -> writes the entry into the fake HOME only", async () => {
+      const p = fakeProbes({ home, env: {} });
+      const { ctx } = makeCtx(p, { secretPresence: withKey });
+      const outcome = await linearMcpStep.run(ctx);
+      expect(outcome.state).toBe("done");
+      const written = JSON.parse(p.readFile(`${home}/.claude.json`)!);
+      expect(written.mcpServers.linear).toEqual(hosted);
+      for (const path of Object.keys(p.calls.writes)) expect(path.startsWith(home)).toBe(true);
+    });
+
+    test("an existing differently-named Linear MCP is preserved and `linear` is still added", async () => {
+      const before = { numStartups: 7, mcpServers: { "linear-matt": { type: "http", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer other" } } } };
+      const p = fakeProbes({ home, env: {}, files: { [`${home}/.claude.json`]: JSON.stringify(before, null, 2) } });
+      const { ctx } = makeCtx(p, { secretPresence: withKey });
+      expect((await linearMcpStep.run(ctx)).state).toBe("done");
+      const written = JSON.parse(p.readFile(`${home}/.claude.json`)!);
+      expect(written.mcpServers["linear-matt"]).toEqual(before.mcpServers["linear-matt"]);
+      expect(written.mcpServers.linear).toEqual(hosted);
+      expect(written.numStartups).toBe(7);
+    });
+
+    test("running twice is a no-op the second time", async () => {
+      const p = fakeProbes({ home, env: {} });
+      const { ctx } = makeCtx(p, { secretPresence: withKey });
+      expect((await linearMcpStep.run(ctx)).state).toBe("done");
+      const afterFirst = p.readFile(`${home}/.claude.json`);
+      const renamesAfterFirst = p.calls.renames.length;
+      expect(await linearMcpStep.run(ctx)).toEqual({ state: "skipped", detail: "already configured" });
+      expect(p.readFile(`${home}/.claude.json`)).toBe(afterFirst);
+      expect(p.calls.renames.length).toBe(renamesAfterFirst);
+    });
+
+    test("the name `linear` taken by an unrelated server is never taken over", async () => {
+      const railway = { type: "http", url: "https://mcp.railway.app/mcp" };
+      const p = fakeProbes({ home, env: {}, files: { [`${home}/.claude.json`]: JSON.stringify({ mcpServers: { linear: railway } }) } });
+      const { ctx } = makeCtx(p, { secretPresence: withKey });
+      expect(await linearMcpStep.run(ctx)).toEqual({ state: "skipped", detail: "already configured" });
+      expect(JSON.parse(p.readFile(`${home}/.claude.json`)!).mcpServers.linear).toEqual(railway);
+    });
+
+    test("an unparsable config is failed, never replaced", async () => {
+      const p = fakeProbes({ home, env: {}, files: { [`${home}/.claude.json`]: "{ not json" } });
+      const { ctx } = makeCtx(p, { secretPresence: withKey });
+      const outcome = await linearMcpStep.run(ctx);
+      expect(outcome.state).toBe("failed");
+      expect(p.readFile(`${home}/.claude.json`)).toBe("{ not json");
+    });
+
+    test("CLAUDE_CONFIG_DIR is honored", async () => {
+      const p = fakeProbes({ home, env: { CLAUDE_CONFIG_DIR: `${home}/alt` } });
+      const { ctx } = makeCtx(p, { secretPresence: withKey });
+      expect((await linearMcpStep.run(ctx)).state).toBe("done");
+      expect(p.readFile(`${home}/alt/.claude.json`)).not.toBeNull();
+      expect(p.readFile(`${home}/.claude.json`)).toBeNull();
+    });
+
+    test("the key is registered for redaction before anything is written", async () => {
+      const redacted: string[] = [];
+      const p = fakeProbes({ home, env: {} });
+      const { ctx } = makeCtx(p, { secretPresence: withKey, redact: (v: string) => redacted.push(v) });
+      await linearMcpStep.run(ctx);
+      expect(redacted).toContain(KEY);
     });
   });
 });

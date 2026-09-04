@@ -85,6 +85,7 @@ export const STEP_IDS = [
   "cron.triage",
   "intercepts.install",
   "plugins.install",
+  "linear.mcp",
   "fastbrowser.setup",
   "herdr.integration",
   "extension.install",
