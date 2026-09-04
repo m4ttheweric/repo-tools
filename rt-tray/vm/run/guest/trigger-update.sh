@@ -11,12 +11,19 @@ UPD="${1:-}"; NEWV="${2:-}"
 LOGS="$GUEST_RUN/logs"; mkdir -p "$LOGS" || { echo "trigger-update.sh: cannot write $LOGS" >&2; exit 2; }
 export PATH="$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 SOCK="$HOME/.mattstack/rt/tray.sock"
+APP=/Applications/mattstack.app
 fails=0; ok() { echo "ASSERT ok   $1"; }; bad() { echo "ASSERT FAIL $1"; fails=$((fails+1)); }
-finish() {  # <exit-code> — always leaves the same artifacts assert-installed.sh does, even on an early exit
+finish() {  # <exit-code> ... always leaves the same artifacts assert-installed.sh does, even on an early exit
   cp "$LOGS/appcast-server.log" "$LOGS/appcast-server.final.log" 2>/dev/null || true
   echo "$fails" > "$LOGS/update-fails.txt"
   exit "$1"
 }
+
+tray_json()  { curl -s --max-time 2 --unix-socket "$SOCK" http://localhost/version 2>/dev/null; }
+tray_ver()   { tray_json | grep -oE '"version": *"[^"]+"' | cut -d'"' -f4; }
+tray_build() { tray_json | grep -oE '"build": *[0-9]+' | grep -oE '[0-9]+$'; }
+bundle_ver() { /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist" 2>/dev/null; }
+daemon_pid() { launchctl print "gui/$(id -u)/com.mattstack.daemon" 2>/dev/null | grep -oE 'pid = [0-9]+' | head -1 | awk '{print $3}'; }
 
 # Bounded, non-fatal click-by-name: `with timeout` caps the AppleEvent so a quitting/relaunching
 # mattstack can't stall a retry loop on the ~60s System Events default.
@@ -27,77 +34,125 @@ click_button() {  # <name>
   end timeout" >/dev/null 2>&1
 }
 
-"$UPD/appcast-server" "$UPD" "$VM_APPCAST_PORT" 2>>"$LOGS/appcast-server.log" &
-SRV=$!; trap 'kill $SRV 2>/dev/null || true' EXIT INT TERM HUP
-sleep 1
-curl -s --max-time 3 "http://127.0.0.1:$VM_APPCAST_PORT/appcast.xml" | grep -q '<rss' && ok "appcast served on loopback" || { bad "appcast server not reachable"; finish 1; }
+# install-app.sh copies the app in as root:admin, so Sparkle cannot replace the bundle as
+# the standard `tester` user: it calls AuthorizationCopyRights, which blocks the app's MAIN
+# THREAD behind a SecurityAgent prompt. Nothing in the app answers while that is up -- not
+# /update/check, not a quit AppleEvent -- so every wait below answers the prompt each pass.
+# The two clicks cover Sparkle's own alert if its user driver puts one up before installing;
+# they are best-effort and never fatal.
+pump() {
+  ax_admin_auth_once >/dev/null 2>&1 && ax_log "answered a SecurityAgent admin prompt"
+  click_button "Install Update"       && ax_log "clicked Sparkle's Install Update"
+  click_button "Install and Relaunch" && ax_log "clicked Sparkle's Install and Relaunch"
+  return 0
+}
 
-before_pid=$(launchctl print "gui/$(id -u)/com.mattstack.daemon" 2>/dev/null | grep -oE 'pid = [0-9]+' | head -1 | awk '{print $3}')
-before_ver=$(curl -s --max-time 3 --unix-socket "$SOCK" http://localhost/version 2>/dev/null | tr -d '\n')
-ax_log "before: daemon pid=${before_pid:-none} version=${before_ver:-?}"
+# Wall-clock wait for the tray socket to report <version>. The socket disappears while
+# Sparkle swaps the bundle and comes back when the new app launches, so an empty read is
+# "still going", never a failure.
+wait_ver() {  # <want> <timeout-s>
+  local deadline=$((SECONDS + $2))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    [ "$(tray_ver)" = "$1" ] && return 0
+    pump
+    sleep 2
+  done
+  return 1
+}
+
+# The daemon is a launchd job whose program lives in the bundle Sparkle just replaced, so it
+# dies with the old binary and only comes back once the relaunched app has re-registered it.
+# That lands seconds after the tray reports the new version, never at the same instant.
+wait_daemon() {  # <old-pid> <timeout-s> ... prints the pid it settled on
+  local deadline=$((SECONDS + $2)) p
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    p=$(daemon_pid)
+    [ -n "$p" ] && [ "$p" != "$1" ] && { printf '%s' "$p"; return 0; }
+    sleep 2
+  done
+  printf '%s' "$(daemon_pid)"; return 1
+}
+
+quit_app() {
+  ax_osa "with timeout of 20 seconds
+    tell application \"System Events\" to tell process \"$AX_APP\" to quit
+  end timeout" >/dev/null 2>&1
+}
+
+relaunch_app() {  # same shape as install-app.sh launch, with walkthrough.sh's update flags
+  open --env "MATTSTACK_APPCAST_URL=http://127.0.0.1:$VM_APPCAST_PORT/appcast.xml" \
+       "$APP" --args --allow-appcast-override
+}
+
+# Exec from guest-local disk: the compiled server is ~60MB and demand-paging it
+# over the virtiofs share can take longer than any single reachability probe.
+# A private mktemp dir, not a fixed /tmp path: a failed cp must never leave a
+# stale copy for the reachability probe to bless.
+SRV_DIR=$(mktemp -d) || { bad "mktemp failed for appcast-server staging"; finish 1; }
+cp "$UPD/appcast-server" "$SRV_DIR/appcast-server" && chmod +x "$SRV_DIR/appcast-server" \
+  || { bad "failed to stage appcast-server into $SRV_DIR"; rm -rf "$SRV_DIR"; finish 1; }
+"$SRV_DIR/appcast-server" "$UPD" "$VM_APPCAST_PORT" 2>>"$LOGS/appcast-server.log" &
+SRV=$!; trap 'kill $SRV 2>/dev/null || true; rm -rf "$SRV_DIR"' EXIT INT TERM HUP
+up=""
+for i in $(seq 1 15); do
+  if curl -s --max-time 2 "http://127.0.0.1:$VM_APPCAST_PORT/appcast.xml" | grep -q '<rss'; then up=1; break; fi
+  kill -0 "$SRV" 2>/dev/null || break
+  sleep 2
+done
+[ -n "$up" ] && ok "appcast served on loopback" || { bad "appcast server not reachable ($( [ -n "$(cat "$LOGS/appcast-server.log" 2>/dev/null)" ] && tail -c 200 "$LOGS/appcast-server.log" || echo "server wrote nothing, alive=$(kill -0 $SRV 2>/dev/null && echo yes || echo no)"))"; finish 1; }
+
+before_app=$(pgrep -x mattstack | head -1)
+before_pid=$(daemon_pid)
+before_ver=$(tray_json | tr -d '\n')
+ax_log "before: app pid=${before_app:-none} daemon pid=${before_pid:-none} bundle=$(bundle_ver) version=${before_ver:-?}"
+
+# A SecurityAgent prompt left over from an earlier phase would block the main thread, and
+# then /update/check below just times out with an empty body. Clear it first.
+pump
 
 curl -s --max-time 10 --unix-socket "$SOCK" -X POST http://localhost/update/check > "$LOGS/update-check.json" 2>/dev/null
-grep -q '"ok": *true' "$LOGS/update-check.json" && ok "POST /update/check" || bad "POST /update/check failed: $(cat "$LOGS/update-check.json")"
+grep -q '"ok": *true' "$LOGS/update-check.json" && ok "POST /update/check" \
+  || bad "POST /update/check failed: '$(cat "$LOGS/update-check.json")' (an empty body means the app's main thread is blocked; on-screen buttons: $(ax_osa "tell application \"System Events\" to tell process \"$AX_APP\" to get name of every button of window 1" 2>/dev/null | tr '\n' ' '))"
 ax_shot 06-update-check
 
-# The status item has no NSMenu — a click toggles an NSPopover — and the update entry lives at axid
-# menu.gear.checkForUpdates inside the panel's gear menu. One bounded, non-fatal UI attempt only:
-# POST /update/check above already fired the real trigger, so a failed click here is not fatal.
-ui_triggered=0
-if ax_osa "with timeout of 10 seconds
-  tell application \"System Events\" to tell process \"$AX_APP\" to click menu bar item 1 of menu bar 2
-end timeout" >/dev/null 2>&1; then
-  if ax_osa "$AX_WALK_AS
-    with timeout of 10 seconds
-      tell application \"System Events\" to tell process \"$AX_APP\"
-        set r to my walk(window 1, \"menu.gear.checkForUpdates\")
-        if r is missing value then error \"axid not found\"
-        click r
-      end tell
-    end timeout" >/dev/null 2>&1; then
-    ax_log "clicked menu.gear.checkForUpdates"; ui_triggered=1
-  else
-    ax_log "menu.gear.checkForUpdates not found/clickable after opening the popover"
-    ax_dump_ids 2>/dev/null | sed 's/^/  id: /' >>"$AX_LOG" || true
-  fi
+# There is no "Install and Relaunch" button to wait on: UpdaterController's
+# willInstallUpdateOnQuit hands Sparkle immediateInstallHandler() as soon as the download
+# lands and UpdatePolicy.allowsImmediateInstall holds (setup not running, no key window),
+# so headless the app installs and relaunches itself. Driving the app's own UI here would
+# defeat that -- the status-item popover is a key window, which flips allowsImmediateInstall
+# to false and defers the install to a quit that never comes -- so this leg touches no app UI.
+install_path=""
+if wait_ver "$NEWV" 300; then
+  install_path="installed in place, app relaunched itself"
 else
-  ax_log "could not open the status item popover"
+  ax_log "no new version after 300s (bundle on disk is $(bundle_ver)); falling back to the install-on-quit path"
+  quit_app
+  d=$((SECONDS + 90))
+  while [ "$SECONDS" -lt "$d" ]; do pgrep -x mattstack >/dev/null || break; pump; sleep 2; done
+  pgrep -x mattstack >/dev/null && ax_log "app still running after quit" || ax_log "app quit"
+  if wait_ver "$NEWV" 120; then
+    install_path="installed on quit, app relaunched itself"
+  else
+    ax_log "relaunching $APP the way install-app.sh launch does"
+    relaunch_app
+    if wait_ver "$NEWV" 120; then install_path="installed on quit, relaunched by the harness"
+    else install_path="never reached $NEWV (bundle on disk is $(bundle_ver))"; fi
+  fi
 fi
-ax_log "update trigger path: $([ "$ui_triggered" = 1 ] && echo 'gear menu click + POST /update/check' || echo 'POST /update/check only')"
+ax_log "install path: $install_path"
 
-# Sparkle's update window: "Install Update" then "Install and Relaunch" (names are Sparkle's).
-clicked=0
-for _ in $(seq 1 60); do
-  click_button "Install Update" && { clicked=1; break; }
-  click_button "Install and Relaunch" && { clicked=1; break; }
-  sleep 2
-done
-if [ "$clicked" = 1 ]; then ax_log "clicked Install Update/Install and Relaunch"
-else ax_log "Install Update/Install and Relaunch never appeared after 60 tries"; ax_dump_ids 2>/dev/null | sed 's/^/  id: /' >>"$AX_LOG" || true
-fi
-ax_shot 06-update-installing
-clicked2=0
-for _ in $(seq 1 30); do click_button "Install and Relaunch" && { clicked2=1; break; }; sleep 2; done
-if [ "$clicked2" = 1 ]; then ax_log "clicked Install and Relaunch"
-else ax_log "Install and Relaunch never appeared after 30 more tries"; ax_dump_ids 2>/dev/null | sed 's/^/  id: /' >>"$AX_LOG" || true
-fi
-
-# Wait for the new version on the socket (the app relaunches; the socket disappears then returns).
-new_ver=""
-for _ in $(seq 1 120); do
-  new_ver=$(curl -s --max-time 2 --unix-socket "$SOCK" http://localhost/version 2>/dev/null | grep -oE '"version": *"[^"]+"' | cut -d'"' -f4)
-  [ "$new_ver" = "$NEWV" ] && break
-  sleep 2
-done
+new_ver=$(tray_ver)
 [ "$new_ver" = "$NEWV" ] && ok "tray /version == $NEWV" || bad "tray /version is '${new_ver:-?}', wanted $NEWV"
 # CFBundleVersion is numeric major*1000000+minor*1000+patch (L4 scheme); /version.build is a number.
 want_build=$(echo "$NEWV" | awk -F. '{ printf "%d", $1*1000000 + $2*1000 + $3 }')
-got_build=$(curl -s --max-time 2 --unix-socket "$SOCK" http://localhost/version 2>/dev/null | grep -oE '"build": *[0-9]+' | grep -oE '[0-9]+$')
+got_build=$(tray_build)
 [ "${got_build:-}" = "$want_build" ] && ok "tray /version.build == $want_build" || bad "tray /version.build is '${got_build:-?}', wanted $want_build"
 ax_shot 06-update-done
 
-after_pid=$(launchctl print "gui/$(id -u)/com.mattstack.daemon" 2>/dev/null | grep -oE 'pid = [0-9]+' | head -1 | awk '{print $3}')
-[ -n "$after_pid" ] && [ "$after_pid" != "${before_pid:-}" ] && ok "daemon restarted (pid $before_pid → $after_pid)" || bad "daemon did not restart (pid ${before_pid:-none} → ${after_pid:-none})"
-# rt --version prints "rt <version>" (cli.ts) — compare the trailing token, not the whole line.
+after_pid=$(wait_daemon "${before_pid:-}" 120)
+[ -n "$after_pid" ] && [ "$after_pid" != "${before_pid:-}" ] && ok "daemon restarted (pid $before_pid → $after_pid)" \
+  || bad "daemon did not restart within 120s (pid ${before_pid:-none} → ${after_pid:-none}; launchd: $(launchctl list 2>/dev/null | grep com.mattstack.daemon | tr '\t' ' '))"
+# rt --version prints "rt <version>" (cli.ts) ... compare the trailing token, not the whole line.
 rv=$(rt --version 2>/dev/null | awk '{print $NF}'); [ "$rv" = "$NEWV" ] && ok "rt --version == $NEWV" || bad "rt --version is '$rv'"
+ax_log "after: app pid=$(pgrep -x mattstack | head -1) daemon pid=${after_pid:-none} bundle=$(bundle_ver)"
 finish "$([ "$fails" -eq 0 ] && echo 0 || echo 1)"
