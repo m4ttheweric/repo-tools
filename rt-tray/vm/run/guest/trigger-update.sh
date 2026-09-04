@@ -60,6 +60,19 @@ wait_ver() {  # <want> <timeout-s>
   return 1
 }
 
+# The daemon is a launchd job whose program lives in the bundle Sparkle just replaced, so it
+# dies with the old binary and only comes back once the relaunched app has re-registered it.
+# That lands seconds after the tray reports the new version, never at the same instant.
+wait_daemon() {  # <old-pid> <timeout-s> ... prints the pid it settled on
+  local deadline=$((SECONDS + $2)) p
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    p=$(daemon_pid)
+    [ -n "$p" ] && [ "$p" != "$1" ] && { printf '%s' "$p"; return 0; }
+    sleep 2
+  done
+  printf '%s' "$(daemon_pid)"; return 1
+}
+
 quit_app() {
   ax_osa "with timeout of 20 seconds
     tell application \"System Events\" to tell process \"$AX_APP\" to quit
@@ -132,8 +145,9 @@ got_build=$(tray_build)
 [ "${got_build:-}" = "$want_build" ] && ok "tray /version.build == $want_build" || bad "tray /version.build is '${got_build:-?}', wanted $want_build"
 ax_shot 06-update-done
 
-after_pid=$(daemon_pid)
-[ -n "$after_pid" ] && [ "$after_pid" != "${before_pid:-}" ] && ok "daemon restarted (pid $before_pid → $after_pid)" || bad "daemon did not restart (pid ${before_pid:-none} → ${after_pid:-none})"
+after_pid=$(wait_daemon "${before_pid:-}" 120)
+[ -n "$after_pid" ] && [ "$after_pid" != "${before_pid:-}" ] && ok "daemon restarted (pid $before_pid → $after_pid)" \
+  || bad "daemon did not restart within 120s (pid ${before_pid:-none} → ${after_pid:-none}; launchd: $(launchctl list 2>/dev/null | grep com.mattstack.daemon | tr '\t' ' '))"
 # rt --version prints "rt <version>" (cli.ts) ... compare the trailing token, not the whole line.
 rv=$(rt --version 2>/dev/null | awk '{print $NF}'); [ "$rv" = "$NEWV" ] && ok "rt --version == $NEWV" || bad "rt --version is '$rv'"
 ax_log "after: app pid=$(pgrep -x mattstack | head -1) daemon pid=${after_pid:-none} bundle=$(bundle_ver)"
