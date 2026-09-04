@@ -15,6 +15,8 @@ import { createPaneHandlers } from "../handlers/pane.ts";
 import { createAgentHandlers } from "../handlers/agent.ts";
 import { buildRoutedHandlers } from "../command-router.ts";
 import { createEventsBus } from "../events-bus.ts";
+import { createGatesStore } from "../gates-store.ts";
+import type { GatePush } from "../gate-push.ts";
 import { fakeStore } from "./fake-cache-store.ts";
 import type { HandlerContext } from "../handlers/types.ts";
 
@@ -63,6 +65,8 @@ describe("R028: db is not a handler-map entry", () => {
         withReconcilerHeld: async (fn) => fn(),
       },
       eventsBus: createEventsBus({ dbPath: ":memory:", log: pino({ level: "silent" }) }),
+      gatesStore: createGatesStore({ dbPath: ":memory:", log: pino({ level: "silent" }) }),
+      gatePush: { onAnswered: async () => {}, onOpened: async () => {} } satisfies GatePush,
       homeSnapshot: { stop: () => {}, runNow: async () => ({}) as any, pullNow: async () => ({}) as any, status: () => ({}) as any, ready: Promise.resolve() },
       teamSnapshots: { stop() {}, rescan: async () => {}, status: () => [], pullNow: async () => ({ outcome: "skipped", detail: null }), ready: Promise.resolve() },
       repos: { withReconcilerHeld: async (fn) => fn(), refreshWatchedRepos: () => {} },

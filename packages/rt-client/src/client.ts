@@ -418,3 +418,79 @@ export function paneFocus(
 ): Promise<RtResponse<Commands["pane:focus"]["data"]>> {
   return rtCommand<Commands["pane:focus"]["data"]>("pane:focus", { paneId: a.paneId }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
+
+// ─── Gates (BOARD-20/21 gate facility) ─────────────────────────────────────
+
+export function gateOpen(
+  a: Commands["gate:open"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["gate:open"]["data"]>> {
+  const payload: Record<string, unknown> = { subject: a.subject, kind: a.kind, questions: a.questions };
+  for (const k of ["meta", "agent", "pane", "nudge"] as const) if (a[k] !== undefined) payload[k] = a[k];
+  return rtCommand<Commands["gate:open"]["data"]>("gate:open", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function gateAnswer(
+  a: Commands["gate:answer"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["gate:answer"]["data"]>> {
+  return rtCommand<Commands["gate:answer"]["data"]>("gate:answer", { id: a.id, answers: a.answers, by: a.by }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+/** Daemon clamps its own wait to 240s (gates-store.ts); the client abort
+    must outlive that cap, same +10s buffer as commands/events.ts's
+    IPC_TIMEOUT_MS over DAEMON_WAIT_MS. */
+export function gateWait(
+  a: Commands["gate:wait"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["gate:wait"]["data"]>> {
+  const payload: Record<string, unknown> = { id: a.id };
+  if (a.waitMs !== undefined) payload.waitMs = a.waitMs;
+  return rtCommand<Commands["gate:wait"]["data"]>("gate:wait", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 250_000 });
+}
+
+export function gateList(
+  a: Commands["gate:list"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["gate:list"]["data"]>> {
+  const payload: Record<string, unknown> = {};
+  for (const k of ["open", "subjectPrefix", "kind", "limit", "cursor"] as const) if (a[k] !== undefined) payload[k] = a[k];
+  return rtCommand<Commands["gate:list"]["data"]>("gate:list", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function gatePark(
+  a: Commands["gate:park"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["gate:park"]["data"]>> {
+  return rtCommand<Commands["gate:park"]["data"]>("gate:park", { id: a.id }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function gateClose(
+  a: Commands["gate:close"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["gate:close"]["data"]>> {
+  return rtCommand<Commands["gate:close"]["data"]>("gate:close", { id: a.id, reason: a.reason }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function gateSubscribe(
+  a: Commands["gate:subscribe"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["gate:subscribe"]["data"]>> {
+  return rtCommand<Commands["gate:subscribe"]["data"]>("gate:subscribe", { subjectPrefix: a.subjectPrefix, session: a.session }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function gateUnsubscribe(
+  a: Commands["gate:unsubscribe"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["gate:unsubscribe"]["data"]>> {
+  return rtCommand<Commands["gate:unsubscribe"]["data"]>("gate:unsubscribe", { id: a.id }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function gateSubscriptions(
+  a: Commands["gate:subscriptions"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["gate:subscriptions"]["data"]>> {
+  const payload: Record<string, unknown> = {};
+  for (const k of ["session", "live"] as const) if (a[k] !== undefined) payload[k] = a[k];
+  return rtCommand<Commands["gate:subscriptions"]["data"]>("gate:subscriptions", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}

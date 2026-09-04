@@ -52,6 +52,111 @@ const eventsSubcommands: Record<string, CommandNode> = {
   },
 };
 
+const gateSubcommands: Record<string, CommandNode> = {
+  open: {
+    description: "Open a human-decision gate on a subject",
+    module: "./commands/gate.ts",
+    fn: "gateOpen",
+    omitBehavior: { exempt: "subject/kind/questions are free-form; nothing to enumerate" },
+    args: [
+      { name: "Subject", flag: "--subject", type: "text", placeholder: "run:abc123", hint: "Opaque <prefix>:<id> the gate pauses" },
+      { name: "Kind", flag: "--kind", type: "text", placeholder: "approval", hint: "Gate kind, free-form" },
+      { name: "Questions", flag: "--questions", type: "text", placeholder: "[{\"id\":\"q1\",\"label\":\"...\",\"multi\":false,\"options\":[\"yes\",\"no\"]}]", hint: "JSON array of questions" },
+      { name: "Meta", flag: "--meta", type: "text", placeholder: "{\"label\":\"...\"}", hint: "Optional JSON metadata" },
+      { name: "Agent", flag: "--agent", type: "text", placeholder: "ag-1a2b3c4d", hint: "Optional opening agent id" },
+      { name: "Pane", flag: "--pane", type: "text", placeholder: "w7A:pY", hint: "Optional herdr pane id, kept as a focus/resume reference (delivery binds to --nudge)" },
+      { name: "Nudge", flag: "--nudge", type: "text", placeholder: "{\"session\":\"...\"}", hint: "Optional JSON nudge target" },
+    ],
+  },
+  answer: {
+    description: "Answer an open gate",
+    module: "./commands/gate.ts",
+    fn: "gateAnswer",
+    omitBehavior: { exempt: "gate ids are opaque; list first with rt gate list" },
+    args: [
+      { name: "Id", type: "text", placeholder: "gt-1a2b3c4d", hint: "Gate id" },
+      { name: "Answers", flag: "--answers", type: "text", placeholder: "{\"q1\":\"yes\"}", hint: "JSON answers keyed by question id" },
+      { name: "By", flag: "--by", type: "text", placeholder: "human", hint: "Answering surface" },
+    ],
+  },
+  wait: {
+    description: "Block until a gate is answered or closed (default: wait forever)",
+    module: "./commands/gate.ts",
+    fn: "gateWait",
+    omitBehavior: { exempt: "gate ids are opaque; list first with rt gate list" },
+    args: [
+      { name: "Id", type: "text", placeholder: "gt-1a2b3c4d", hint: "Gate id" },
+      { name: "Timeout", flag: "--timeout", type: "text", placeholder: "5m", hint: "Give up after this long (30s, 5m, 500ms, bare seconds); omit to wait forever" },
+    ],
+  },
+  list: {
+    description: "List gates",
+    module: "./commands/gate.ts",
+    fn: "gateList",
+    omitBehavior: "list",
+    args: [
+      { name: "Open only", flag: "--open", type: "boolean", default: false, hint: "Only open (unanswered, unparked) gates" },
+      { name: "Subject prefix", flag: "--subject-prefix", type: "text", placeholder: "run:", hint: "Filter by subject prefix" },
+      { name: "Kind", flag: "--kind", type: "text", placeholder: "approval", hint: "Filter by kind" },
+      { name: "Limit", flag: "--limit", type: "text", placeholder: "100", hint: "Cap the number of returned gates" },
+      { name: "Cursor", flag: "--cursor", type: "text", placeholder: "42", hint: "Resume paging from a previous response's cursor" },
+    ],
+  },
+  park: {
+    description: "Park an open gate (paused, not closed)",
+    module: "./commands/gate.ts",
+    fn: "gatePark",
+    omitBehavior: { exempt: "gate ids are opaque; list first with rt gate list" },
+    args: [
+      { name: "Id", type: "text", placeholder: "gt-1a2b3c4d", hint: "Gate id" },
+    ],
+  },
+  close: {
+    description: "Close a gate without an answer",
+    module: "./commands/gate.ts",
+    fn: "gateClose",
+    omitBehavior: { exempt: "gate ids are opaque; list first with rt gate list" },
+    args: [
+      { name: "Id", type: "text", placeholder: "gt-1a2b3c4d", hint: "Gate id" },
+      { name: "Reason", flag: "--reason", type: "select", hint: "Why the gate is closing",
+        options: [
+          { value: "abandoned", label: "abandoned" },
+          { value: "superseded", label: "superseded" },
+          { value: "pruned", label: "pruned" },
+        ] },
+    ],
+  },
+  subscribe: {
+    description: "Subscribe a session to gates opened under a subject prefix",
+    module: "./commands/gate.ts",
+    fn: "gateSubscribe",
+    omitBehavior: { exempt: "subject-prefix/session are free-form; nothing to enumerate" },
+    args: [
+      { name: "Subject prefix", flag: "--subject-prefix", type: "text", placeholder: "run:", hint: "Subject prefix to watch" },
+      { name: "Session", flag: "--session", type: "text", placeholder: "!7", hint: "Session address to notify" },
+    ],
+  },
+  unsubscribe: {
+    description: "Remove a gate subscription",
+    module: "./commands/gate.ts",
+    fn: "gateUnsubscribe",
+    omitBehavior: { exempt: "subscription ids are opaque; list first with rt gate subscriptions" },
+    args: [
+      { name: "Id", type: "text", placeholder: "sub-1a2b3c4d", hint: "Subscription id" },
+    ],
+  },
+  subscriptions: {
+    description: "List gate subscriptions",
+    module: "./commands/gate.ts",
+    fn: "gateSubscriptions",
+    omitBehavior: "list",
+    args: [
+      { name: "Session", flag: "--session", type: "text", placeholder: "!7", hint: "Filter by subscriber session" },
+      { name: "Live only", flag: "--live", type: "boolean", default: false, hint: "Only live (non-dead) subscriptions" },
+    ],
+  },
+};
+
 const runsSubcommands: Record<string, CommandNode> = {
   show: {
     description: "One run: stages, fields, decisions",
@@ -883,6 +988,11 @@ export const TREE: Record<string, CommandNode> = {
   events: {
     description: "Optional event bus for panes and skills",
     subcommands: eventsSubcommands,
+  },
+
+  gate: {
+    description: "Human-decision gates: pause a subject until answered, parked, or closed",
+    subcommands: gateSubcommands,
   },
 
   // Self-dispatching leaf: agent() routes its own verbs (start/resume/show/list).
