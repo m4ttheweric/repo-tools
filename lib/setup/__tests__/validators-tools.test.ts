@@ -11,20 +11,24 @@ import type { DetectedEditor } from "../../editors.ts";
 import type { ExecResult } from "../probes.ts";
 import type { Row } from "../contract.ts";
 
-// ─── ground truth, sampled from the real CLIs (.superpowers/sdd/2026-09-03-setup-installs/) ───
-// Every plugin-list and doctor fixture below traces back to one of these three files rather
-// than an invented shape: the two Critical defects this suite guards against both shipped
-// because the old fixtures agreed with code that had never run against a real machine.
+// ─── ground truth, shaped from the real CLIs captured on 2026-09-03 ───
+// The fixtures under ./fixtures/ preserve the captured shape exactly (every field,
+// the nested mcpServers variants, the human form's chevron glyph and indentation);
+// only values (names, paths) are sanitized for a public repo. Every plugin-list and
+// doctor fixture below traces back to one of these three files rather than an
+// invented shape: the two Critical defects this suite guards against both shipped
+// because the old fixtures were invented and agreed with code that had never run
+// against a real machine.
 
-const CAPTURE_DIR = join(import.meta.dir, "..", "..", "..", ".superpowers", "sdd", "2026-09-03-setup-installs");
+const FIXTURE_DIR = join(import.meta.dir, "fixtures");
 
-/** Real `claude plugin list --json`: chat@mattstack, fast-browser@mattstack and mattstack@mattstack all enabled, plus other real plugins. */
-const REAL_PLUGIN_LIST_JSON = readFileSync(join(CAPTURE_DIR, "real-plugin-list.json"), "utf8");
+/** Real `claude plugin list --json` shape: chat@mattstack, fast-browser@mattstack and mattstack@mattstack all enabled, plus other real plugins. */
+const REAL_PLUGIN_LIST_JSON = readFileSync(join(FIXTURE_DIR, "plugin-list.json"), "utf8");
 type RealPluginEntry = { id: string; enabled: boolean };
 const REAL_PLUGIN_ENTRIES: RealPluginEntry[] = JSON.parse(REAL_PLUGIN_LIST_JSON);
 
 /** Real `claude plugin list` (human form): a chevron glyph before each name, never the bare id. */
-const REAL_PLUGIN_LIST_TXT = readFileSync(join(CAPTURE_DIR, "real-plugin-list.txt"), "utf8");
+const REAL_PLUGIN_LIST_TXT = readFileSync(join(FIXTURE_DIR, "plugin-list.txt"), "utf8");
 
 interface RealDoctorCheck {
   id: string;
@@ -39,8 +43,8 @@ interface RealDoctor {
   checks: RealDoctorCheck[];
 }
 
-/** Real `fast-browser doctor --json` from a fully healthy machine: all 21 checks report "pass". */
-const REAL_DOCTOR: RealDoctor = JSON.parse(readFileSync(join(CAPTURE_DIR, "real-doctor.json"), "utf8"));
+/** Real `fast-browser doctor --json` shape from a fully healthy machine: all 21 checks report "pass". */
+const REAL_DOCTOR: RealDoctor = JSON.parse(readFileSync(join(FIXTURE_DIR, "doctor.json"), "utf8"));
 
 function withCheckStatus(doctor: RealDoctor, id: string, status: string): RealDoctor {
   return { ...doctor, checks: doctor.checks.map((c) => (c.id === id ? { ...c, status } : c)) };
