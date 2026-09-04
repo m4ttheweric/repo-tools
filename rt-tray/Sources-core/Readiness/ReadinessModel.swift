@@ -52,10 +52,34 @@ public final class ReadinessModel: ObservableObject {
     public var allRows: [PlanRow] { groups.flatMap(\.rows) }
     public func row(_ id: String) -> PlanRow? { allRows.first { $0.id == id } }
 
+    /// True exactly when the refresh that most recently completed (`load`,
+    /// `recheckAll`, `afterAction`, `didBecomeActive`) failed. `fetch` sets
+    /// `lastError` on every call, success or failure, so this always reflects
+    /// that latest attempt rather than one from earlier. A caller that gates
+    /// UI on freshness must not treat a failed refresh as though it replaced
+    /// stale `groups` with confirmed data.
+    public var lastRefreshFailed: Bool { lastError != nil }
+
     /// Every required row ready, at least one optional row (permission or
     /// otherwise) not ready — a denied optional permission counts.
     public var limitedModeAvailable: Bool {
         canInstall && allRows.contains { !$0.required && $0.status != .ready }
+    }
+
+    /// Steps Install could not take for the user and will not take on a
+    /// retry: optional rows still not ready whose action a person performs by
+    /// hand. `skipped` is excluded deliberately, since it means the row had
+    /// nothing to check rather than something outstanding. A row whose own
+    /// `optionalNote` opens with "works without" is a supported end state
+    /// rather than an obligation, so it is excluded even when its status and
+    /// action otherwise qualify.
+    public var outstandingManualRows: [PlanRow] {
+        allRows.filter { row in
+            guard !row.required, row.status != .ready, row.status != .skipped else { return false }
+            guard let type = row.action?.type, type == .steps || type == .openURL else { return false }
+            if let note = row.optionalNote, note.lowercased().hasPrefix("works without") { return false }
+            return true
+        }
     }
 
     public func load() async { await fetch() }

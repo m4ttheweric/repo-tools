@@ -81,15 +81,15 @@ describe("row", () => {
 });
 
 describe("STEP_IDS", () => {
-  test("matches the contract's 23 ids in order", () => {
+  test("matches the contract's 24 ids in order", () => {
     expect(STEP_IDS).toEqual([
       "home.init",
       "home.restore",
       "team.create",
       "team.join",
       "secrets.write",
+      "git.identity",
       "path.link",
-      "intercepts.install",
       "settings.seed",
       "repos.clone",
       "services.register",
@@ -99,6 +99,7 @@ describe("STEP_IDS", () => {
       "skills.link",
       "board.keys",
       "cron.triage",
+      "intercepts.install",
       "plugins.install",
       "fastbrowser.setup",
       "herdr.integration",
@@ -107,5 +108,16 @@ describe("STEP_IDS", () => {
       "snapshot.push",
       "verify",
     ]);
+  });
+
+  test("intercepts.install runs after repos.clone (which fills the index it reads) and after cron.triage (the last settings-store write staleIntercepts compares against)", () => {
+    // installShims() builds its rules by iterating the repo index. Ahead of
+    // repos.clone that index is empty on a fresh machine, so the step writes
+    // an empty rules cache. staleIntercepts() then compares that cache's
+    // generatedAt against the mtimes of the same settings-store files
+    // board.keys and cron.triage write, so the step must also run after both
+    // or the cache it just wrote reads back as stale.
+    expect(STEP_IDS.indexOf("intercepts.install")).toBeGreaterThan(STEP_IDS.indexOf("repos.clone"));
+    expect(STEP_IDS.indexOf("intercepts.install")).toBeGreaterThan(STEP_IDS.indexOf("cron.triage"));
   });
 });

@@ -1,7 +1,9 @@
 /**
- * Home-repo snapshot daemon module: watches ~/.mattstack/user for changes,
- * auto-commits everything NOT inside a claimed zone, and janitor-commits a
- * claimed zone left dirty past its threshold. Zones stay owner-authored:
+ * Snapshot daemon engine, driven by a `SnapshotSpec`: watches a repo for
+ * changes, auto-commits everything NOT inside a claimed zone, and
+ * janitor-commits a claimed zone left dirty past its threshold. The home repo
+ * (~/.mattstack/user) is one instance of it (`homeSnapshotSpec`), and
+ * `startHomeSnapshot` is the wrapper that starts it. Zones stay owner-authored:
  * `runNow` never stages a claimed zone except through the janitor path, and
  * never on reason "watch" (only "janitor"/"manual" — see planSnapshot's
  * caller below).
@@ -30,6 +32,7 @@ import { mattstackHome, rtDir } from "../rt-paths.ts";
 import { runCapture, type RunResult } from "../subprocess.ts";
 import { getSetting } from "../settings/resolve.ts";
 import {
+  deleteKvValue,
   getKvValue,
   getStateDb,
   hasKvValue,
@@ -37,9 +40,12 @@ import {
   renameLegacyOutOfTheWay,
   setKvValue,
 } from "../state/index.ts";
+import { gitWithToken } from "../team/git-credential.ts";
+import { storedForgeToken } from "../team/stored-forge-token.ts";
+import type { Probes } from "../setup/probes.ts";
 import { readOwners as readOwnersReal, type Owners } from "../home/snapshot-owners.ts";
 import { HOME_SNAPSHOT_NS, recordHomePush, type HomePushRecord } from "../home/push-record.ts";
-import { parsePorcelainZ, planSnapshot } from "./home-snapshot-plan.ts";
+import { parsePorcelainZ, planSnapshot, scopeEntries } from "./home-snapshot-plan.ts";
 
 export type SnapshotReason = "manual" | "watch" | "janitor";
 
@@ -48,13 +54,15 @@ export type SkipReason =
   | "not-a-repo"
   | "not-provisioned"
   | "no-git-identity"
+  | "git-unavailable"
   | "init-failed"
   | "detached"
   | "merge-in-progress"
   | "owners-read-error"
   | "index-locked"
   | "add-failed"
-  | "no-changes";
+  | "no-changes"
+  | "conflict";
 
 export interface SnapshotResult {
   committed: boolean;
@@ -64,7 +72,14 @@ export interface SnapshotResult {
   skipped?: SkipReason;
 }
 
+export interface PullResult {
+  outcome: "up-to-date" | "fast-forwarded" | "rebased" | "conflict" | "skipped";
+  detail: string | null;
+}
+
 export interface SnapshotStatus {
+  /** The spec this instance was started from ("home" for the home repo). */
+  id: string;
   enabled: boolean;
   /** True once the fs watcher is actually armed — false for a daemon that started with enabled:false and hasn't yet taken a manual run to lazily arm it (see doRun's `!watcher` check). */
   watching: boolean;
@@ -76,6 +91,13 @@ export interface SnapshotStatus {
   pushPending: boolean;
   lastPushAt: number;
   lastPushError: string | null;
+  /** Stamped only by a fetch that actually reached the remote, so a clone whose token stopped working reads as stale rather than in sync. */
+  lastPullAt: number;
+  lastPullError: string | null;
+  /** The most recent pull's skip reason (e.g. a rebase refused for a dirty `src/`); null after any non-skipped pull. */
+  lastPullSkipped: string | null;
+  /** A rebase that stopped mid-way. Cleared once the clone is no longer ahead of origin (a hand rebase then `rt team publish`, or a reset to origin); pushes and the applying of pulls stay suspended until then, while the fetch itself keeps running, since that is what observes the clearing condition. */
+  conflicted: { at: number; detail: string } | null;
   claimedZones: string[];
   firstSeenDirty: Record<string, number>;
   /** Set (and cleared) each time status() re-reads the owners file — surfaces a fail-closed readOwners throw without hiding it behind a stale cache. */
@@ -85,6 +107,8 @@ export interface SnapshotStatus {
 export interface HomeSnapshotHandle {
   stop(): void;
   runNow(reason: SnapshotReason): Promise<SnapshotResult>;
+  /** Fetch, then fast-forward or rebase. A spec without a `pull` policy always skips. */
+  pullNow(): Promise<PullResult>;
   status(): SnapshotStatus;
   /** Resolves once startup arming (the enabled + is-a-repo checks) has settled. Not needed by the daemon (which just fires and forgets); tests await it so assertions don't race the async repo check. */
   ready: Promise<void>;
@@ -98,7 +122,7 @@ export interface HomeSnapshotSettings {
   janitorIntervalMin: number;
 }
 
-type ExecFn = (argv: [string, ...string[]], opts?: { cwd?: string; timeoutMs?: number; stderr?: "ignore" | "pipe" }) => Promise<RunResult>;
+type ExecFn = (argv: [string, ...string[]], opts?: { cwd?: string; timeoutMs?: number; stderr?: "ignore" | "pipe"; env?: Record<string, string> }) => Promise<RunResult>;
 type WatchFn = (path: string, options: { recursive: boolean }, listener: (eventType: string, filename: string | null) => void) => { close(): void };
 type TimeoutFn = (cb: () => void, ms: number) => ReturnType<typeof setTimeout>;
 type ClearTimeoutFn = (handle: ReturnType<typeof setTimeout>) => void;
@@ -117,8 +141,29 @@ export interface HomeSnapshotDeps {
   db?: Database;
 }
 
+/** What distinguishes one snapshot instance from another. Everything else about a run is identical across instances. */
+export interface SnapshotSpec {
+  id: string;
+  repoDir: string;
+  kvNamespace: string;
+  eventPrefix: "home" | "team";
+  /** Paths (relative to repoDir) the engine may stage; undefined = everything outside claimed zones. */
+  scope?: (relPath: string) => boolean;
+  /** Fetch + rebase policy; absent = never pull (the home repo is single-writer). */
+  pull?: { intervalSec: number };
+  /** The forge token rt holds for origin; absent = git's own credentials. */
+  tokenFor?: () => Promise<string | null>;
+  /** The retired pre-kv state file to import once; home only. */
+  legacyStatePath?: string;
+}
+
+/** The spec carries repoDir, so an instance's deps never do. */
+export type SnapshotDeps = Omit<HomeSnapshotDeps, "repoDir">;
+export type SnapshotHandle = HomeSnapshotHandle;
+
 const GIT_TIMEOUT_MS = 15_000;
 const PUSH_TIMEOUT_MS = 30_000;
+const FETCH_TIMEOUT_MS = 30_000;
 /** Cap for schedulePushRetry's geometric backoff (R042): an unreachable
  *  remote must not keep spawning git and re-warning every base retry
  *  window forever. */
@@ -162,6 +207,29 @@ function ownersPathFor(repoDir: string): string {
   return join(repoDir, "snapshot-owners.jsonc");
 }
 
+/**
+ * Everything in a log line that is true of one spec and false of the other:
+ * one engine serves both, and an operator reading a team clone's log must not
+ * be told to check the home repo's setting or run the home repo's remedy.
+ * Keyed by `eventPrefix` so no spec carries prose of its own.
+ */
+const SPEC_VOCAB = {
+  home: {
+    label: "home-snapshot",
+    settingsKey: "rt.homeSnapshot",
+    missingRepo: "home repo not provisioned; run `rt home init`",
+  },
+  team: {
+    label: "team-snapshot",
+    settingsKey: "rt.teamSnapshot",
+    missingRepo: "team clone directory is missing; the supervisor drops it on the next rescan",
+  },
+} as const;
+
+function vocabOf(spec: SnapshotSpec): (typeof SPEC_VOCAB)[SnapshotSpec["eventPrefix"]] {
+  return SPEC_VOCAB[spec.eventPrefix];
+}
+
 /** A push failure's stderr can quote the remote URL verbatim (`https://user:token@host/...`) — this must never reach status() or a log line unredacted. */
 function redactCredentials(text: string): string {
   return text.replace(/:\/\/[^/@\s]+@/g, "://<redacted>@");
@@ -187,8 +255,8 @@ async function hasRemote(exec: ExecFn, cwd: string): Promise<boolean> {
  * absence is checked explicitly before ever calling `rev-list` against it.
  *
  * An unborn branch (a remote attached before the first commit ever landed
- * — e.g. `git commit` failing outright with no `user.name`/`user.email`
- * configured) prints its branch name via `symbolic-ref` just fine, exit 0,
+ * (e.g. `git commit` failing outright because git could resolve no
+ * committer identity) prints its branch name via `symbolic-ref` just fine, exit 0,
  * same as a normal branch — HEAD itself must be verified separately, or
  * this arms a `git push` with nothing to push ("src refspec HEAD does not
  * match any"), which fails every time and drives a retry storm.
@@ -207,14 +275,10 @@ async function unpushedAgainstOrigin(exec: ExecFn, cwd: string): Promise<boolean
 }
 
 const HOME_SNAPSHOT_KEY = "state";
+const CONFLICT_KEY = "conflict";
 
 interface PersistedHomeSnapshotState {
   firstSeenDirty?: Record<string, number>;
-}
-
-/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
-function legacyStatePath(): string {
-  return join(rtDir(), "home-snapshot-state.json");
 }
 
 function firstSeenDirtyOf(raw: PersistedHomeSnapshotState | null | undefined): Record<string, number> {
@@ -222,52 +286,93 @@ function firstSeenDirtyOf(raw: PersistedHomeSnapshotState | null | undefined): R
 }
 
 /** A missing row is the normal first-run case (silent); a present-but-unparseable row is a real loss of the janitor-threshold clock and must be loud, per the catch policy. */
-function loadState(db: Database, log: Logger): Record<string, number> {
-  if (hasKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, db)) {
+function loadState(spec: SnapshotSpec, db: Database, log: Logger): Record<string, number> {
+  if (hasKvValue(spec.kvNamespace, HOME_SNAPSHOT_KEY, db)) {
     return firstSeenDirtyOf(getKvValue<PersistedHomeSnapshotState>(
-      HOME_SNAPSHOT_NS,
+      spec.kvNamespace,
       HOME_SNAPSHOT_KEY,
       {},
       db,
-      (err) => log.warn({ err }, "home-snapshot: state row corrupt; starting from empty first-seen-dirty state"),
+      (err) => log.warn({ err }, `${vocabOf(spec).label}: state row corrupt; starting from empty first-seen-dirty state`),
     ));
   }
 
+  if (spec.legacyStatePath === undefined) return {};
   const result = importLegacyJsonFile<Record<string, number>>(
-    legacyStatePath(),
+    spec.legacyStatePath,
     (json) => {
       const firstSeenDirty = firstSeenDirtyOf(json as PersistedHomeSnapshotState | null);
-      setKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
+      setKvValue(spec.kvNamespace, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
       return firstSeenDirty;
     },
     {
-      onCorrupt: (err) => log.warn({ err }, "home-snapshot: legacy state file corrupt; starting from empty first-seen-dirty state"),
-      verifyPersisted: () => hasKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, db),
+      onCorrupt: (err) => log.warn({ err }, `${vocabOf(spec).label}: legacy state file corrupt; starting from empty first-seen-dirty state`),
+      verifyPersisted: () => hasKvValue(spec.kvNamespace, HOME_SNAPSHOT_KEY, db),
     },
   );
   return result.imported ? result.value! : {};
 }
 
-function persistState(db: Database, firstSeenDirty: Record<string, number>, log: Logger): void {
+function persistState(spec: SnapshotSpec, db: Database, firstSeenDirty: Record<string, number>, log: Logger): void {
   try {
-    setKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
-    renameLegacyOutOfTheWay(legacyStatePath());
+    setKvValue(spec.kvNamespace, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
+    if (spec.legacyStatePath !== undefined) renameLegacyOutOfTheWay(spec.legacyStatePath);
   } catch (err) {
-    log.warn({ err }, "home-snapshot: failed to persist state");
+    log.warn({ err }, `${vocabOf(spec).label}: failed to persist state`);
   }
 }
 
 /** The `home.backup` row's only source for WHY a push is failing — the one thing about a broken backup that git's own refs cannot show. Its own kv key, never HOME_SNAPSHOT_KEY, which persistState overwrites wholesale every cycle. */
-function persistPushRecord(db: Database, record: HomePushRecord, log: Logger): void {
+function persistPushRecord(spec: SnapshotSpec, db: Database, record: HomePushRecord, log: Logger): void {
   try {
-    recordHomePush(db, record);
+    recordHomePush(db, record, spec.kvNamespace);
   } catch (err) {
-    log.warn({ err }, "home-snapshot: failed to persist the last-push record");
+    log.warn({ err }, `${vocabOf(spec).label}: failed to persist the last-push record`);
   }
 }
 
+const TEAM_SCOPE_ROOTS = ["mattstack", ".sops.yaml", ".claude-plugin"] as const;
+
+/** A team clone can also be a working repo (a team's tools repo can carry src/ and docs/); only the store, the recipients file and the marketplace are the daemon's to commit. */
+export function teamScope(relPath: string): boolean {
+  return TEAM_SCOPE_ROOTS.some((root) => relPath === root || relPath.startsWith(`${root}/`));
+}
+
+export function homeSnapshotSpec(repoDir: string = join(mattstackHome(), "user")): SnapshotSpec {
+  return {
+    id: "home",
+    repoDir,
+    kvNamespace: HOME_SNAPSHOT_NS,
+    eventPrefix: "home",
+    legacyStatePath: join(rtDir(), "home-snapshot-state.json"),
+  };
+}
+
+/** A team clone: no legacy state file (nothing predates it), and it pulls (multi-writer), unlike the home repo. */
+export function teamSnapshotSpec(
+  slug: string,
+  repoDir: string,
+  opts: { pullIntervalSec: number; originUrl: string; probes: Probes; readToken?: (p: Probes, remote: string) => Promise<string | null> },
+): SnapshotSpec {
+  const readToken = opts.readToken ?? storedForgeToken;
+  return {
+    id: `team:${slug}`,
+    repoDir,
+    kvNamespace: `team-snapshot:${slug}`,
+    eventPrefix: "team",
+    scope: teamScope,
+    pull: { intervalSec: opts.pullIntervalSec },
+    tokenFor: () => readToken(opts.probes, opts.originUrl),
+  };
+}
+
 export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle {
-  const repoDir = rawDeps.repoDir ?? join(mattstackHome(), "user");
+  const { repoDir, ...rest } = rawDeps;
+  return startSnapshot(homeSnapshotSpec(repoDir), rest);
+}
+
+export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): SnapshotHandle {
+  const repoDir = spec.repoDir;
   const rawReadSettings = rawDeps.readSettings ?? (() => getSetting<HomeSnapshotSettings>("rt.homeSnapshot").value);
   // Thunk, not a resolved value: module-scope construction (lib/daemon.ts)
   // must not open state.db before startDaemon() has opened it daemon-flavored
@@ -288,6 +393,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   };
 
   const ownersPath = ownersPathFor(deps.repoDir);
+  const { label, settingsKey, missingRepo } = vocabOf(spec);
 
   let disabledReason: SkipReason | null = null;
   let stopped = false;
@@ -296,7 +402,18 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   let pushTimer: ReturnType<typeof setTimeout> | null = null;
   let pushRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let janitorTimer: ReturnType<typeof setTimeout> | null = null;
+  let pullTimer: ReturnType<typeof setTimeout> | null = null;
   let runInFlight: Promise<SnapshotResult> | null = null;
+  let pullInFlight: Promise<PullResult> | null = null;
+
+  let lastPullAt = 0;
+  let lastPullError: string | null = null;
+  let lastPullSkipped: string | null = null;
+  let conflicted: { at: number; detail: string } | null = null;
+  /** `spec.tokenFor` is a keychain read plus a sops decrypt, so it is resolved once per pull interval rather than per git call. */
+  let cachedToken: { value: string | null; at: number } | null = null;
+  /** Dedup key for remoteGit's token-read warn: a keychain that stays locked must warn once, not on every fetch and every push. */
+  let lastLoggedTokenError: string | null = null;
 
   let lastRunAt = 0;
   let lastCommit: { sha: string; message: string; at: number } | null = null;
@@ -340,22 +457,69 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message !== lastLoggedSettingsError) {
-        deps.log.warn({ err }, "home-snapshot: failed to read settings; using the last-known enabled state");
+        deps.log.warn({ err }, `${label}: failed to read settings; using the last-known enabled state`);
         lastLoggedSettingsError = message;
       }
       return { enabled: lastKnownEnabled, ...SETTINGS_FALLBACK };
     }
   }
 
+  let gitLock: Promise<unknown> = Promise.resolve();
+  /**
+   * Serializes the commit cycle and the pull, so a timer-driven rebase never
+   * overlaps an add/commit on the same clone. Push stays OUTSIDE the lock: it
+   * calls pullNow(), which takes the lock itself, so a push held inside it
+   * would wait on itself.
+   */
+  function withGitLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = gitLock.then(fn, fn);
+    gitLock = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * `runCapture` REPLACES the child's environment when `env` is given
+   * (lib/subprocess.ts), so the token vars ride on top of a full copy of
+   * process.env or git loses PATH and HOME. A spec without `tokenFor` (home)
+   * keeps today's plain exec, env untouched.
+   *
+   * Never throws. `spec.tokenFor` is the one throw source in the fetch/push
+   * chain (a locked keychain, a failed sops decrypt), and both call sites are
+   * reached through a `void` timer callback where a rejection would escape
+   * unhandled: the pull would skip its own bookkeeping and the push would skip
+   * its failure branch, stalling the retry ladder until the next commit. A
+   * token read failure is reported as a failed git run so each caller's own
+   * failure path runs.
+   */
+  async function remoteGit(args: string[], timeoutMs: number): Promise<RunResult> {
+    if (!spec.tokenFor) return deps.exec(["git", ...args] as [string, ...string[]], { cwd: deps.repoDir, timeoutMs, stderr: "pipe" });
+    const ttlMs = (spec.pull?.intervalSec ?? 300) * 1000;
+    if (!cachedToken || deps.now() - cachedToken.at > ttlMs) {
+      try {
+        cachedToken = { value: await spec.tokenFor(), at: deps.now() };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message !== lastLoggedTokenError) {
+          deps.log.warn({ err, id: spec.id }, `${label}: could not read the forge token for origin`);
+          lastLoggedTokenError = message;
+        }
+        return { stdout: "", stderr: `could not read the forge token: ${message}`, exitCode: -1 };
+      }
+    }
+    lastLoggedTokenError = null;
+    const cmd = gitWithToken(args, cachedToken.value, { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0" });
+    return deps.exec(cmd.argv as [string, ...string[]], { cwd: deps.repoDir, timeoutMs, stderr: "pipe", env: cmd.env });
+  }
+
   // Guarded: this runs at construction time, synchronously, in whatever
-  // calls startHomeSnapshot() (module scope in lib/daemon.ts) — an
-  // unregistered key or a broken settings store must degrade to "stay
-  // inert, warn", never throw out of the daemon's boot sequence.
+  // starts the instance (module scope in lib/daemon.ts, via
+  // startHomeSnapshot): an unregistered key or a broken settings store must
+  // degrade to "stay inert, warn", never throw out of the daemon's boot sequence.
   let startupSettings: HomeSnapshotSettings | null = null;
   try {
     startupSettings = deps.readSettings();
   } catch (err) {
-    deps.log.warn({ err }, "home-snapshot: failed to read rt.homeSnapshot settings at startup");
+    deps.log.warn({ err }, `${label}: failed to read ${settingsKey} settings at startup`);
   }
   // status()'s fallback when a LATER readSettings() call throws — seeded
   // from whatever the startup read actually saw (or the optimistic true a
@@ -371,7 +535,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     // timer stay unarmed for now; doRun lazily arms them on its own first
     // call once it observes a live re-enable, so a manual run reaching that
     // point also leaves the daemon watching from then on — no restart needed.
-    deps.log.info("home-snapshot: disabled (rt.homeSnapshot.enabled=false) at startup — watcher/janitor stay unarmed until a run observes a live re-enable");
+    deps.log.info(`${label}: disabled (${settingsKey}.enabled=false) at startup... watcher/janitor stay unarmed until a run observes a live re-enable`);
   }
 
   let resolveReady!: () => void;
@@ -381,15 +545,16 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
 
   void init();
 
-  /** Arms the watcher + janitor timer; on a throw (fs.watch EMFILE/ENOSPC/ENOENT), marks the module permanently inert instead of leaving it half-armed. Shared by init() (the normal startup path) and doRun's lazy-arm (a daemon that started disabled and was later live re-enabled). */
+  /** Arms the watcher, the janitor timer and (for a pulling spec) the pull timer; on a throw (fs.watch EMFILE/ENOSPC/ENOENT), marks the module permanently inert instead of leaving it half-armed. Shared by init() (the normal startup path) and doRun's lazy-arm (a daemon that started disabled and was later live re-enabled). The pull timer belongs here rather than in init(), or a re-enabled clone would keep committing and pushing while never fetching again. */
   function tryArm(): boolean {
     try {
       armWatcher();
       scheduleJanitor();
+      schedulePull();
       return true;
     } catch (err) {
       disabledReason = "init-failed";
-      deps.log.warn({ err }, "home-snapshot: watcher arming failed; inert");
+      deps.log.warn({ err }, `${label}: watcher arming failed; inert`);
       if (watcher) { try { watcher.close(); } catch { /* already closed */ } watcher = null; }
       return false;
     }
@@ -403,7 +568,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       // "could not run git".
       if (!existsSync(deps.repoDir)) {
         disabledReason = "not-provisioned";
-        deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: home repo not provisioned; run `rt home init`; inert");
+        deps.log.warn({ repoDir: deps.repoDir }, `${label}: ${missingRepo}; inert`);
         return;
       }
       const check = await deps.exec(["git", "rev-parse", "--is-inside-work-tree"], {
@@ -417,20 +582,30 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
         // (spawn failure — git missing from PATH, permissions, ...), distinct
         // from git itself running and saying "not a repository".
         disabledReason = "init-failed";
-        deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: could not run git (is it on PATH?); inert");
+        deps.log.warn({ repoDir: deps.repoDir }, `${label}: could not run git (is it on PATH?); inert`);
         return;
       }
       if (check.exitCode !== 0 || check.stdout.trim() !== "true") {
         disabledReason = "not-a-repo";
-        deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: repoDir is not a git repository; inert");
+        deps.log.warn({ repoDir: deps.repoDir }, `${label}: repoDir is not a git repository; inert`);
         return;
       }
       // First real db touch: this await already put us past the daemon's
       // synchronous boot pass, so by now startDaemon() has opened state.db
       // daemon-flavored via openBranchCacheStore (see resolveDb above).
-      firstSeenDirty = loadState(resolveDb(), deps.log);
+      firstSeenDirty = loadState(spec, resolveDb(), deps.log);
+      // A conflict outlives the daemon: a restart must not resume pushing a
+      // clone whose rebase a human has not yet finished.
+      conflicted = getKvValue<{ at: number; detail: string } | null>(spec.kvNamespace, CONFLICT_KEY, null, resolveDb());
       if (deps.readSettings().enabled !== false) {
         tryArm();
+        // tryArm arms the interval; this is the boot pull, so a daemon that
+        // just started does not wait a whole interval to see the remote.
+        // Same reasoning as schedulePull's catch, and it matters more here:
+        // this runs inside the daemon's boot window.
+        if (spec.pull && !disabledReason) {
+          void pullNow().catch((err) => { deps.log.warn({ err }, `${label}: boot pull failed; continuing`); });
+        }
       }
     } catch (err) {
       // The is-inside-work-tree exec call itself never throws per its own
@@ -438,7 +613,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       // without it, any surprise here would leave every runNow() (including
       // the home:snapshot IPC handler) awaiting readyPromise forever.
       disabledReason = "init-failed";
-      deps.log.warn({ err }, "home-snapshot: startup arming failed; inert");
+      deps.log.warn({ err }, `${label}: startup arming failed; inert`);
     } finally {
       resolveReady();
     }
@@ -468,7 +643,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (message !== lastLoggedSettingsError) {
-            deps.log.warn({ err }, "home-snapshot: failed to read settings while arming the debounce; using the default");
+            deps.log.warn({ err }, `${label}: failed to read settings while arming the debounce; using the default`);
             lastLoggedSettingsError = message;
           }
           currentDebounceMs = SETTINGS_FALLBACK.debounceSec * 1000;
@@ -491,6 +666,113 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
         if (!stopped) scheduleJanitor();
       });
     }, intervalMs);
+  }
+
+  function schedulePull(): void {
+    if (!spec.pull || stopped) return;
+    if (pullTimer) deps.clearTimeout(pullTimer);
+    pullTimer = deps.setTimeout(() => {
+      pullTimer = null;
+      // doPull reports its own git failures as outcomes, so a rejection here
+      // is a seam throwing (broadcast, a db handle). Swallowed rather than
+      // left to `void`: an unhandled rejection is a `process.exit(1)` under
+      // the daemon's installCrashHandlers, and the interval must survive it.
+      void pullNow()
+        .catch((err) => { deps.log.warn({ err }, `${label}: scheduled pull failed; continuing`); })
+        .finally(() => { if (!stopped) schedulePull(); });
+    }, spec.pull.intervalSec * 1000);
+  }
+
+  async function pullNow(): Promise<PullResult> {
+    await readyPromise;
+    // A fetch and a `git merge --ff-only` need no committer, so a clone that
+    // cannot commit still stays current; every other disabledReason
+    // (init-failed, not-a-repo, not-provisioned) means there is nothing to
+    // pull into.
+    const blocked = disabledReason !== null && disabledReason !== "no-git-identity";
+    if (!spec.pull || blocked || safeReadSettings().enabled === false) {
+      return { outcome: "skipped", detail: "pull not enabled for this repo" };
+    }
+    if (pullInFlight) return pullInFlight;
+    const p = withGitLock(() => doPull());
+    pullInFlight = p;
+    try {
+      const result = await p;
+      lastPullSkipped = result.outcome === "skipped" ? result.detail : null;
+      return result;
+    } finally {
+      pullInFlight = null;
+    }
+  }
+
+  async function doPull(): Promise<PullResult> {
+    if (!(await hasRemote(deps.exec, deps.repoDir))) return { outcome: "skipped", detail: "no remote" };
+    const branchResult = await deps.exec(["git", "symbolic-ref", "--short", "HEAD"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+    if (branchResult.exitCode !== 0) return { outcome: "skipped", detail: "detached HEAD" };
+    const branch = branchResult.stdout.trim();
+    const fetch = await remoteGit(["fetch", "-q", "origin", branch], FETCH_TIMEOUT_MS);
+    if (fetch.exitCode !== 0) {
+      lastPullError = redactCredentials(fetch.stderr);
+      return { outcome: "skipped", detail: lastPullError };
+    }
+    // Stamped only here: a pull that never reached the remote must read as
+    // stale, or a joiner with a bad token would look in sync.
+    lastPullAt = deps.now();
+    lastPullError = null;
+    const counts = await deps.exec(["git", "rev-list", "--left-right", "--count", `refs/remotes/origin/${branch}...HEAD`], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+    if (counts.exitCode !== 0) return { outcome: "skipped", detail: "no remote-tracking ref yet" };
+    const [behind, ahead] = counts.stdout.trim().split(/\s+/).map(Number);
+    // Cleared only once local is no longer ahead of origin. A hand rebase on
+    // its own does NOT get there: it leaves the replayed commits ahead, and
+    // the daemon's push stays suspended meanwhile, so the recovery is
+    // `rt team publish` after the rebase, or resetting the clone to origin.
+    if (conflicted && ahead === 0) clearConflict();
+    if (conflicted) return { outcome: "skipped", detail: conflicted.detail };
+    if (behind === 0) return { outcome: "up-to-date", detail: null };
+    if (ahead === 0) {
+      const ff = await deps.exec(["git", "merge", "-q", "--ff-only", `refs/remotes/origin/${branch}`], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      if (ff.exitCode !== 0) return { outcome: "skipped", detail: redactCredentials(ff.stderr) };
+      deps.log.info({ id: spec.id, behind }, `${label}: fast-forwarded`);
+      return { outcome: "fast-forwarded", detail: null };
+    }
+    const rebase = await deps.exec(["git", "-c", "commit.gpgsign=false", "rebase", "-q", `refs/remotes/origin/${branch}`], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+    if (rebase.exitCode === 0) {
+      deps.log.info({ id: spec.id, behind, ahead }, `${label}: rebased`);
+      return { outcome: "rebased", detail: null };
+    }
+    // A rebase that never started (unstaged changes outside the scope, a lock)
+    // exits 1 too, but leaves no rebase-merge/rebase-apply behind; only a
+    // rebase that stopped mid-way is a conflict.
+    const gitDir = await resolveGitDir();
+    const rebaseStopped = existsSync(join(gitDir, "rebase-merge")) || existsSync(join(gitDir, "rebase-apply"));
+    if (!rebaseStopped) {
+      const reason = redactCredentials(rebase.stderr.trim() || "rebase refused");
+      deps.log.warn({ id: spec.id, reason }, `${label}: rebase refused; will retry next tick`);
+      return { outcome: "skipped", detail: reason };
+    }
+    await deps.exec(["git", "rebase", "--abort"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+    const detail = redactCredentials(rebase.stderr.trim() || "rebase stopped");
+    conflicted = { at: deps.now(), detail };
+    try {
+      setKvValue(spec.kvNamespace, CONFLICT_KEY, conflicted, resolveDb());
+    } catch (err) {
+      deps.log.warn({ err }, `${label}: failed to persist the conflict marker`);
+    }
+    if (pushTimer) { deps.clearTimeout(pushTimer); pushTimer = null; }
+    if (pushRetryTimer) { deps.clearTimeout(pushRetryTimer); pushRetryTimer = null; }
+    deps.log.warn({ id: spec.id, detail }, `${label}: rebase conflict; still fetching, but not applying pulls or pushing until you rebase and \`rt team publish\` by hand, or reset the clone to origin`);
+    deps.broadcast(`${spec.eventPrefix}:conflict`, { id: spec.id, detail });
+    return { outcome: "conflict", detail };
+  }
+
+  function clearConflict(): void {
+    conflicted = null;
+    try {
+      deleteKvValue(spec.kvNamespace, CONFLICT_KEY, resolveDb());
+    } catch (err) {
+      deps.log.warn({ err }, `${label}: failed to clear the conflict marker`);
+    }
+    deps.log.info({ id: spec.id }, `${label}: conflict cleared`);
   }
 
   function schedulePush(): void {
@@ -562,7 +844,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     // real unpushed commit); once re-enabled, the next `committed ||
     // pushPending` check re-arms it exactly the same way a cancelled timer would.
     if (safeReadSettings().enabled === false) {
-      deps.log.debug("home-snapshot: disabled via rt.homeSnapshot.enabled=false; skipping a due push");
+      deps.log.debug(`${label}: disabled via ${settingsKey}.enabled=false; skipping a due push`);
       return;
     }
     // Local-only (rt home init with no remote attached) is a permanent,
@@ -572,16 +854,26 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     // a stale failure latches into status() forever and `committed ||
     // pushPending` re-arms a push every cycle that only ever no-ops here.
     if (!(await hasRemote(deps.exec, deps.repoDir))) {
-      deps.log.debug("home-snapshot: no remote configured; nothing to push");
+      deps.log.debug(`${label}: no remote configured; nothing to push`);
       pushPending = false;
       lastPushError = null;
       return;
     }
-    const result = await deps.exec(["git", "push", "-q", "origin", "HEAD"], {
-      cwd: deps.repoDir,
-      timeoutMs: PUSH_TIMEOUT_MS,
-      stderr: "pipe",
-    });
+    // A pulling spec is multi-writer: replaying the remote first is what keeps
+    // a clone from diverging, and a conflict suspends the push rather than
+    // resolving it in either direction.
+    if (spec.pull) {
+      const pulled = await pullNow();
+      if (pulled.outcome === "conflict" || conflicted) return;
+    }
+    let result = await remoteGit(["push", "-q", "origin", "HEAD"], PUSH_TIMEOUT_MS);
+    if (result.exitCode !== 0 && spec.pull && pushRetryAttempt === 0 && /\[rejected\]|non-fast-forward|fetch first/i.test(result.stderr)) {
+      // The remote moved between the pull above and this push; one inline
+      // replay beats waiting out a whole retry-backoff window.
+      await pullNow();
+      if (conflicted) return;
+      result = await remoteGit(["push", "-q", "origin", "HEAD"], PUSH_TIMEOUT_MS);
+    }
     if (result.exitCode === 0) {
       pushPending = false;
       pushFailureBroadcast = false;
@@ -589,7 +881,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       lastPushError = null;
       lastLoggedPushError = null;
       pushRetryAttempt = 0;
-      persistPushRecord(resolveDb(), { at: lastPushAt, ok: true }, deps.log);
+      persistPushRecord(spec, resolveDb(), { at: lastPushAt, ok: true }, deps.log);
       if (pushRetryTimer) {
         deps.clearTimeout(pushRetryTimer);
         pushRetryTimer = null;
@@ -606,15 +898,15 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       // remote otherwise re-warns and re-persists identically on every
       // retry, indefinitely.
       if (redactedStderr !== lastLoggedPushError) {
-        persistPushRecord(resolveDb(), { at: deps.now(), ok: false, error: redactedStderr }, deps.log);
-        deps.log.warn({ stderr: redactedStderr }, "home-snapshot: push failed");
+        persistPushRecord(spec, resolveDb(), { at: deps.now(), ok: false, error: redactedStderr }, deps.log);
+        deps.log.warn({ stderr: redactedStderr }, `${label}: push failed`);
         lastLoggedPushError = redactedStderr;
       }
       // Only the FIRST failure of an unbroken streak broadcasts — a retry
       // storm (schedulePushRetry firing every pushDelaySec*5) would
       // otherwise spam every WS/socket client with the same event.
       if (!pushFailureBroadcast) {
-        deps.broadcast("home:push-failed", { error: redactedStderr, pushPending: true });
+        deps.broadcast(`${spec.eventPrefix}:push-failed`, { error: redactedStderr, pushPending: true });
         pushFailureBroadcast = true;
       }
       schedulePushRetry();
@@ -650,7 +942,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       // while the watcher stays armed but the setting is off — an info line
       // per tick would spam the log for as long as the user leaves it
       // disabled.
-      deps.log.debug("home-snapshot: disabled via rt.homeSnapshot.enabled=false; skipping cycle");
+      deps.log.debug(`${label}: disabled via ${settingsKey}.enabled=false; skipping cycle`);
       return { committed: false, sha: null, paths: [], reason, skipped: "disabled" };
     }
     // Lazily arms a daemon that started with enabled:false and has since
@@ -674,13 +966,18 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     // (exit 0). `git commit` works fine on an unborn branch, so only the
     // exit-0 case is actually a reason to skip.
     if (branch.stdout.trim() === "HEAD" && branch.exitCode === 0) {
-      deps.log.warn("home-snapshot: HEAD is detached; skipping cycle");
+      deps.log.warn(`${label}: HEAD is detached; skipping cycle`);
       return { committed: false, sha: null, paths: [], reason, skipped: "detached" };
     }
     const gitDir = await resolveGitDir();
     if (existsSync(join(gitDir, "MERGE_HEAD")) || existsSync(join(gitDir, "rebase-merge")) || existsSync(join(gitDir, "rebase-apply"))) {
-      deps.log.warn("home-snapshot: a merge or rebase is in progress; skipping cycle");
+      deps.log.warn(`${label}: a merge or rebase is in progress; skipping cycle`);
       return { committed: false, sha: null, paths: [], reason, skipped: "merge-in-progress" };
+    }
+    // Committing on top of a conflicted clone only buries the divergence
+    // deeper: nothing more lands until the marker clears (see doPull).
+    if (conflicted) {
+      return { committed: false, sha: null, paths: [], reason, skipped: "conflict" };
     }
 
     let owners: Owners;
@@ -689,7 +986,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message !== lastLoggedOwnersError) {
-        deps.log.warn({ err }, "home-snapshot: owners file unreadable; skipping cycle");
+        deps.log.warn({ err }, `${label}: owners file unreadable; skipping cycle`);
         lastLoggedOwnersError = message;
       }
       return { committed: false, sha: null, paths: [], reason, skipped: "owners-read-error" };
@@ -701,7 +998,17 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       timeoutMs: GIT_TIMEOUT_MS,
       stderr: "pipe",
     });
-    const entries = parsePorcelainZ(statusResult.stdout);
+    const entries = scopeEntries(parsePorcelainZ(statusResult.stdout), spec.scope);
+    // A scoped spec's pathspec is the scoped entries' own paths, never the
+    // scope's roots: `git add -A -- mattstack .sops.yaml .claude-plugin`
+    // exits 128 and stages nothing when any root is absent from both tree
+    // and index, and a clone that lost its marketplace would then fail
+    // every cycle as add-failed. A rename's origPath rides along so the old
+    // path's deletion lands in the same commit as the new path; scopeEntries
+    // is what guarantees both halves are inside the scope.
+    const scopeArgs: string[] = spec.scope
+      ? [...new Set(entries.flatMap((e) => (e.origPath ? [e.origPath, e.path] : [e.path])))]
+      : ["."];
 
     const plan = planSnapshot({
       entries,
@@ -712,26 +1019,40 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     });
 
     firstSeenDirty = plan.nextFirstSeenDirty;
-    persistState(resolveDb(), firstSeenDirty, deps.log);
+    persistState(spec, resolveDb(), firstSeenDirty, deps.log);
 
     let committed = false;
     let sha: string | null = null;
 
     // Two independent commit sites below (the auto commit and the
     // janitor-zone loop) can each attempt a commit this cycle; both fail the
-    // same doomed way (exit 128, "empty ident name") against an unconfigured
-    // identity. Checked once, up front, whenever EITHER would run, so a
+    // same doomed way (exit 128, "empty ident name") when git cannot resolve
+    // a committer. Checked once, up front, whenever EITHER would run, so a
     // janitor-only cycle (no auto paths, one dirty claimed zone) is covered
-    // too, not just the auto-commit path.
+    // too, not just the auto-commit path. The probe asks git itself
+    // (`git var`), not the config keys: a fresh Mac has no user.name but git
+    // derives "<full name> <user@host>" from the account and commits fine,
+    // exactly as a hand commit there would.
     const willAutoCommit = plan.autoPaths.length > 0 && plan.message !== null;
     const willJanitorCommit = (reason === "janitor" || reason === "manual") && plan.janitorZones.length > 0;
     if (willAutoCommit || willJanitorCommit) {
-      const name = await deps.exec(["git", "config", "user.name"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
-      const email = await deps.exec(["git", "config", "user.email"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
-      if (name.exitCode !== 0 || !name.stdout.trim() || email.exitCode !== 0 || !email.stdout.trim()) {
+      const ident = await deps.exec(["git", "var", "GIT_COMMITTER_IDENT"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      // `runCapture` reports a spawn failure or a GIT_TIMEOUT_MS kill as -1,
+      // which says nothing about the repo's identity — init() draws the same
+      // line. Latching disabledReason on one slow `git var` would stop this
+      // instance committing (and, but for pullNow's exemption, fetching) for
+      // the rest of the daemon's life.
+      if (ident.exitCode === -1) {
+        if (lastLoggedCommitError !== "git-unavailable") {
+          deps.log.warn({ stderr: ident.stderr }, `${label}: could not run git to resolve a committer identity (is it on PATH?); skipping cycle`);
+          lastLoggedCommitError = "git-unavailable";
+        }
+        return { committed: false, sha: null, paths: [], reason, skipped: "git-unavailable" };
+      }
+      if (ident.exitCode !== 0 || !ident.stdout.trim()) {
         disabledReason = "no-git-identity";
         if (lastLoggedCommitError !== "no-git-identity") {
-          deps.log.warn("home-snapshot: no git identity; run `git config --global user.name` and `git config --global user.email`; snapshots inert");
+          deps.log.warn(`${label}: git cannot resolve a committer identity; run \`git config --global user.name\` and \`git config --global user.email\`; snapshots inert`);
           lastLoggedCommitError = "no-git-identity";
         }
         return { committed: false, sha: null, paths: [], reason, skipped: "no-git-identity" };
@@ -746,11 +1067,11 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       // whatever changed on disk between the status read and this add/commit
       // pair is governed by the live pathspec, not by the stale path list.
       const excludeArgs = plan.excludedZones.map((zone) => `:(exclude)${zone}`);
-      const addResult = await deps.exec(["git", "add", "-A", "--", ".", ...excludeArgs], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      const addResult = await deps.exec(["git", "add", "-A", "--", ...scopeArgs, ...excludeArgs], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
       if (addResult.exitCode !== 0) {
         const addSkipped: SkipReason = addResult.stderr.toLowerCase().includes("index.lock") ? "index-locked" : "add-failed";
         if (addResult.stderr !== lastLoggedAddError) {
-          deps.log.warn({ stderr: addResult.stderr }, "home-snapshot: git add failed; skipping cycle");
+          deps.log.warn({ stderr: addResult.stderr }, `${label}: git add failed; skipping cycle`);
           lastLoggedAddError = addResult.stderr;
         }
         if (pushPending) schedulePush();
@@ -772,7 +1093,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       // about an unattended backup commit needs a signature. (Git identity
       // is confirmed once, above, before either commit site runs.)
       const message = reason === "manual" ? plan.message!.replace(/^snapshot:/, "snapshot (manual):") : plan.message!;
-      const commitResult = await deps.exec(["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", message, "--", ".", ...excludeArgs], {
+      const commitResult = await deps.exec(["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", message, "--", ...scopeArgs, ...excludeArgs], {
         cwd: deps.repoDir,
         timeoutMs: GIT_TIMEOUT_MS,
         stderr: "pipe",
@@ -783,12 +1104,12 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
         lastCommit = { sha, message, at: deps.now() };
         lastCommitError = null;
         lastLoggedCommitError = null;
-        deps.log.info({ sha, paths: plan.autoPaths.length, reason }, "home-snapshot: committed");
-        deps.broadcast("home:snapshot", { sha, paths: plan.autoPaths, reason });
+        deps.log.info({ sha, paths: plan.autoPaths.length, reason }, `${label}: committed`);
+        deps.broadcast(`${spec.eventPrefix}:snapshot`, { sha, paths: plan.autoPaths, reason });
       } else {
         lastCommitError = commitResult.stderr;
         if (commitResult.stderr !== lastLoggedCommitError) {
-          deps.log.warn({ stderr: commitResult.stderr }, "home-snapshot: commit failed");
+          deps.log.warn({ stderr: commitResult.stderr }, `${label}: commit failed`);
           lastLoggedCommitError = commitResult.stderr;
         }
       }
@@ -800,7 +1121,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
         const message = `snapshot (janitor): ${jz.zone} dirty >${dirtyHours}h, owner ${jz.owner}`;
         const addResult = await deps.exec(["git", "add", "-A", "--", jz.zone], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
         if (addResult.exitCode !== 0) {
-          deps.log.warn({ stderr: addResult.stderr, zone: jz.zone }, "home-snapshot: janitor add failed; skipping this zone this cycle");
+          deps.log.warn({ stderr: addResult.stderr, zone: jz.zone }, `${label}: janitor add failed; skipping this zone this cycle`);
           continue;
         }
         // Same self-contained-commit and unsigned-commit reasoning as the auto commit above.
@@ -815,12 +1136,12 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
           lastCommit = { sha, message, at: deps.now() };
           lastCommitError = null;
           lastLoggedCommitError = null;
-          deps.log.info({ sha, paths: 1, reason }, "home-snapshot: committed");
-          deps.broadcast("home:snapshot", { sha, paths: [jz.zone], reason });
+          deps.log.info({ sha, paths: 1, reason }, `${label}: committed`);
+          deps.broadcast(`${spec.eventPrefix}:snapshot`, { sha, paths: [jz.zone], reason });
         } else {
           lastCommitError = commitResult.stderr;
           if (commitResult.stderr !== lastLoggedCommitError) {
-            deps.log.warn({ stderr: commitResult.stderr, zone: jz.zone }, "home-snapshot: janitor commit failed");
+            deps.log.warn({ stderr: commitResult.stderr, zone: jz.zone }, `${label}: janitor commit failed`);
             lastLoggedCommitError = commitResult.stderr;
           }
         }
@@ -851,7 +1172,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       return { committed: false, sha: null, paths: [], reason, skipped: disabledReason };
     }
     if (runInFlight) return runInFlight;
-    const p = doRun(reason);
+    const p = withGitLock(() => doRun(reason));
     runInFlight = p;
     try {
       return await p;
@@ -876,11 +1197,12 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message !== lastLoggedSettingsError) {
-        deps.log.warn({ err }, "home-snapshot: failed to read settings in status(); using the last-known value");
+        deps.log.warn({ err }, `${label}: failed to read settings in status(); using the last-known value`);
         lastLoggedSettingsError = message;
       }
     }
     return {
+      id: spec.id,
       enabled: lastKnownEnabled,
       watching: watcher !== null,
       repoDir: deps.repoDir,
@@ -890,6 +1212,10 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       pushPending,
       lastPushAt,
       lastPushError,
+      lastPullAt,
+      lastPullError,
+      lastPullSkipped,
+      conflicted,
       claimedZones,
       firstSeenDirty: { ...firstSeenDirty },
       ownersError,
@@ -904,7 +1230,8 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     if (pushTimer) deps.clearTimeout(pushTimer);
     if (pushRetryTimer) deps.clearTimeout(pushRetryTimer);
     if (janitorTimer) deps.clearTimeout(janitorTimer);
+    if (pullTimer) deps.clearTimeout(pullTimer);
   }
 
-  return { stop, runNow, status, ready: readyPromise };
+  return { stop, runNow, pullNow, status, ready: readyPromise };
 }

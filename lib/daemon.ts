@@ -68,6 +68,7 @@ import { deriveFailure } from "./daemon/failure.ts";
 import { loadCronConfig, startCron } from "./daemon/cron.ts";
 import { startPollers } from "./daemon/pollers.ts";
 import { startHomeSnapshot } from "./daemon/home-snapshot.ts";
+import { startTeamSnapshots } from "./daemon/team-snapshots.ts";
 import { startAgentStatusPoller } from "./daemon/agent-status-poller.ts";
 import { startNotifyBridge, type EventBridgeRule } from "./notify-bridge.ts";
 import { herdrRequest } from "./herdr/client.ts";
@@ -88,6 +89,10 @@ import { setSettingsWarnSink } from "./settings/resolve.ts";
 import { createDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { installSignalHandlers, removeRuntimeFiles } from "./daemon/shutdown.ts";
 import { createEventsBus, type EventsBus } from "./daemon/events-bus.ts";
+import { createGatesStore, type GatesStore } from "./daemon/gates-store.ts";
+import { createGatePush, type GatePush } from "./daemon/gate-push.ts";
+import { deliverToInbox } from "./daemon/inbox.ts";
+import { resolveInbox, resolveAllInboxes } from "./claude-registry.ts";
 import {
   writeBreadcrumb,
   recordBootAttempt,
@@ -270,6 +275,8 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
   let loggerHandle: DaemonLoggerHandle;
   let log: Logger = ctx.log;
   let eventsBus: EventsBus;
+  let gatesStore: GatesStore;
+  let gatePush: GatePush;
   let identity: {
     flavor: "dev" | "prod";
     version: string;
@@ -281,6 +288,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
   let worktreeReconciler: ReturnType<typeof createWorktreeReconciler>;
   let refreshCache: () => Promise<void>;
   let homeSnapshot: ReturnType<typeof startHomeSnapshot>;
+  let teamSnapshots: ReturnType<typeof startTeamSnapshots>;
   let agentStatusPoller: ReturnType<typeof startAgentStatusPoller>;
   let notifyBridgeStop: (() => void) | undefined;
   let healthSampler: ReturnType<typeof createHealthSampler>;
@@ -533,7 +541,9 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
       stop() {},
     },
 
-    // 4: events.db (createEventsBus, with the quarantine guard).
+    // 4: events.db (createEventsBus, with the quarantine guard) and
+    // gates.db (createGatesStore, same guard) side by side -- both are
+    // small daemon-local SQLite journals with no dependency on state.db.
     {
       name: "events-db",
       start() {
@@ -541,10 +551,25 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         // state.db open below never race a missing parent.
         mkdirSync(RT_DIR, { recursive: true });
         eventsBus = createEventsBus({ dbPath: join(RT_DIR, "events.db"), log });
+        gatesStore = createGatesStore({ dbPath: join(RT_DIR, "gates.db"), log });
+        // Session id -> socket resolution goes through the claude-registry
+        // (pane inboxes), never a bespoke lookup: it's the same binding
+        // rt chat delivery already resolves through.
+        gatePush = createGatePush({
+          store: gatesStore,
+          deliver: deliverToInbox,
+          resolveSession: resolveInbox,
+          resolveAll: resolveAllInboxes,
+          log,
+        });
         setPhase("events-db");
       },
       stop() {
-        eventsBus.close();
+        // Optional chaining: a throw earlier in start() (before either is
+        // assigned) must surface as ITS OWN error, not a masking TypeError
+        // from stop() reaching into an undefined variable.
+        eventsBus?.close();
+        gatesStore?.close_();
       },
     },
 
@@ -605,6 +630,12 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         sweepHandles.push(scheduleSweep(
           "events-sweep",
           () => { eventsBus.sweep(); },
+          { bootDelayMs: 30_000, intervalMs: 60 * 60 * 1000 },
+          log,
+        ));
+        sweepHandles.push(scheduleSweep(
+          "gates-sweep",
+          () => { gatesStore.sweep(); },
           { bootDelayMs: 30_000, intervalMs: 60 * 60 * 1000 },
           log,
         ));
@@ -716,6 +747,14 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           broadcast: emit,
         });
 
+        // Never awaited here: `ready` only settles boot-time scan/watch
+        // arming and always resolves (never rejects), so awaiting it would
+        // just delay boot for no signal this path needs.
+        teamSnapshots = startTeamSnapshots({
+          log: loggerHandle.childLogger("team-snapshots"),
+          broadcast: emit,
+        });
+
         // Herdr agent-status transitions write no run event, so the mirror on
         // run summaries needs its own change detector.
         agentStatusPoller = startAgentStatusPoller({
@@ -802,6 +841,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         agentStatusPoller?.stop();
         notifyBridgeStop?.();
         homeSnapshot?.stop();
+        teamSnapshots?.stop();
         for (const h of sweepHandles) h.stop();
         cron?.dispose();
         hooksGuard?.closeAll();
@@ -840,7 +880,10 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
             withReconcilerHeld: worktreeReconciler.withReconcilerHeld,
           },
           eventsBus,
+          gatesStore,
+          gatePush,
           homeSnapshot,
+          teamSnapshots,
           repos: {
             withReconcilerHeld: worktreeReconciler.withReconcilerHeld,
             refreshWatchedRepos: hooksGuard.refreshWatchedRepos,

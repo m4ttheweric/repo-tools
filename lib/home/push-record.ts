@@ -16,7 +16,7 @@ import { existsSync } from "fs";
 import type { Database } from "bun:sqlite";
 import { getKvValue, getStateDb, setKvValue, stateDbPath } from "../state/index.ts";
 
-/** Shared with lib/daemon/home-snapshot.ts's own `state` row — same namespace, different key, which is the whole point. */
+/** Shared with lib/daemon/home-snapshot.ts's own `state` row: same namespace, different key, which is the whole point. Also the default `ns` below, so a snapshot instance keyed on some other namespace writes its record beside its own state row, not on top of home's. */
 export const HOME_SNAPSHOT_NS = "home-snapshot";
 export const HOME_PUSH_KEY = "last-push";
 
@@ -34,8 +34,8 @@ function isHomePushRecord(value: unknown): value is HomePushRecord {
   return typeof record.at === "number" && Number.isFinite(record.at) && typeof record.ok === "boolean";
 }
 
-export function recordHomePush(db: Database, record: HomePushRecord): void {
-  setKvValue(HOME_SNAPSHOT_NS, HOME_PUSH_KEY, record, db);
+export function recordHomePush(db: Database, record: HomePushRecord, ns: string = HOME_SNAPSHOT_NS): void {
+  setKvValue(ns, HOME_PUSH_KEY, record, db);
 }
 
 /**
@@ -45,11 +45,11 @@ export function recordHomePush(db: Database, record: HomePushRecord): void {
  * recorded push", which is the correct reading on a machine whose daemon has
  * never run.
  */
-export function readHomePushRecord(db?: Database): HomePushRecord | null {
+export function readHomePushRecord(db?: Database, ns: string = HOME_SNAPSHOT_NS): HomePushRecord | null {
   try {
     const target = db ?? (existsSync(stateDbPath()) ? getStateDb() : null);
     if (!target) return null;
-    const raw = getKvValue<unknown>(HOME_SNAPSHOT_NS, HOME_PUSH_KEY, null, target);
+    const raw = getKvValue<unknown>(ns, HOME_PUSH_KEY, null, target);
     return isHomePushRecord(raw) ? raw : null;
   } catch {
     return null;

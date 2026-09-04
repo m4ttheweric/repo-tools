@@ -44,6 +44,13 @@ is the authority (override honored only as a safe single path segment). The rt
 snapshot daemon auto-commits and pushes the personal repo (debounced; claimed
 zones in `user/snapshot-owners.jsonc` excluded; `rt home claim|release`), so
 every store write becomes a `snapshot:` commit within ~80s — by design.
+The same engine runs one instance per team clone under `~/.mattstack/teams/`
+(`rt.teamSnapshot`, machine scope): it commits only `mattstack/`, `.sops.yaml`
+and `.claude-plugin/`, pulls (fast-forward or rebase) at boot, every
+`pullIntervalSec` and before every push, and surfaces a rebase conflict as
+the `team.sync` checklist row instead of resolving it. So a `--scope team`
+write or a `members sync` reaches every member's machine without a hand
+commit, publish, or pull (`docs/home-repo.md`, "Team clones").
 
 ## The resolver and registry
 
@@ -130,3 +137,8 @@ The authoritative per-app tables (which key, which scope, what shape) are in
 summaries live in each app's README (gitq, mr-board) and
 `~/.mattstack/work/scratch/handoff-2026-08-21-deck-state-for-react-rewrite.md`
 for deck.
+
+For what each key resolves to on a NEW teammate's machine the moment Install
+finishes ... who writes it, whether it travels with the team store, and what
+is still missing ... see
+[the day-one audit](superpowers/specs/2026-09-03-day-one-settings-audit-design.md).

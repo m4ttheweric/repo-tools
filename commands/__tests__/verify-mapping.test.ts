@@ -81,21 +81,50 @@ describe("rowsToChecks", () => {
     expect(oneCheck([baseRow({ id: "tool.herdr", status: "missing", required: true })], { ci: true }).status).toBe("warn");
   });
 
-  test("tool.fast-browser unhealthy in ci -> warn (doctor needs a real Chrome + loaded extension)", () => {
-    expect(oneCheck([baseRow({ id: "tool.fast-browser", status: "needs-you", required: true })], { ci: true }).status).toBe("warn");
-  });
-
-  // The line that keeps this from becoming a vacuous pass: fast-browser IS
-  // bundled, so `missing` means the BUNDLE is broken — exactly what this
-  // pipeline exists to catch — and must stay critical even in CI.
+  // tool.fast-browser's own row never carries required:true past the
+  // "missing" status (composePlan drops to required:false for needs-you and
+  // error), so a required:true needs-you row only ever reaches here as a
+  // synthetic fixture, never from the real validator.
   test("tool.fast-browser MISSING in ci -> still fails, because that means the bundle is broken", () => {
     const check = oneCheck([baseRow({ id: "tool.fast-browser", status: "missing", required: true })], { ci: true });
     expect(check.status).toBe("fail");
     expect(check.severity).toBe("critical");
   });
 
-  test("these exemptions are ci-only — all three still fail interactively", () => {
-    for (const id of ["tool.claude", "tool.herdr", "tool.fast-browser"]) {
+  test("tool.fast-browser needs-you no longer exempted in ci -> fails like any required row", () => {
+    const check = oneCheck([baseRow({ id: "tool.fast-browser", status: "needs-you", required: true })], { ci: true });
+    expect(check.status).toBe("fail");
+  });
+
+  test("tool.plugins missing in ci -> warn (installed through claude, which a runner does not have)", () => {
+    expect(oneCheck([baseRow({ id: "tool.plugins", status: "missing", required: true })], { ci: true }).status).toBe("warn");
+  });
+
+  // Disabling a plugin is a deliberate user choice, not a broken install:
+  // verify names it and nags, but it must never go red, in either mode.
+  test("tool.plugins needs-you (disabled baseline plugin) -> warn, never critical, ci false", () => {
+    const check = oneCheck([baseRow({ id: "tool.plugins", status: "needs-you", required: true, detail: "disabled: fast-browser@mattstack" })], { ci: false });
+    expect(check.status).toBe("warn");
+    expect(check.severity).toBe("warning");
+  });
+
+  test("tool.plugins needs-you (disabled baseline plugin) -> warn, never critical, ci true", () => {
+    const check = oneCheck([baseRow({ id: "tool.plugins", status: "needs-you", required: true, detail: "disabled: fast-browser@mattstack" })], { ci: true });
+    expect(check.status).toBe("warn");
+    expect(check.severity).toBe("warning");
+  });
+
+  // A genuinely missing baseline plugin is a different fact than a disabled
+  // one, and stays critical in status mode so the two cases cannot drift
+  // together.
+  test("tool.plugins MISSING (not needs-you) stays critical in status mode", () => {
+    const check = oneCheck([baseRow({ id: "tool.plugins", status: "missing", required: true, detail: "not installed: fast-browser@mattstack" })], { ci: false });
+    expect(check.status).toBe("fail");
+    expect(check.severity).toBe("critical");
+  });
+
+  test("these exemptions are ci-only, all still fail interactively", () => {
+    for (const id of ["tool.claude", "tool.herdr", "tool.fast-browser", "tool.plugins"]) {
       expect(oneCheck([baseRow({ id, status: "missing", required: true })], { ci: false }).status).toBe("fail");
     }
   });

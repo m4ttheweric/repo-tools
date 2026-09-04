@@ -20,18 +20,23 @@ import { createRunsHandlers } from "./handlers/runs.ts";
 import { createSecretsHandlers } from "./handlers/secrets.ts";
 import { createProjectMRsHandlers } from "./handlers/project-mrs.ts";
 import { createEventsHandlers } from "./handlers/events.ts";
+import { createGateHandlers } from "./handlers/gate.ts";
 import { createChatHandlers } from "./handlers/chat.ts";
 import { createAgentHandlers } from "./handlers/agent.ts";
 import { createPaneHandlers } from "./handlers/pane.ts";
 import { createEndpointHandlers } from "./handlers/endpoint.ts";
 import { createSettingsHandlers } from "./handlers/settings.ts";
 import { createHomeHandlers } from "./handlers/home.ts";
+import { createTeamSnapshotHandlers } from "./handlers/team-snapshot.ts";
 import { createReposHandlers } from "./handlers/repos.ts";
 import { reconcileFreshness, getFreshnessSnapshot } from "./freshness.ts";
 import { wrapWithDemand } from "./demand-tracker.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 import type { EventsBus } from "./events-bus.ts";
+import type { GatesStore } from "./gates-store.ts";
+import type { GatePush } from "./gate-push.ts";
 import type { HomeSnapshotHandle } from "./home-snapshot.ts";
+import type { TeamSnapshotsHandle } from "./team-snapshots.ts";
 
 // The exported return type is the plain `Record<string, Handler>` a router
 // lookup needs; the exhaustiveness proof against the rt-client catalog
@@ -48,8 +53,14 @@ export function buildRoutedHandlers(opts: {
   worktree: WorktreeHandlerOpts;
   /** Events bus backing events:emit/wait/list (RT-44). */
   eventsBus: EventsBus;
+  /** Gates store backing gate:* (BOARD-20/21). */
+  gatesStore: GatesStore;
+  /** Pane push + subscription fan-out for gate:open/gate:answer (BOARD-20/21). */
+  gatePush: GatePush;
   /** Home-repo snapshot daemon (H2) — inert handle when disabled/not-a-repo. */
   homeSnapshot: HomeSnapshotHandle;
+  /** One snapshot engine per team clone under ~/.mattstack/teams. */
+  teamSnapshots: TeamSnapshotsHandle;
   /** Reconciler hold + hooks-guard rewire the repos:locate verb drives. */
   repos: {
     withReconcilerHeld: <T>(fn: () => Promise<T>) => Promise<T>;
@@ -108,12 +119,14 @@ export function buildRoutedHandlers(opts: {
     ...createSecretsHandlers({ log: ctx.log }),
     ...createProjectMRsHandlers({ repoIndex: ctx.repoIndex, log: ctx.log }, broadcast),
     ...createEventsHandlers(opts.eventsBus, broadcast),
+    ...createGateHandlers(opts.gatesStore, opts.eventsBus, broadcast, { push: opts.gatePush, log: ctx.log }),
     ...chatHandlers,
     ...agentHandlers,
     ...paneHandlers,
     ...createEndpointHandlers({ log: ctx.log, repoIndex: ctx.repoIndex }),
     ...createSettingsHandlers(),
     ...createHomeHandlers(opts.homeSnapshot),
+    ...createTeamSnapshotHandlers(opts.teamSnapshots),
     ...createReposHandlers({ ...opts.repos, emitEvent }),
 
     // Applies repo-tracking edits immediately (rt daemon track <repo>

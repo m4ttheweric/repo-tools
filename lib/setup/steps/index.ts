@@ -9,6 +9,7 @@ import { installShims } from "../../endpoint/shim.ts";
 import { homeInitStep, homeRestoreStep } from "./home.ts";
 import { teamCreateStep, teamJoinStep } from "./team.ts";
 import { secretsWriteStep } from "./secrets.ts";
+import { gitIdentityStep } from "./git-identity.ts";
 import { pathLinkStep } from "./path.ts";
 import { settingsSeedStep } from "./settings.ts";
 import { reposCloneStep } from "./repos.ts";
@@ -51,8 +52,8 @@ export const STEPS: StepDef[] = [
   teamCreateStep,
   teamJoinStep,
   secretsWriteStep,
+  gitIdentityStep,
   pathLinkStep,
-  interceptsInstallStep,
   settingsSeedStep,
   reposCloneStep,
   servicesRegisterStep,
@@ -61,7 +62,13 @@ export const STEPS: StepDef[] = [
   skillsMaterializeStep,
   skillsLinkStep,
   boardKeysStep,
+  // cron.triage is the last settings-store write in apply order.
+  // intercepts.install must stay behind both repos.clone (the repo index
+  // it reads) and this step: staleIntercepts() compares the rules cache's
+  // generatedAt against these stores' mtimes, so a cache generated before
+  // them reports itself stale the moment it is written.
   cronTriageStep,
+  interceptsInstallStep,
   pluginsInstallStep,
   fastbrowserSetupStep,
   herdrIntegrationStep,

@@ -22,7 +22,7 @@ struct SetupView: View {
                 case .team: TeamScreen(model: team).transition(pushTransition)
                 case .checklist: ChecklistScreen(model: readiness, permissions: permissions, rt: env.rt).transition(pushTransition)
                 case .install: InstallScreen(model: install).transition(pushTransition)
-                case .done: DoneScreen(install: install, isOwner: team.choice == .create, onInvite: { NotificationCenter.default.post(name: .rtShowSettingsTeam, object: nil) }).transition(pushTransition)
+                case .done: DoneScreen(install: install, readiness: readiness, isOwner: team.choice == .create, onInvite: { NotificationCenter.default.post(name: .rtShowSettingsTeam, object: nil) }).transition(pushTransition)
                 }
             }
             .animation(.easeInOut(duration: 0.22), value: flow.step)

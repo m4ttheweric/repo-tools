@@ -117,6 +117,32 @@ function buildMessage(autoPaths: string[]): string {
   return `snapshot: ${shown.join(", ")}${extra > 0 ? ` +${extra} more` : ""}`;
 }
 
+/**
+ * Entries a spec may stage, projected onto the scope so that every path a
+ * caller can reach is in scope; undefined keeps every entry (the home repo's
+ * rule is "everything outside claimed zones").
+ *
+ * A rename straddles the boundary in both directions, and each half is
+ * wrong in its own way if the entry is judged on `path` alone. A rename INTO
+ * the scope keeps its new path but drops `origPath`, or the pathspec would
+ * stage a deletion in the user's own source. A rename OUT of the scope is
+ * NOT dropped: what is left behind is an in-scope deletion, so the entry
+ * becomes that deletion, or the clone stays dirty forever with the daemon
+ * reporting no changes.
+ */
+export function scopeEntries(entries: StatusEntry[], scope: ((relPath: string) => boolean) | undefined): StatusEntry[] {
+  if (!scope) return entries;
+  const scoped: StatusEntry[] = [];
+  for (const entry of entries) {
+    const pathIn = scope(entry.path);
+    const origIn = entry.origPath !== undefined && scope(entry.origPath);
+    if (pathIn && origIn) scoped.push(entry);
+    else if (pathIn) scoped.push({ xy: entry.xy, path: entry.path });
+    else if (origIn) scoped.push({ xy: entry.xy, path: entry.origPath! });
+  }
+  return scoped;
+}
+
 export function planSnapshot(input: PlanSnapshotInput): SnapshotPlan {
   const zones = Object.keys(input.owners.zones);
 

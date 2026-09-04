@@ -91,11 +91,14 @@ interface BoardMember {
   [key: string]: unknown;
 }
 
+/** Both roster keys, each judged on its own contents: board.members is the board's own list, mattstack.roster the cross-app successor, and a store can legitimately carry one without the other. */
 function addToRoster(seams: MintInviteSeams, slug: string, handle: string): void {
   const store = seams.readTeamStore(slug);
-  const existing = Array.isArray(store["board.members"]) ? (store["board.members"] as BoardMember[]) : [];
-  if (existing.some((m) => m.username === handle)) return;
-  seams.writeSetting("board.members", [...existing, { username: handle }], "team", { team: slug });
+  for (const key of ["board.members", "mattstack.roster"] as const) {
+    const existing = Array.isArray(store[key]) ? (store[key] as BoardMember[]) : [];
+    if (existing.some((m) => m.username === handle)) continue;
+    seams.writeSetting(key, [...existing, { username: handle }], "team", { team: slug });
+  }
 }
 
 function assertValidHandle(handle: string): void {

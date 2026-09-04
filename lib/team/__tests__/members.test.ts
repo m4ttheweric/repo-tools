@@ -167,7 +167,7 @@ function fakeMembersSeams(overrides: Partial<MembersSeams> = {}): { seams: Membe
     readTeamStore: () => store,
     writeSetting: ((key: string, value: unknown, scope: string, opts?: unknown) => {
       writes.push({ key, value, scope, opts });
-      if (key === "board.members") store = { ...store, "board.members": value };
+      if (key === "board.members" || key === "mattstack.roster") store = { ...store, [key]: value };
     }) as MembersSeams["writeSetting"],
     revokeRead: async () => ({ access: "revoked", manualSteps: [] }),
     readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
@@ -234,6 +234,24 @@ describe("membersSync", () => {
     expect(p.readFile(join(HOME, ".mattstack", "rt", "invites", `${SLUG}.json`))).toBe("{}");
     // Roster gained alice with her age key, via writeSetting("board.members", ..., "team", { team: slug }).
     const rosterWrite = writes.find((w) => w.key === "board.members" && (w.value as { username: string }[]).some((m) => m.username === "alice"));
+    expect(rosterWrite).toBeDefined();
+    expect((rosterWrite!.value as { username: string; agePublicKey?: string }[]).find((m) => m.username === "alice")?.agePublicKey).toBe(ALICE_PUBLIC_KEY);
+    expect(rosterWrite!.scope).toBe("team");
+    expect(rosterWrite!.opts).toEqual({ team: SLUG });
+  });
+
+  test("also records alice's age key onto mattstack.roster, the cross-app roster, alongside board.members", async () => {
+    const p = fakeProbes({ home: HOME });
+    upsertInviteRecord(p, SLUG, "alice", aliceRecord());
+    const { execSeam, secrets } = seamsWithClone();
+    execSeam.writeFile(teamSecretsFile(SLUG, "board"), JSON.stringify({ data: "opaque", sops: {} }));
+    const { seams, writes } = fakeMembersSeams();
+    const blob = await replyBlob(ALICE_PUBLIC_KEY, "alice");
+    const relay = fakeRelay({ readReply: async () => ({ blob }) });
+
+    await membersSync(p, relay, secrets, SLUG, seams);
+
+    const rosterWrite = writes.find((w) => w.key === "mattstack.roster" && (w.value as { username: string }[]).some((m) => m.username === "alice"));
     expect(rosterWrite).toBeDefined();
     expect((rosterWrite!.value as { username: string; agePublicKey?: string }[]).find((m) => m.username === "alice")?.agePublicKey).toBe(ALICE_PUBLIC_KEY);
     expect(rosterWrite!.scope).toBe("team");
@@ -564,6 +582,44 @@ describe("membersRemove", () => {
     expect(readTeamRecipients(SLUG, secrets)).toEqual([OWNER_PUBLIC_KEY]);
     expect(result.residueNote.length).toBeGreaterThan(0);
     expect(result.residueNote).toContain("rotate the values themselves");
+  });
+
+  test("strips the handle from mattstack.roster as well as board.members", async () => {
+    const p = fakeProbes({ home: HOME });
+    const { secrets } = seamsWithClone();
+    writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY], secrets);
+    const { seams, writes } = fakeMembersSeams({
+      readTeamStore: () => ({
+        "board.members": [{ username: "matt" }, { username: "alice", agePublicKey: ALICE_PUBLIC_KEY }],
+        "mattstack.roster": [{ username: "matt" }, { username: "alice" }],
+      }),
+    });
+
+    await membersRemove(p, secrets, SLUG, "alice", undefined, seams);
+
+    const rosterWrite = writes.find((w) => w.key === "mattstack.roster");
+    expect(rosterWrite).toBeDefined();
+    expect((rosterWrite!.value as { username: string }[]).map((m) => m.username)).toEqual(["matt"]);
+    expect(rosterWrite!.scope).toBe("team");
+    expect(rosterWrite!.opts).toEqual({ team: SLUG });
+  });
+
+  test("each roster key is judged on its own contents: a mattstack.roster that never had the handle is left alone", async () => {
+    const p = fakeProbes({ home: HOME });
+    const { secrets } = seamsWithClone();
+    writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY], secrets);
+    const { seams, writes } = fakeMembersSeams({
+      readTeamStore: () => ({
+        "board.members": [{ username: "matt" }, { username: "alice", agePublicKey: ALICE_PUBLIC_KEY }],
+        "mattstack.roster": [{ username: "matt" }], // alice was never on this roster
+      }),
+    });
+
+    const result = await membersRemove(p, secrets, SLUG, "alice", undefined, seams);
+
+    expect(result.rosterRemoved).toBe(true); // board.members alone still drives this flag
+    expect(writes.some((w) => w.key === "board.members")).toBe(true);
+    expect(writes.some((w) => w.key === "mattstack.roster")).toBe(false);
   });
 
   test("an explicit agePublicKey overrides whatever the roster carries", async () => {

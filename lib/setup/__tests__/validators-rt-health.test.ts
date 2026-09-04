@@ -7,7 +7,7 @@ import { DAEMON_CONFIG_PATH } from "../../daemon-config.ts";
 import { DEV_MODE_TAG } from "../../dev-mode.ts";
 import { LOGIN_ITEMS_SETTINGS_ACTION } from "../permissions.ts";
 import { setSetting } from "../../settings/write.ts";
-import { homeBackupRow, rtHealthRows } from "../validators/rt-health.ts";
+import { homeBackupRow, isTeamSyncFirstPullPending, rtHealthRows, teamSyncRow } from "../validators/rt-health.ts";
 import { fakeProbes, ok, missing } from "./fakes.ts";
 import type { ExecScript } from "./fakes.ts";
 import { createRealProbes } from "../probes.ts";
@@ -710,5 +710,267 @@ describe("rtHealthRows — home.backup (real git)", () => {
     // the correct join lands on the real, pushed repo built above.
     expect(r?.status).toBe("ready");
     expect(r?.required).toBe(false);
+  });
+});
+
+describe("teamSyncRow", () => {
+  const now = () => 1_000_000;
+
+  test("no teams: no row", async () => {
+    expect(await teamSyncRow([], async () => [], now, 300)).toBeNull();
+  });
+
+  test("daemon unreachable: missing", async () => {
+    const r = await teamSyncRow(["acme"], async () => null, now, 300);
+    expect(r?.status).toBe("missing");
+    expect(r?.detail).toContain("daemon");
+  });
+
+  test("every clone pulled within the interval and nothing pending: ready", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPushError: null, conflicted: null } as never],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("ready");
+    expect(r?.required).toBe(false);
+    expect(r?.kind).toBe("tool");
+    expect(r?.recheck).toBe("on-activate");
+  });
+
+  test("a hand-edited pullIntervalSec cannot break staleness: an out-of-range or non-numeric value still reads a fresh clone as ready and a dead one as needs-you", async () => {
+    const clone = (lastPullAt: number) => [{ slug: "acme", lastPullAt, lastPushError: null, conflicted: null } as never];
+    for (const bad of [0, -5, Number.NaN, "abc" as unknown as number]) {
+      expect((await teamSyncRow(["acme"], async () => clone(now() - 60_000), now, bad))?.status).toBe("ready");
+      expect((await teamSyncRow(["acme"], async () => clone(now() - 86_400_000), now, bad))?.status).toBe("needs-you");
+    }
+  });
+
+  test("a clone the daemon isn't watching is named directly", async () => {
+    const r = await teamSyncRow(["acme"], async () => [], now, 300);
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("acme");
+    expect(r?.detail).toContain("not watched");
+  });
+
+  // The supervisor drops every instance while the setting is off, so the
+  // status list is empty for exactly the same reason a clone with no origin
+  // would be. Reporting the setting is the only reading that is true.
+  test("snapshots disabled by settings: ready, naming the setting, never accusing the clone of a missing origin", async () => {
+    let statusReads = 0;
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => {
+        statusReads++;
+        return [];
+      },
+      now,
+      300,
+      false,
+    );
+    expect(r?.status).toBe("ready");
+    expect(r?.detail).toContain("rt.teamSnapshot");
+    expect(r?.detail).not.toContain("not watched");
+    expect(r?.detail).not.toContain("origin");
+    expect(statusReads).toBe(0);
+  });
+
+  test("snapshots enabled: an empty status list still reads as an unwatched clone", async () => {
+    const r = await teamSyncRow(["acme"], async () => [], now, 300, true);
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("not watched");
+  });
+
+  test("a conflict names the clone and is needs-you", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPushError: null, conflicted: { at: 1, detail: "CONFLICT settings.team.jsonc" } } as never],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("acme");
+    expect(r?.detail).toContain("rebase");
+  });
+
+  test("a standing fetch error is needs-you even when the last successful pull was recent", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPullError: "remote: HTTP Basic: Access denied", lastPushError: null, conflicted: null } as never],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("fetch failing");
+  });
+
+  test("an empty-string fetch error still trips needs-you (lastPullError != null, not truthiness)", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPullError: "", lastPushError: null, conflicted: null } as never],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("fetch failed");
+  });
+
+  test("an empty-string push error still trips needs-you (lastPushError != null, not truthiness): same redactCredentials(stderr) shape as the fetch error", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPushError: "", conflicted: null } as never],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("push failed");
+  });
+
+  // The row reads outcomes, not queue depth: a push the engine has scheduled
+  // but not yet sent is the normal state seconds after any store edit.
+  test("a push still pending, with nothing failing, is ready", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [{ slug: "acme", lastPullAt: 900_000, pushPending: true, lastPushError: null, conflicted: null } as never],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("ready");
+  });
+
+  test("a stale pull (older than two intervals) or a standing push error is needs-you", async () => {
+    const stale = await teamSyncRow(
+      ["acme"],
+      async () => [{ slug: "acme", lastPullAt: 0, lastPushError: null, conflicted: null } as never],
+      now,
+      300,
+    );
+    expect(stale?.status).toBe("needs-you");
+    expect(stale?.detail).toBe("waiting for a first pull: acme");
+
+    const failing = await teamSyncRow(
+      ["acme"],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPushError: "denied", conflicted: null } as never],
+      now,
+      300,
+    );
+    expect(failing?.status).toBe("needs-you");
+    expect(failing?.detail).toContain("denied");
+  });
+
+  // verify re-reads on the marker, so a clone with a real problem beside the
+  // fresh one must not be able to buy the whole checklist a settle budget.
+  test("the first-pull marker is dropped as soon as any other problem shares the row", async () => {
+    const r = await teamSyncRow(
+      ["acme", "beta"],
+      async () => [
+        { slug: "acme", lastPullAt: 0, lastPushError: null, conflicted: null } as never,
+        { slug: "beta", lastPullAt: 900_000, lastPushError: "denied", conflicted: null } as never,
+      ],
+      now,
+      300,
+    );
+    expect(isTeamSyncFirstPullPending(r!.detail)).toBe(false);
+    expect(r?.detail).toContain("acme: no pull yet");
+    expect(r?.detail).toContain("beta: push failing: denied");
+  });
+
+  test("a pull skipped this tick is not a failure, but it is named in the ready detail without changing the status", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [{ slug: "acme", lastPullAt: 900_000, lastPushError: null, conflicted: null, lastPullSkipped: "dirty src/" } as never],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("ready");
+    expect(r?.detail).toContain("last pull skipped: dirty src/");
+  });
+});
+
+describe("rtHealthRows: team.sync wiring", () => {
+  const SNAPSHOT_SETTINGS = { enabled: true, debounceSec: 20, pushDelaySec: 60, janitorThresholdHours: 6, janitorIntervalMin: 30, pullIntervalSec: 300 };
+
+  test("no team cloned: no team.sync row, row order unchanged", async () => {
+    const rows = await rtHealthRows(fakeProbes({ home: "/fake-home" }), { ci: false });
+    expect(rows.find((r) => r.id === "team.sync")).toBeUndefined();
+  });
+
+  // buildGroup turns a throw out of rtHealthRows into a single group-error
+  // row, so a settings read on a machine with nothing to sync would put
+  // tool.rt, tool.daemon, tool.app and home.backup at the mercy of a
+  // hand-edited rt.teamSnapshot.
+  test("no team cloned: rt.teamSnapshot is never read", async () => {
+    let reads = 0;
+    const rows = await rtHealthRows(fakeProbes({ home: "/fake-home" }), { ci: false }, () => {
+      reads++;
+      throw new Error("rt.teamSnapshot must not be read when nothing is cloned");
+    });
+    expect(reads).toBe(0);
+    expect(rows.map((r) => r.id)).toEqual(ROW_ORDER);
+  });
+
+  test("a cloned team: rt.teamSnapshot is read once, and its pullIntervalSec decides staleness", async () => {
+    let reads = 0;
+    const at = new Date("2026-01-01T00:00:00Z");
+    const p = fakeProbes({
+      home: "/fake-home",
+      now: at,
+      files: { "/fake-home/.mattstack/teams/acme/mattstack/settings.team.jsonc": "{}" },
+      dirs: { "/fake-home/.mattstack/teams": ["acme"] },
+      daemon: async (cmd) => {
+        if (cmd === "team:snapshot-status") return { ok: true, data: [{ slug: "acme", lastPullAt: at.getTime() - 300_000, lastPushError: null, conflicted: null }] };
+        return null;
+      },
+    });
+    const rows = await rtHealthRows(p, { ci: false }, () => {
+      reads++;
+      return { ...SNAPSHOT_SETTINGS, pullIntervalSec: 30 };
+    });
+    expect(reads).toBe(1);
+    // 5 minutes since the last pull is well past two 30s intervals; it would
+    // read ready against the 300s default.
+    expect(rows.find((r) => r.id === "team.sync")?.status).toBe("needs-you");
+  });
+
+  test("rt.teamSnapshot.enabled=false: the row reports the setting instead of a permanent unwatched-clone verdict", async () => {
+    const p = fakeProbes({
+      home: "/fake-home",
+      files: { "/fake-home/.mattstack/teams/acme/mattstack/settings.team.jsonc": "{}" },
+      dirs: { "/fake-home/.mattstack/teams": ["acme"] },
+      daemon: async (cmd) => (cmd === "team:snapshot-status" ? { ok: true, data: [] } : null),
+    });
+    const rows = await rtHealthRows(p, { ci: false }, () => ({ ...SNAPSHOT_SETTINGS, enabled: false }));
+    const r = rows.find((x) => x.id === "team.sync");
+    expect(r?.status).toBe("ready");
+    expect(r?.detail).toContain("rt.teamSnapshot");
+  });
+
+  test("a cloned team reads status through p.daemon and produces a team.sync row", async () => {
+    const p = fakeProbes({
+      home: "/fake-home",
+      files: { "/fake-home/.mattstack/teams/acme/mattstack/settings.team.jsonc": "{}" },
+      dirs: { "/fake-home/.mattstack/teams": ["acme"] },
+      daemon: async (cmd) => {
+        if (cmd === "team:snapshot-status") return { ok: true, data: [{ slug: "acme", lastPullAt: Date.now(), lastPushError: null, conflicted: null }] };
+        return null;
+      },
+    });
+    const rows = await rtHealthRows(p, { ci: false });
+    const r = rows.find((x) => x.id === "team.sync");
+    expect(r).toBeDefined();
+    expect(r?.status).toBe("ready");
+  });
+
+  test("daemon unreachable for the snapshot-status call: team.sync reads missing", async () => {
+    const p = fakeProbes({
+      home: "/fake-home",
+      files: { "/fake-home/.mattstack/teams/acme/mattstack/settings.team.jsonc": "{}" },
+      dirs: { "/fake-home/.mattstack/teams": ["acme"] },
+      daemon: async () => null,
+    });
+    const rows = await rtHealthRows(p, { ci: false });
+    const r = rows.find((x) => x.id === "team.sync");
+    expect(r?.status).toBe("missing");
   });
 });

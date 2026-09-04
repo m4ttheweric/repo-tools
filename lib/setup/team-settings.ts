@@ -77,6 +77,12 @@ export function readUserIntegrationOverrides(opts: { read?: SettingsReader; warn
   return read<UserIntegrationOverrides>("rt.integrations") ?? {};
 }
 
+/** Every locally-cloned team's slug: subdirectories of `<home>/.mattstack/teams` that have a `mattstack/settings.team.jsonc`. Deliberately built off `Probes` (`p.home`/`p.readDir`/`p.exists`) rather than `listTeams()`, which resolves `process.env.HOME` at call time: a context built from a fake `Probes` must never leak the real ambient HOME into which team it resolves. */
+export function discoverTeams(p: Probes): string[] {
+  const dir = join(p.home, ".mattstack", "teams");
+  return p.readDir(dir).filter((name) => p.exists(join(dir, name, "mattstack", "settings.team.jsonc")));
+}
+
 export function readTeamSnapshot(p: Probes, slug: string, opts: { read?: SettingsReader; warn?: (message: string) => void } = {}): TeamSnapshot {
   const warn = opts.warn ?? defaultWarn;
   const read = opts.read ?? defaultReader(warn);
@@ -123,11 +129,14 @@ function looksLikeGitlabHost(host: string): boolean {
 }
 
 /** github.com is the only hosted GitHub; a GitLab-shaped host is self-hosted GitLab; anything else is an unrecognized forge — never guessed at, never handed to `glab` as a target host. */
-export function forgeFromRemote(remote: string): { host: string; provider: "github" | "gitlab" } | null {
-  const parsed = parseRemoteUrl(remote);
-  if (!parsed) return null;
-  const host = stripUserinfo(parsed.host).replace(/^https?:\/\//, "");
+export function forgeFromHost(host: string): { host: string; provider: "github" | "gitlab" } | null {
   if (host === "github.com") return { host, provider: "github" };
   if (looksLikeGitlabHost(host)) return { host, provider: "gitlab" };
   return null;
+}
+
+export function forgeFromRemote(remote: string): { host: string; provider: "github" | "gitlab" } | null {
+  const parsed = parseRemoteUrl(remote);
+  if (!parsed) return null;
+  return forgeFromHost(stripUserinfo(parsed.host).replace(/^https?:\/\//, ""));
 }

@@ -85,6 +85,41 @@ export interface EventsBusEvent { id: number; topic: string; payload: unknown; e
 
 /**
  * Duplicated shape on purpose, same reasoning as EventsBusEvent above:
+ * these mirror lib/daemon/gates-store.ts's types, which rt-client cannot
+ * import. gates-store.ts imports them back FROM this package (Commands
+ * already flows daemon -> rt-client, e.g. handlers/events.ts), so this is
+ * the single source of truth for the wire shape.
+ */
+/** The `by` value a pane spells when it answers its own gate: the only
+    value gates-store.ts's release tracking (CAS winner or loser) reacts to. */
+export const GATE_BY_PANE = "pane";
+
+export type GateStatus = "open" | "answered" | "parked" | "closed";
+export interface GateQuestion { id: string; label: string; multi: boolean; options: string[] }
+export interface GateAnswer { answers: Record<string, string | string[] | { value: string | string[]; note?: string }>; by: string; answeredAt: number }
+export interface GateRow {
+  id: string; subject: string; kind: string;
+  questions: GateQuestion[]; meta: Record<string, unknown> | null;
+  status: GateStatus; answer: GateAnswer | null;
+  openedAt: number; parkedAt: number | null; closedAt: number | null;
+  closedReason: "abandoned" | "superseded" | "pruned" | null;
+  agent: string | null; pane: string | null;
+  nudge: { session: string } | null;
+  delivery: { outcome: "delivered" | "dead-pane"; at: number } | null;
+  released: boolean;
+}
+
+export interface GateSubscription {
+  id: string;
+  subjectPrefix: string;
+  session: string;
+  createdAt: number;
+  lastDelivery: { outcome: "delivered" | "failed"; at: number } | null;
+  dead: boolean;
+}
+
+/**
+ * Duplicated shape on purpose, same reasoning as EventsBusEvent above:
  * these mirror lib/state/chat-store.ts's types, which rt-client cannot
  * import (it's outside lib/state/ and outside this package entirely).
  */
@@ -538,6 +573,29 @@ export interface Commands {
   "repos:locate": { payload: { newPath: string; repo?: string; dryRun?: boolean }; data: unknown };
   "freshness:reconcile": { payload: Record<string, never>; data: unknown };
 
+  // ─── Gate facility (BOARD-20/21) ─────────────────────────────────────────
+  "gate:open": { payload: { subject: string; kind: string; questions: GateQuestion[]; meta?: Record<string, unknown>; agent?: string; pane?: string; nudge?: { session: string } }; data: { id: string; supersededId: string | null } };
+  /**
+   * A CAS loss is a DEFINED OUTCOME, not an error: `ok:true` with
+   * `conflict:true` and the WINNING row, so every consumer gets the winner
+   * typed with no envelope hacks. `ok:false` is reserved for
+   * not-found/closed/validation failures.
+   */
+  "gate:answer": { payload: { id: string; answers: GateAnswer["answers"]; by: string }; data: { row: GateRow; conflict?: true } };
+  /** `ok:false "not-found"` on an unknown id is terminal; the CLI loop must not re-enter on it.
+   *  `timeout` carries no row (nothing settled); `answered`/`closed` always carry the settled row. */
+  "gate:wait": { payload: { id: string; waitMs?: number }; data: { status: "timeout" } | { status: "answered" | "closed"; row: GateRow } };
+  /** Paged like events:list: an omitted `limit` clamps daemon-side rather than
+   *  forcing a full-table read; `cursor` is the paging rowid to resume from. */
+  "gate:list": { payload: { open?: boolean; subjectPrefix?: string; kind?: string; limit?: number; cursor?: number }; data: { gates: GateRow[]; cursor: number } };
+  "gate:park": { payload: { id: string }; data: { ok: true } };
+  "gate:close": { payload: { id: string; reason: "abandoned" | "superseded" | "pruned" }; data: { ok: true } };
+  "gate:subscribe": { payload: { subjectPrefix: string; session: string }; data: { id: string } };
+  "gate:unsubscribe": { payload: { id: string }; data: { removed: boolean } };
+  /** The shepherd's gap-recovery liveness check and the observability window
+   *  onto delivery outcomes (dead marks included). */
+  "gate:subscriptions": { payload: { session?: string; live?: boolean }; data: { subscriptions: GateSubscription[] } };
+
   /** Wire reply on success is always `{ok:true, repaired}` (no `data`
    *  wrapper) — `data` here documents the extra field the same way PingData
    *  does for `ping`, not the literal wire nesting (R3). */
@@ -632,6 +690,15 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "endpoint:status",
   "repos:locate",
   "freshness:reconcile",
+  "gate:open",
+  "gate:answer",
+  "gate:wait",
+  "gate:list",
+  "gate:park",
+  "gate:close",
+  "gate:subscribe",
+  "gate:unsubscribe",
+  "gate:subscriptions",
   "hooks:repair",
   "hooks:watch",
   "sdm:catalog",

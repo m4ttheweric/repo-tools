@@ -1,4 +1,6 @@
 import { describe, test, expect } from "bun:test";
+import { readFileSync } from "fs";
+import { join } from "path";
 import { toolRows, extractVersion } from "../validators/tools.ts";
 import type { ToolsSeams } from "../validators/tools.ts";
 import { fakeProbes, ok, missing } from "./fakes.ts";
@@ -6,6 +8,59 @@ import type { ExecScript } from "./fakes.ts";
 import type { PackRequirements } from "../requirements.ts";
 import type { ToolResolution } from "../../deps/resolve.ts";
 import type { DetectedEditor } from "../../editors.ts";
+import type { ExecResult } from "../probes.ts";
+import type { Row } from "../contract.ts";
+
+// ─── ground truth, shaped from the real CLIs captured on 2026-09-03 ───
+// The fixtures under ./fixtures/ preserve the captured shape exactly (every field,
+// the nested mcpServers variants, the human form's chevron glyph and indentation);
+// only values (names, paths) are sanitized for a public repo. Every plugin-list and
+// doctor fixture below traces back to one of these three files rather than an
+// invented shape: the two Critical defects this suite guards against both shipped
+// because the old fixtures were invented and agreed with code that had never run
+// against a real machine.
+
+const FIXTURE_DIR = join(import.meta.dir, "fixtures");
+
+/** Real `claude plugin list --json` shape: chat@mattstack, fast-browser@mattstack and mattstack@mattstack all enabled, plus other real plugins. */
+const REAL_PLUGIN_LIST_JSON = readFileSync(join(FIXTURE_DIR, "plugin-list.json"), "utf8");
+type RealPluginEntry = { id: string; enabled: boolean };
+const REAL_PLUGIN_ENTRIES: RealPluginEntry[] = JSON.parse(REAL_PLUGIN_LIST_JSON);
+
+/** Real `claude plugin list` (human form): a chevron glyph before each name, never the bare id. */
+const REAL_PLUGIN_LIST_TXT = readFileSync(join(FIXTURE_DIR, "plugin-list.txt"), "utf8");
+
+interface RealDoctorCheck {
+  id: string;
+  status: string;
+  message: string;
+  remediation: string | null;
+}
+interface RealDoctor {
+  schemaVersion: number;
+  ok: boolean;
+  profile: string;
+  checks: RealDoctorCheck[];
+}
+
+/** Real `fast-browser doctor --json` shape from a fully healthy machine: all 21 checks report "pass". */
+const REAL_DOCTOR: RealDoctor = JSON.parse(readFileSync(join(FIXTURE_DIR, "doctor.json"), "utf8"));
+
+function withCheckStatus(doctor: RealDoctor, id: string, status: string): RealDoctor {
+  return { ...doctor, checks: doctor.checks.map((c) => (c.id === id ? { ...c, status } : c)) };
+}
+
+function withoutCheck(doctor: RealDoctor, id: string): RealDoctor {
+  return { ...doctor, checks: doctor.checks.filter((c) => c.id !== id) };
+}
+
+function pluginListJsonWithout(...ids: string[]): string {
+  return JSON.stringify(REAL_PLUGIN_ENTRIES.filter((e) => !ids.includes(e.id)));
+}
+
+function pluginListJsonWithDisabled(id: string): string {
+  return JSON.stringify(REAL_PLUGIN_ENTRIES.map((e) => (e.id === id ? { ...e, enabled: false } : e)));
+}
 
 /** No bundled/user copy of anything, no detected editors — the safe default so a test that doesn't care about tool.fast-browser or tool.editor never touches the real machine's /Applications or a real bundle lookup. */
 function noopResolution(tool: string): ToolResolution {
@@ -220,80 +275,316 @@ describe("toolRows — tool.claude", () => {
 });
 
 describe("toolRows — tool.fast-browser", () => {
-  test("exec null -> missing, bundled-link action", async () => {
+  test("not resolvable -> missing with the link-bundled action, and this is the one state that gates", async () => {
     const r = await pickRow(toolRows(fakeProbes(), [], { hasBrew: true }, NOOP_SEAMS), "tool.fast-browser");
     expect(r.status).toBe("missing");
+    expect(r.required).toBe(true);
     expect(r.action).toEqual({ type: "link-bundled", label: "Use mattstack's", tool: "fast-browser" });
-    expect(r.recheck).toBe("on-activate");
   });
 
   function fastBrowserSeams(): ToolsSeams {
     return { ...NOOP_SEAMS, resolveTool: (_p, tool) => (tool === "fast-browser" ? { tool, bundled: "node", exec: ["node", "fast-browser.mjs"], userCopy: null, linked: false, chosen: "node" } : noopResolution(tool)) };
   }
 
-  test("bundled exec [node, mjs] -> doctor invoked with the full argv, and extension not loaded -> needs-you with 3 steps", async () => {
-    const seams = fastBrowserSeams();
-    const exec: ExecScript = (argv) => {
-      if (argv[0] === "node" && argv[1] === "fast-browser.mjs" && argv[2] === "doctor" && argv[3] === "--json") {
-        return ok(JSON.stringify({ runtime: { ok: true }, extension: { loaded: false } }));
-      }
-      return ok();
-    };
-    const p = fakeProbes({ exec });
-    const r = await pickRow(toolRows(p, [], { hasBrew: true }, seams), "tool.fast-browser");
-    expect(p.calls.exec).toContainEqual(["node", "fast-browser.mjs", "doctor", "--json"]);
-    expect(r.status).toBe("needs-you");
-    expect(r.action).toEqual({
-      type: "steps",
-      label: "Show steps…",
-      steps: ["Open chrome://extensions", "Turn on Developer mode", "Load unpacked → ~/.fast-browser/extension/current/unpacked"],
-    });
-  });
+  /** Feeds `report` back as doctor's JSON envelope. */
+  function doctorExec(report: unknown, code = 0): ExecScript {
+    return (argv) => (argv[2] === "doctor" && argv[3] === "--json" ? { code, stdout: JSON.stringify(report), stderr: "" } : ok());
+  }
 
-  // The extension step needs Chrome, and Chrome is itself optional: a required
-  // fast-browser row on a Chrome-less Mac kept Install disabled forever.
-  test("extension not loaded and no Chrome installed -> optional (works without this), still needs-you", async () => {
-    const exec: ExecScript = (argv) => (argv[2] === "doctor" ? ok(JSON.stringify({ runtime: { ok: true }, extension: { loaded: false } })) : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
-    expect(r.status).toBe("needs-you");
-    expect(r.required).toBe(false);
-    expect(r.optionalNote).toContain("Chrome");
-  });
-
-  test("extension not loaded with Chrome installed -> still required", async () => {
-    const exec: ExecScript = (argv) => (argv[2] === "doctor" ? ok(JSON.stringify({ runtime: { ok: true }, extension: { loaded: false } })) : ok());
-    const p = fakeProbes({ exec });
-    p.mkdirp("/Applications/Google Chrome.app");
+  test("real fully healthy envelope -> ready, and doctor ran through the resolved exec (C2)", async () => {
+    const p = fakeProbes({ exec: doctorExec(REAL_DOCTOR) });
     const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
-    expect(r.status).toBe("needs-you");
-    expect(r.required).toBe(true);
-  });
-
-  test("runtime ok and extension loaded -> ready", async () => {
-    const exec: ExecScript = (argv) => (argv[2] === "doctor" ? ok(JSON.stringify({ runtime: { ok: true }, extension: { loaded: true }, pairing: { ok: true } })) : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
+    expect(p.calls.exec).toContainEqual(["node", "fast-browser.mjs", "doctor", "--json"]);
     expect(r.status).toBe("ready");
   });
 
-  test("doctor exits non-zero but prints a parseable unhealthy report -> needs-you, not error (M8)", async () => {
-    const exec: ExecScript = (argv) =>
-      argv[2] === "doctor" ? { code: 1, stdout: JSON.stringify({ runtime: { ok: true }, extension: { loaded: false } }), stderr: "" } : ok();
-    const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
+  // The runtime is created by the fastbrowser.setup Install step, so before
+  // Install it cannot exist and no checklist action can create it. A required
+  // row here left canInstall false forever on any Mac with Chrome.
+  test("runtime-checksum check fails does not gate, even with Chrome installed", async () => {
+    const p = fakeProbes({ exec: doctorExec(withCheckStatus(REAL_DOCTOR, "runtime-checksum", "fail")) });
+    p.mkdirp("/Applications/Google Chrome.app");
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
     expect(r.status).toBe("needs-you");
+    expect(r.required).toBe(false);
+    expect(r.optionalNote).toBe("Installed by Install (fastbrowser.setup).");
+    expect(r.action).toEqual({ type: "run", label: "Run setup", verb: ["tools", "setup", "fast-browser"] });
   });
 
-  test("doctor parse failure (no parseable payload) -> error with stderr head", async () => {
+  // An id this build doesn't recognize (an older or newer fast-browser) is
+  // not proof the runtime is broken: rt just couldn't determine the answer,
+  // so it must never read as the same "not ready" a real fail reads as.
+  test("runtime-checksum check absent from the report -> error, not a guessed needs-you", async () => {
+    const p = fakeProbes({ exec: doctorExec(withoutCheck(REAL_DOCTOR, "runtime-checksum")) });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("runtime-checksum");
+    expect(r.required).toBe(false);
+  });
+
+  test("doctor exits non-zero but prints a parseable healthy report -> ready, not error (M8)", async () => {
+    const p = fakeProbes({ exec: doctorExec(REAL_DOCTOR, 1) });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
+    expect(r.status).toBe("ready");
+  });
+
+  test("doctor parse failure -> error with the stderr head, and still does not gate", async () => {
     const exec: ExecScript = (argv) => (argv[2] === "doctor" ? { code: 1, stdout: "", stderr: "boom\nmore detail" } : ok());
     const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
     expect(r.status).toBe("error");
     expect(r.detail).toContain("boom");
+    expect(r.required).toBe(false);
   });
 
-  test("doctor times out -> error", async () => {
-    const exec: ExecScript = (argv) => (argv[2] === "doctor" ? { code: 124, stdout: "", stderr: "" } : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
+  test("doctor times out -> error, and still does not gate", async () => {
+    const r = await pickRow(toolRows(fakeProbes({ exec: TIMEOUT }), [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser");
     expect(r.status).toBe("error");
     expect(r.detail).toContain("timed out");
+    expect(r.required).toBe(false);
+  });
+
+  test("one doctor run feeds both rows", async () => {
+    const p = fakeProbes({ exec: doctorExec(REAL_DOCTOR) });
+    p.mkdirp("/Applications/Google Chrome.app");
+    const rows = await toolRows(p, [], { hasBrew: true }, fastBrowserSeams());
+    expect(rows.map((r) => r.id)).toContain("tool.fast-browser-extension");
+    expect(p.calls.exec.filter((argv) => argv[2] === "doctor").length).toBe(1);
+  });
+});
+
+describe("toolRows - tool.fast-browser-extension", () => {
+  function fastBrowserSeams(): ToolsSeams {
+    return { ...NOOP_SEAMS, resolveTool: (_p, tool) => (tool === "fast-browser" ? { tool, bundled: "node", exec: ["node", "fast-browser.mjs"], userCopy: null, linked: false, chosen: "node" } : noopResolution(tool)) };
+  }
+  function doctorExec(report: unknown): ExecScript {
+    return (argv) => (argv[2] === "doctor" && argv[3] === "--json" ? ok(JSON.stringify(report)) : ok());
+  }
+  function withChrome(exec: ExecScript) {
+    const p = fakeProbes({ exec });
+    p.mkdirp("/Applications/Google Chrome.app");
+    return p;
+  }
+
+  test("no Chrome -> skipped, nothing to load it into", async () => {
+    const p = fakeProbes({ exec: doctorExec(REAL_DOCTOR) });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser-extension");
+    expect(r.status).toBe("skipped");
+    expect(r.required).toBe(false);
+  });
+
+  test("extension-loaded check fails -> needs-you with steps that end in pairing", async () => {
+    const p = withChrome(doctorExec(withCheckStatus(REAL_DOCTOR, "extension-loaded", "fail")));
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser-extension");
+    expect(r.status).toBe("needs-you");
+    expect(r.required).toBe(false);
+    expect(r.action?.type).toBe("steps");
+    const steps = (r.action as { steps: string[] }).steps;
+    expect(steps[0]).toContain("chrome://extensions");
+    expect(steps.join(" ")).toContain("reconnect token");
+  });
+
+  // doctor's own "pairing" check already passes whenever the connection mode
+  // isn't auto (the documented default). Manual connection is the documented
+  // default, so a manually connected machine is healthy. This row reports the
+  // check's status rather than inventing an additional rule.
+  test("extension-loaded passes but pairing check fails -> needs-you with pairing-only steps", async () => {
+    const p = withChrome(doctorExec(withCheckStatus(REAL_DOCTOR, "pairing", "fail")));
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser-extension");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toContain("not paired");
+    const steps = (r.action as { steps: string[] }).steps;
+    expect(steps.join(" ")).not.toContain("chrome://extensions");
+    expect(steps.join(" ")).toContain("reconnect token");
+  });
+
+  test("real fully healthy envelope -> ready (C2: both Fast Browser rows read ready)", async () => {
+    const p = withChrome(doctorExec(REAL_DOCTOR));
+    const rows = await toolRows(p, [], { hasBrew: true }, fastBrowserSeams());
+    expect(rows.find((r) => r.id === "tool.fast-browser")?.status).toBe("ready");
+    expect(rows.find((r) => r.id === "tool.fast-browser-extension")?.status).toBe("ready");
+  });
+
+  test("extension-loaded check absent from the report -> error, not a false ready or a false accusation", async () => {
+    const p = withChrome(doctorExec(withoutCheck(REAL_DOCTOR, "extension-loaded")));
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser-extension");
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("extension-loaded");
+  });
+
+  test("pairing check absent from the report -> error, not a false ready or a false accusation", async () => {
+    const p = withChrome(doctorExec(withoutCheck(REAL_DOCTOR, "pairing")));
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser-extension");
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("pairing");
+  });
+
+  // tool.fast-browser already reports an unreadable doctor; two rows for one
+  // fact would just double the noise.
+  test("doctor unreadable -> skipped, deferring to the Fast Browser row", async () => {
+    const p = withChrome(() => ({ code: 1, stdout: "", stderr: "boom" }));
+    const r = await pickRow(toolRows(p, [], { hasBrew: true }, fastBrowserSeams()), "tool.fast-browser-extension");
+    expect(r.status).toBe("skipped");
+  });
+});
+
+describe("toolRows — well-formed-JSON-but-wrong-shape doctor payloads: no throw, honest could-not-read path", () => {
+  function fastBrowserSeams(): ToolsSeams {
+    return { ...NOOP_SEAMS, resolveTool: (_p, tool) => (tool === "fast-browser" ? { tool, bundled: "node", exec: ["node", "fast-browser.mjs"], userCopy: null, linked: false, chosen: "node" } : noopResolution(tool)) };
+  }
+  function doctorExec(report: unknown): ExecScript {
+    return (argv) => (argv[2] === "doctor" && argv[3] === "--json" ? ok(JSON.stringify(report)) : ok());
+  }
+  function withChrome(exec: ExecScript) {
+    const p = fakeProbes({ exec });
+    p.mkdirp("/Applications/Google Chrome.app");
+    return p;
+  }
+
+  async function assertCouldNotBeRead(report: unknown) {
+    const rows = await toolRows(withChrome(doctorExec(report)), [], { hasBrew: true }, fastBrowserSeams());
+    const main = rows.find((r) => r.id === "tool.fast-browser")!;
+    expect(main.status).toBe("error");
+    const extension = rows.find((r) => r.id === "tool.fast-browser-extension")!;
+    expect(extension.status).toBe("skipped");
+    expect(extension.detail).toBe("fast-browser doctor could not be read (see Fast Browser)");
+  }
+
+  // `checks` present but not an array at all: {}.find is not a function is
+  // the exact throw this shape used to cause.
+  test("checks is an object, not an array -> could-not-read on both rows, never a thrown TypeError", async () => {
+    await assertCouldNotBeRead({ checks: {} });
+  });
+
+  test("checks is an array whose element is null -> could-not-read on both rows", async () => {
+    await assertCouldNotBeRead({ checks: [null] });
+  });
+
+  test("checks is an array whose element has no string id -> could-not-read on both rows", async () => {
+    await assertCouldNotBeRead({ checks: [{ status: "pass" }] });
+  });
+
+  test("valid fixture is unaffected by the shape hardening (regression guard)", async () => {
+    const rows = await toolRows(withChrome(doctorExec(REAL_DOCTOR)), [], { hasBrew: true }, fastBrowserSeams());
+    expect(rows.find((r) => r.id === "tool.fast-browser")?.status).toBe("ready");
+    expect(rows.find((r) => r.id === "tool.fast-browser-extension")?.status).toBe("ready");
+  });
+});
+
+describe("toolRows - tool.plugins", () => {
+  function listExec(result: ExecResult): ExecScript {
+    return (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? result : ok());
+  }
+
+  test("real plugin listing, all three baseline plugins present and enabled -> ready", async () => {
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec(ok(REAL_PLUGIN_LIST_JSON)) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("ready");
+    expect(r.required).toBe(false);
+    expect(r.optionalNote).toBe("Installed by Install (plugins.install).");
+  });
+
+  // `claude plugin list` (no flag) prints "  ❯ chat@mattstack", never the
+  // bare id, so feeding that real human-format output through must never be
+  // silently read as "no plugins" (missing) or "ready"; it can't be parsed as
+  // JSON at all, so it reads as the one status that says rt could not tell.
+  test("real human-format listing text (no --json) -> error, never a silent empty-install read (C1)", async () => {
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec(ok(REAL_PLUGIN_LIST_TXT)) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("error");
+    expect(r.status).not.toBe("missing");
+    expect(r.status).not.toBe("ready");
+  });
+
+  test("chat missing from the real listing -> missing, naming only what is absent", async () => {
+    const list = pluginListJsonWithout("chat@mattstack");
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec(ok(list)) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("missing");
+    expect(r.detail).toContain("chat@mattstack");
+    expect(r.detail).not.toContain("fast-browser@mattstack");
+    expect(r.action).toEqual({ type: "run", label: "Install plugins", verb: ["setup", "pack"] });
+  });
+
+  // Matched by the parsed `id` field against an exact key, never a substring:
+  // an id that merely starts with the same text as a baseline plugin's id
+  // must not satisfy it.
+  test("an id that only shares a prefix with a baseline entry does not count", async () => {
+    const entries = REAL_PLUGIN_ENTRIES.filter((e) => e.id !== "chat@mattstack").concat([{ id: "chat@mattstack-fork", enabled: true } as { id: string; enabled: boolean }]);
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec(ok(JSON.stringify(entries))) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("missing");
+    expect(r.detail).toContain("chat@mattstack");
+  });
+
+  // `plugins.install` only enables a plugin best-effort, and disabling a
+  // plugin is a deliberate user choice: an installed but disabled baseline
+  // plugin is inert, so verify names it and nags, but it must never read as
+  // a broken install (that would make it critical in status mode).
+  test("every baseline plugin present but one is disabled -> needs-you, naming it, with an enable action", async () => {
+    const list = pluginListJsonWithDisabled("fast-browser@mattstack");
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec(ok(list)) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toContain("fast-browser@mattstack");
+    expect(r.action).toEqual({ type: "run", label: "Enable plugins", verb: ["setup", "pack"] });
+  });
+
+  test("claude not installed -> skipped", async () => {
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec(missing("claude")) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("skipped");
+  });
+
+  test("claude plugin list times out -> error", async () => {
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec({ code: 124, stdout: "", stderr: "" }) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("timed out");
+  });
+
+  // A crashed or misconfigured CLI is a real failure this row could not see
+  // past; "skipped" would read as "nothing to check here", which it is not.
+  test("claude plugin list fails for any other reason -> error, not skipped", async () => {
+    const r = await pickRow(toolRows(fakeProbes({ exec: listExec({ code: 3, stdout: "", stderr: "boom" }) }), [], { hasBrew: true }, NOOP_SEAMS), "tool.plugins");
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("exit 3");
+  });
+
+  test("claude plugin list runs once for tool.plugins and the pack rows together", async () => {
+    const p = fakeProbes({ exec: listExec(ok(REAL_PLUGIN_LIST_JSON)) });
+    const reqs: PackRequirements[] = [{ pack: "acme", tools: [], integrations: [] }];
+    await toolRows(p, reqs, { hasBrew: true }, NOOP_SEAMS);
+    expect(p.calls.exec.filter((argv) => argv[1] === "plugin" && argv[2] === "list").length).toBe(1);
+  });
+});
+
+describe("toolRows — well-formed-JSON-but-wrong-shape plugin list payloads: no throw, honest error path", () => {
+  function listExec(result: ExecResult): ExecScript {
+    return (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? result : ok());
+  }
+
+  async function assertErrorPath(stdout: string) {
+    const reqs: PackRequirements[] = [{ pack: "acme", integrations: [], tools: [] }];
+    const rows = await toolRows(fakeProbes({ exec: listExec(ok(stdout)) }), reqs, { hasBrew: true }, NOOP_SEAMS);
+    const plugins = rows.find((r) => r.id === "tool.plugins")!;
+    expect(plugins.status).toBe("error");
+    expect(plugins.detail).toBe("claude plugin list --json output could not be read");
+    const pack = rows.find((r) => r.id === "pack.acme")!;
+    expect(pack.status).toBe("error");
+    expect(pack.detail).toBe("claude plugin list --json output could not be read");
+  }
+
+  // `entries.map((e) => [e.id, e])` and `.some((e) => ... e.id ...)` both read
+  // `id` off whatever `[null]` hands them — this is the exact throw source.
+  test("[null] -> error path on tool.plugins and every pack row, never a thrown TypeError", async () => {
+    await assertErrorPath(JSON.stringify([null]));
+  });
+
+  test("an element with no string id -> error path", async () => {
+    await assertErrorPath(JSON.stringify([{ enabled: true }]));
+  });
+
+  test("top level is an object, not an array -> error path", async () => {
+    await assertErrorPath(JSON.stringify({ plugins: [] }));
+  });
+
+  test("valid fixture is unaffected by the shape hardening (regression guard)", async () => {
+    const reqs: PackRequirements[] = [{ pack: "acme", integrations: [], tools: [] }];
+    const rows = await toolRows(fakeProbes({ exec: listExec(ok(REAL_PLUGIN_LIST_JSON)) }), reqs, { hasBrew: true }, NOOP_SEAMS);
+    expect(rows.find((r) => r.id === "tool.plugins")?.status).toBe("ready");
   });
 });
 
@@ -504,28 +795,32 @@ describe("toolRows — team-declared tool.team.<name>", () => {
 });
 
 describe("toolRows — pack.<pack>", () => {
-  test("plugin list contains pack@... -> ready, installed", async () => {
-    const reqs: PackRequirements[] = [{ pack: "acme", integrations: [], tools: [] }];
-    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok("acme@acme\nother@team\n") : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.acme");
+  test("real plugin listing contains the pack's id -> ready, installed", async () => {
+    const reqs: PackRequirements[] = [{ pack: "beta", integrations: [], tools: [] }];
+    const listWithBeta = JSON.stringify([...REAL_PLUGIN_ENTRIES, { id: "beta@acme-market", enabled: true }]);
+    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok(listWithBeta) : ok());
+    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.beta");
     expect(r.status).toBe("ready");
     expect(r.detail).toBe("installed");
     expect(r.required).toBe(false);
     expect(r.optionalNote).not.toBeNull();
   });
 
-  test("plugin list missing the pack -> missing, installed-by-Install detail", async () => {
+  test("real plugin listing does not contain the pack -> missing, installed-by-Install detail", async () => {
     const reqs: PackRequirements[] = [{ pack: "acme", integrations: [], tools: [] }];
-    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok("other@team\n") : ok());
+    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok(REAL_PLUGIN_LIST_JSON) : ok());
     const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.acme");
     expect(r.status).toBe("missing");
     expect(r.detail).toBe("installed by Install (plugins.install)");
   });
 
-  test("a shorter pack name never matches as a substring of a longer one (L11)", async () => {
-    const reqs: PackRequirements[] = [{ pack: "view", integrations: [], tools: [] }];
-    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok("acme@acme\n") : ok());
-    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.view");
+  // The real listing has "fast-browser@mattstack" but nothing with the exact
+  // prefix "fast@": a pack name that only shares a prefix with a longer real
+  // id must never match it.
+  test("a shorter pack name never matches as a prefix of a longer real id (L11)", async () => {
+    const reqs: PackRequirements[] = [{ pack: "fast", integrations: [], tools: [] }];
+    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok(REAL_PLUGIN_LIST_JSON) : ok());
+    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.fast");
     expect(r.status).toBe("missing");
   });
 
@@ -543,9 +838,18 @@ describe("toolRows — pack.<pack>", () => {
     expect(r.status).toBe("error");
   });
 
+  // Real human-format output (no --json) can't be parsed as an entry array,
+  // so it must read as an honest error, never a silent "not installed".
+  test("real human-format listing text (no --json) -> error, not a silent missing", async () => {
+    const reqs: PackRequirements[] = [{ pack: "acme", integrations: [], tools: [] }];
+    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok(REAL_PLUGIN_LIST_TXT) : ok());
+    const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.acme");
+    expect(r.status).toBe("error");
+  });
+
   test("a malformed pack's requirements.jsonc error surfaces as an error row, not silently dropped (R-T8-L1b)", async () => {
     const reqs: PackRequirements[] = [{ pack: "broken-pack", integrations: [], tools: [], error: "invalid JSON: Unexpected end of input" }];
-    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok("broken-pack@team\n") : ok());
+    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list" ? ok(REAL_PLUGIN_LIST_JSON) : ok());
     const r = await pickRow(toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS), "pack.broken-pack");
     expect(r.status).toBe("error");
     expect(r.detail).toBe("invalid JSON: Unexpected end of input");
@@ -556,14 +860,105 @@ describe("toolRows — pack.<pack>", () => {
       { pack: "acme", integrations: [], tools: [] },
       { pack: "other-pack", integrations: [], tools: [] },
     ];
-    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" ? ok("acme@acme\n") : ok());
+    const exec: ExecScript = (argv) => (argv[0] === "claude" && argv[1] === "plugin" ? ok(REAL_PLUGIN_LIST_JSON) : ok());
     const rows = await toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS);
     expect(rows.filter((row) => row.id.startsWith("pack."))).toHaveLength(2);
   });
 
-  test("no pack requirements at all -> claude plugin list is never run (L11)", async () => {
+  // tool.plugins reads `claude plugin list` unconditionally, so this exec
+  // runs even with zero pack requirements.
+  test("no pack requirements at all -> claude plugin list still runs once, for tool.plugins", async () => {
     const p = fakeProbes({});
     await toolRows(p, [], { hasBrew: true }, NOOP_SEAMS);
-    expect(p.calls.exec).not.toContainEqual(["claude", "plugin", "list"]);
+    expect(p.calls.exec.filter((argv) => argv[0] === "claude" && argv[1] === "plugin" && argv[2] === "list")).toHaveLength(1);
+  });
+});
+
+describe("Done-screen contract: optional rows with a manual action", () => {
+  /**
+   * rt-tray's readiness model (Swift, a different suite) lists a row on
+   * mattstack.app's Done screen as a step the user still owes exactly when
+   * it is optional, not ready, not skipped, its action is steps or
+   * open-url, and its optionalNote does not start with "works without"
+   * (case-insensitively). These three ids are what this side guarantees
+   * are genuine manual steps belonging on that list; every other optional
+   * steps/open-url row this module can emit must keep the "works without"
+   * wording, since a reworded note here changes what the Done screen shows
+   * without failing a single test on either side of the language boundary.
+   */
+  const DONE_SCREEN_MANUAL_STEP_IDS = new Set(["tool.claude", "tool.fast-browser-extension", "tool.chrome-signin"]);
+
+  function assertOptionalManualActionRows(rows: Row[]) {
+    for (const r of rows) {
+      if (r.required) continue;
+      if (r.action?.type !== "steps" && r.action?.type !== "open-url") continue;
+      const worksWithout = (r.optionalNote ?? "").toLowerCase().startsWith("works without");
+      expect([r.id, worksWithout || DONE_SCREEN_MANUAL_STEP_IDS.has(r.id)]).toEqual([r.id, true]);
+    }
+  }
+
+  function fastBrowserSeams(): ToolsSeams {
+    return { ...NOOP_SEAMS, resolveTool: (_p, tool) => (tool === "fast-browser" ? { tool, bundled: "node", exec: ["node", "fast-browser.mjs"], userCopy: null, linked: false, chosen: "node" } : noopResolution(tool)) };
+  }
+
+  test("claude not signed in, chrome missing (unrequired), and optional team tools missing (steps and open-url): all pass the contract", async () => {
+    const reqs: PackRequirements[] = [
+      { pack: "somepack", integrations: [], tools: [{ name: "widget", why: "does widget things", optional: true }] },
+      { pack: "somepack", integrations: [], tools: [{ name: "sdm", why: "db tunnels", install: { url: "https://x/sdm" }, optional: true }] },
+    ];
+    const exec: ExecScript = (argv) => {
+      if (argv[0] === "claude" && argv[1] === "--version") return ok("1.2.3\n");
+      if (argv[0] === "claude" && argv[1] === "auth") return ok(JSON.stringify({ loggedIn: false }));
+      if (argv[0] === "widget" || argv[0] === "sdm") return missing(argv[0]!);
+      return ok();
+    };
+    const rows = await toolRows(fakeProbes({ exec }), reqs, { hasBrew: true }, NOOP_SEAMS);
+
+    // The scenario must actually reach the rows this test exists to guard;
+    // otherwise a change that stops emitting one of them would pass here
+    // without proving anything.
+    const claude = rows.find((r) => r.id === "tool.claude")!;
+    expect(claude.required).toBe(false);
+    expect(claude.action?.type).toBe("steps");
+    const widget = rows.find((r) => r.id === "tool.team.widget")!;
+    expect(widget.action?.type).toBe("steps");
+    const sdm = rows.find((r) => r.id === "tool.team.sdm")!;
+    expect(sdm.action?.type).toBe("open-url");
+
+    assertOptionalManualActionRows(rows);
+  });
+
+  test("fast-browser extension not loaded and a pack declaring chrome sign-in: both are the allowlisted manual steps", async () => {
+    const reqs: PackRequirements[] = [{ pack: "somepack", integrations: [], tools: [], chrome: { required: true, signedIntoApp: "work@example.com" } }];
+    const exec: ExecScript = (argv) => (argv[2] === "doctor" && argv[3] === "--json" ? ok(JSON.stringify(withCheckStatus(REAL_DOCTOR, "extension-loaded", "fail"))) : ok());
+    const p = fakeProbes({ exec });
+    p.mkdirp("/Applications/Google Chrome.app");
+    const rows = await toolRows(p, reqs, { hasBrew: true }, fastBrowserSeams());
+
+    const extension = rows.find((r) => r.id === "tool.fast-browser-extension")!;
+    expect(extension.action?.type).toBe("steps");
+    const signin = rows.find((r) => r.id === "tool.chrome-signin")!;
+    expect(signin.action?.type).toBe("steps");
+
+    assertOptionalManualActionRows(rows);
+  });
+
+  // Proves assertOptionalManualActionRows can actually fail: an unallowlisted
+  // id with a reworded note (missing the "works without" prefix) must be
+  // caught, not silently pass.
+  test("the guard itself rejects a row that isn't allowlisted and isn't 'works without'-worded", () => {
+    const drifted: Row = {
+      id: "tool.not-allowlisted",
+      kind: "tool",
+      title: "Drifted",
+      why: "why",
+      required: false,
+      optionalNote: "Optional: rt works fine without this",
+      status: "needs-you",
+      detail: "detail",
+      action: { type: "steps", label: "Show steps…", steps: ["do a thing"] },
+      recheck: "on-change",
+    };
+    expect(() => assertOptionalManualActionRows([drifted])).toThrow();
   });
 });
