@@ -1,8 +1,8 @@
 # Linear MCP on a fresh install: one step, one row, one VM assertion
 
 2026-09-03, MAT-406 (under MAT-386). The Linear MCP server is a per-machine
-Claude Code config that nothing in rt writes, checks, or names. Skills in the
-ClaimView pack call `mcp__linear__*` and fail late on a machine that never got
+Claude Code config that nothing in rt writes, checks, or names. Skills in a team
+pack call `mcp__linear__*` and fail late on a machine that never got
 one. This branch makes the server land during Install, makes its absence
 visible on the checklist, and asserts it in the VM join pass.
 
@@ -34,7 +34,7 @@ parameter (so tests never touch a real HOME), and preserves unknown keys
 through an index signature. That is the model.
 
 **The name the skills bind to does not exist on any machine.**
-`claimview-tools/packages/assured-skills/skills/{provision,checkout,capture-evidence}`
+A team pack's `skills/{provision,checkout,capture-evidence}`
 call `mcp__linear__get_issue`, `save_issue`, `list_comments`,
 `extract_images`. Machines carry `linear-matt` and `linear-work`. Those tools
 resolve on neither. `onboard/SKILL.md:98` documents a third shape entirely
@@ -83,7 +83,7 @@ red-flag every OAuth user.
 `ready` means: an entry named `linear` that is a Linear MCP by shape.
 
 The step writes the server under `linear` for the same reason. The other half
-of the name fix, editing the ClaimView skills to call some existing name, is
+of the name fix, editing the pack's skills to call some existing name, is
 rejected: those skills are in another repo and outside this fence, and no
 existing name is right for everyone.
 
@@ -298,10 +298,10 @@ never-touch rule. Nothing drives a browser.
 
 ## Follow-ups
 
-**`onboard/SKILL.md:98` documents a third server shape.** It tells a joiner to
+**A team pack's `onboard/SKILL.md` documents a third server shape.** It tells a joiner to
 run `claude mcp add linear -- npx -y @anthropic-ai/linear-mcp-server`, a stdio
 server unrelated to the hosted one everything else uses. It is in
-claimview-tools, outside this fence. Filed for that repo: replace the line
+the pack's own repo, outside this fence. Filed there: replace the line
 with "Install writes this; if the `tool.linear-mcp` row is not ready, connect
 Linear and re-run Install."
 
