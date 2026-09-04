@@ -14,8 +14,15 @@ One tag (`v*`) produces, via `.github/workflows/release.yml` on macos-15:
 - `mattstack-<ver>.dmg` and `.zip` — the app, signed + notarized + stapled
   (`scripts/release/make-dmg.sh`, `make-zip.sh`); the compiled rt CLI ships
   inside the bundle, there is no separate `rt-darwin-*.tar.gz` asset
-- Sparkle `.delta` files and `SHA256SUMS` over the dmg/zip/deltas
-  (the workflow's Checksums step)
+- `SHA256SUMS` over the dmg/zip (the workflow's Checksums step). Sparkle
+  `.delta` files are attempted but never materialize, by accepted decision
+  (MAT-395): `build.sh` signs every plain file under `Contents/Helpers`
+  individually, codesign stores those signatures as extended attributes, and
+  Sparkle's `BinaryDelta` refuses to diff xattr'd trees. `appcast.sh`
+  tolerates the delta failure and every update ships as the full ~260 MB
+  zip; the update leg is proven on that path. Revisit only if the user base
+  or update cadence makes delta bandwidth matter, or if the Helpers tree is
+  restructured for another reason.
 - `appcast.xml` — the Sparkle feed (`scripts/release/appcast.sh`)
 - the published plugin marketplace (`scripts/release/marketplace.sh`,
   generated from `marketplace/marketplace.json`; url-pinned sources resolve
@@ -132,9 +139,11 @@ gui/$UID/<wrong-label>`.
 `appcast.sh` signs the feed; the appcast URL is baked prod-side, and a
 prod build honours `MATTSTACK_APPCAST_URL` only with
 `--allow-appcast-override` (the VM walkthrough's update leg uses this).
-The update path end-to-end (Create Release → appcast → installed app
-updates) has NOT run yet — it needs the first real tag; treat its first
-run as a verification exercise, not a routine.
+The update path is proven in the VM harness (MAT-394, rt#195): silent
+in-place install and relaunch, daemon restart, `rt --version`, 2.8.0 to a
+real 2.8.1 build. The prod-Mac leg (Create Release → appcast → an installed
+app on real hardware) still awaits the first real tag; treat that first run
+as a verification exercise, not a routine.
 
 ## App-bundle CI (bundle-apps.yml)
 
