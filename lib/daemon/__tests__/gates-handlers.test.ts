@@ -390,7 +390,7 @@ describe("gate:list / gate:park / gate:close", () => {
     expect(page2.data.gates).toHaveLength(1);
   });
 
-  test("clamps a client-supplied limit above the 1000 ceiling (CodeRabbit)", async () => {
+  test("clamps a client-supplied limit above the 1000 ceiling", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rt-gates-handlers-"));
     dirs.push(dir);
     const realStore: GatesStore = createGatesStore({ dbPath: join(dir, "gates.db"), log });
