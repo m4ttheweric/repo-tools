@@ -233,6 +233,23 @@ let readinessModelChecks: [Check] = [
         }
         c.expectEqual(plans.fetches, 3)
     },
+    Check("a refresh that fails after an earlier success keeps the loaded rows and reads as failed, not fresh") { c in
+        final class SucceedsOnceThenFails: PlanSource, @unchecked Sendable {
+            var n = 0
+            func fetchPlan() async throws -> Plan { n += 1; if n == 1 { return makePlan() }; throw FakePlansExhausted() }
+        }
+        let m = await MainActor.run { ReadinessModel(plans: SucceedsOnceThenFails(), permissions: FakePermissions(), ticker: FakeTicker()) }
+        await m.load()
+        await MainActor.run {
+            c.expectEqual(m.groups.count, 2, "the first fetch loaded the plan")
+            c.expect(!m.lastRefreshFailed, "the first fetch succeeded")
+        }
+        await m.recheckAll()
+        await MainActor.run {
+            c.expectEqual(m.groups.count, 2, "a failed refresh keeps the previously loaded rows")
+            c.expect(m.lastRefreshFailed, "a caller gating UI on freshness must see this refresh as failed")
+        }
+    },
     Check("a failing plan fetch keeps the last rows and records the error") { c in
         final class Boom: PlanSource, @unchecked Sendable {
             var n = 0

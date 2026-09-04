@@ -52,6 +52,14 @@ public final class ReadinessModel: ObservableObject {
     public var allRows: [PlanRow] { groups.flatMap(\.rows) }
     public func row(_ id: String) -> PlanRow? { allRows.first { $0.id == id } }
 
+    /// True exactly when the refresh that most recently completed (`load`,
+    /// `recheckAll`, `afterAction`, `didBecomeActive`) failed. `fetch` sets
+    /// `lastError` on every call, success or failure, so this always reflects
+    /// that latest attempt rather than one from earlier. A caller that gates
+    /// UI on freshness must not treat a failed refresh as though it replaced
+    /// stale `groups` with confirmed data.
+    public var lastRefreshFailed: Bool { lastError != nil }
+
     /// Every required row ready, at least one optional row (permission or
     /// otherwise) not ready — a denied optional permission counts.
     public var limitedModeAvailable: Bool {
