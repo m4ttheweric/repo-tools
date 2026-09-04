@@ -22,7 +22,12 @@ const noopPush: GatePush = {
 // reasoning exactly): a client that omits `limit` must not be able to force
 // a full-table read.
 const DEFAULT_LIST_LIMIT = 500;
-const clampListLimit = (n: number | undefined): number => Math.max(1, Math.floor(n ?? DEFAULT_LIST_LIMIT));
+// Unlike events.ts's bare pass-through, a gate row carries its full
+// questions+answers JSON, not a thin envelope -- a client-supplied limit
+// still needs a ceiling, or a large explicit value is an oversized socket read.
+const MAX_LIST_LIMIT = 1000;
+const clampListLimit = (n: number | undefined): number =>
+  Math.min(MAX_LIST_LIMIT, Math.max(1, Math.floor(n ?? DEFAULT_LIST_LIMIT)));
 
 const num = (v: unknown): number | undefined => {
   if (v == null || v === "") return undefined;
@@ -43,6 +48,12 @@ function isValidQuestion(q: unknown): q is GateQuestion {
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** gate-push resolves delivery off `nudge.session`; a malformed nudge would
+    silently become "no delivery target" instead of a loud open-time reject. */
+function isValidNudge(v: unknown): v is { session: string } {
+  return isPlainObject(v) && typeof v.session === "string" && v.session.length > 0;
 }
 
 /** Both wire shapes carry the same value underneath: bare, or `{value, note?}`
@@ -137,6 +148,15 @@ export function createGateHandlers(
       if (new Set(ids).size !== ids.length) return { ok: false as const, error: "duplicate question id" };
       if (payload?.meta !== undefined && !isPlainObject(payload.meta)) {
         return { ok: false as const, error: "meta must be a plain object" };
+      }
+      if (payload?.agent !== undefined && typeof payload.agent !== "string") {
+        return { ok: false as const, error: "agent must be a string" };
+      }
+      if (payload?.pane !== undefined && typeof payload.pane !== "string") {
+        return { ok: false as const, error: "pane must be a string" };
+      }
+      if (payload?.nudge !== undefined && !isValidNudge(payload.nudge)) {
+        return { ok: false as const, error: "nudge must be an object with a string session" };
       }
 
       const { row, supersededId } = store.open({

@@ -107,6 +107,28 @@ describe("gate:open", () => {
     expect(ok.ok).toBe(true);
   });
 
+  test("rejects a malformed nudge; accepts string pane/agent, rejects non-string ones (CodeRabbit)", async () => {
+    const { handlers } = harness();
+    const badNudgeNotObject = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), nudge: "sess-1" as any });
+    expect(badNudgeNotObject.ok).toBe(false);
+    const badNudgeNoSession = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), nudge: {} as any });
+    expect(badNudgeNoSession.ok).toBe(false);
+    const badNudgeNumericSession = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), nudge: { session: 7 } as any });
+    expect(badNudgeNumericSession.ok).toBe(false);
+    const goodNudge = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), nudge: { session: "sess-1" } });
+    expect(goodNudge.ok).toBe(true);
+
+    const badPane = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), pane: 7 as any });
+    expect(badPane.ok).toBe(false);
+    const goodPane = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), pane: "!7" });
+    expect(goodPane.ok).toBe(true);
+
+    const badAgent = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), agent: 7 as any });
+    expect(badAgent.ok).toBe(false);
+    const goodAgent = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), agent: "ag-1" });
+    expect(goodAgent.ok).toBe(true);
+  });
+
   test("the opened payload's pane field is named paneId (F5)", async () => {
     const { handlers, emitted } = harness();
     await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), pane: "pane-9" });
@@ -366,6 +388,22 @@ describe("gate:list / gate:park / gate:close", () => {
     const page2 = await handlers["gate:list"]({ limit: 2, cursor: page1.data.cursor });
     if (!page2.ok) throw new Error("list failed");
     expect(page2.data.gates).toHaveLength(1);
+  });
+
+  test("clamps a client-supplied limit above the 1000 ceiling (CodeRabbit)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-gates-handlers-"));
+    dirs.push(dir);
+    const realStore: GatesStore = createGatesStore({ dbPath: join(dir, "gates.db"), log });
+    let seenLimit: number | undefined;
+    const store: GatesStore = {
+      ...realStore,
+      list: (filter) => { seenLimit = filter.limit; return realStore.list(filter); },
+    };
+    const bus = { emitAt: () => 1 } as unknown as EventsBus;
+    const handlers = createGateHandlers(store, bus, () => {});
+    const r = await handlers["gate:list"]({ limit: 5000 });
+    expect(r.ok).toBe(true);
+    expect(seenLimit).toBe(1000); // a gate row carries full questions+answers JSON, so a client can't force an oversized read
   });
 });
 

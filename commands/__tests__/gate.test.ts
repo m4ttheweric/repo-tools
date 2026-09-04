@@ -218,6 +218,28 @@ describe("waitForGate", () => {
     expect(sleeps).toEqual([1000]); // one backoff between the two calls
   });
 
+  test("a short --timeout bounds the backoff sleep to the remaining budget, never past the deadline", async () => {
+    const realNow = Date.now;
+    let now = 1_000_000;
+    Date.now = () => now;
+    try {
+      const deadline = now + 300; // well under the 1s backoff start
+      const sleeps: number[] = [];
+      let calls = 0;
+      const wait: WaitFn = async () => {
+        calls++;
+        return { ok: false, error: "rt daemon unreachable: connect ECONNREFUSED" };
+      };
+      const sleep = async (ms: number) => { sleeps.push(ms); now += ms; };
+      const outcome = await waitForGate("gt-1a2b3c4d", deadline, wait, sleep);
+      expect(outcome).toEqual({ terminal: "budget" });
+      expect(calls).toBe(1);
+      expect(sleeps).toEqual([300]); // clamped to the remaining budget, not the full 1000ms backoff step
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   test("unreachable with a tiny budget exhausts and returns budget, never a hard failure", async () => {
     const realNow = Date.now;
     let now = 1_000_000;

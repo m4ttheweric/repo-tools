@@ -175,7 +175,12 @@ export async function waitForGate(
         console.error(`rt gate: wait failed (${res.error ?? "unknown error"}); retrying until reconnect...`);
         warned = true;
       }
-      await sleep(backoffMs);
+      // Bound the backoff by the remaining budget: a short --timeout must
+      // not sleep past its own deadline (nextWaitMs(deadline, null) means
+      // "wait forever", so remaining is Infinity there and never clamps).
+      const remaining = deadline == null ? Infinity : deadline - Date.now();
+      if (remaining <= 0) return { terminal: "budget" };
+      await sleep(Math.min(backoffMs, remaining));
       backoffMs = Math.min(backoffMs * 2, RETRY_BACKOFF_CAP_MS);
       continue;
     }
