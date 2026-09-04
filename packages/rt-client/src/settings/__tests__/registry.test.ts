@@ -108,6 +108,15 @@ describe("settings/registry", () => {
       expect(def?.default).toBeUndefined();
     });
 
+    test("board.reReview is a user+team gate defaulting enabled (a fresh key, not a latch port)", () => {
+      const def = getDef("board.reReview");
+
+      expect(def?.scopes.sort()).toEqual(["team", "user"]);
+      expect(def?.type).toBe("object");
+      expect(def?.merge).toBe("deep");
+      expect(def?.default).toEqual({ enabled: true });
+    });
+
     test("every def carries scopes", () => {
       for (const def of allDefs()) {
         expect(Array.isArray(def.scopes)).toBe(true);
@@ -257,6 +266,7 @@ describe("settings/registry", () => {
         "board.defaultMember",
         "board.hiddenMembers",
         "board.triage",
+        "board.reReview",
         "board.agent.account",
         "board.agent.model",
         "board.agent.effort",
@@ -288,7 +298,7 @@ describe("settings/registry", () => {
         "rt.daemonPath",
         "rt.notify.eventBridges",
       ];
-      expect(suiteKeys).toHaveLength(56);
+      expect(suiteKeys).toHaveLength(57);
 
       expect(allDefs().map((d) => d.key).sort()).toEqual(
         [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),
