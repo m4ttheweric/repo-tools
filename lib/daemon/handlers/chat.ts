@@ -29,6 +29,8 @@ import {
   listMembers,
   dmRoomFor,
   dmParticipants,
+  paneHandleFor,
+  rememberPaneHandle,
   signIn,
   signOut,
   setAway,
@@ -1035,7 +1037,14 @@ export function createChatHandlers(opts: {
 
     "chat:mark": async (rawPayload: unknown): Promise<CommandResult<"chat:mark">> => {
       const payload = rawPayload as Commands["chat:mark"]["payload"];
-      markRead(payload.handle, payload.room, db);
+      const { handle, room, upto } = payload;
+      // isSafeInteger, not isInteger: an unsafe integer (2^53+1) survives the
+      // > 0 check, then Math.min(upto, maxId) in markRead clamps it to maxId,
+      // silently marking the whole room read instead of one message.
+      if (upto !== undefined && (!Number.isSafeInteger(upto) || upto <= 0)) {
+        return { ok: false, error: "upto must be a positive message id" };
+      }
+      markRead(handle, room, upto, db);
       return { ok: true, data: {} };
     },
 
@@ -1110,11 +1119,19 @@ export function createChatHandlers(opts: {
         const binding = inboxDeps.resolve(sessionId);
         if (binding?.name && binding.nameSource === "user" && isValidChatName(binding.name)) resolvedBase = binding.name;
       }
+      // Consulted only after --as / chat.handle (both already folded into
+      // baseHandle client-side) and the registry's user-chosen name, so every
+      // explicit choice still wins: a pane that once drew a pool name redraws it.
+      if (resolvedBase === undefined && pane) {
+        const pinned = paneHandleFor(pane, db);
+        if (pinned && isValidChatName(pinned)) resolvedBase = pinned;
+      }
 
       const data = signIn({ sessionId, baseHandle: resolvedBase, cwd: signInCwd, repo: signInRepo, branch: signInBranch, pane, statusText }, db, registryDeps);
       // R057: signIn now retries a busy write rather than throwing, but still
       // reports undefined once its retry budget is exhausted.
       if (!data) return { ok: false, error: "chat: sign-in failed, database busy" };
+      if (pane) rememberPaneHandle(pane, data.baseHandle, db);
 
       if (derivedRoom) {
         try {

@@ -5,7 +5,7 @@
  * joinRoom/listMembers come from chat-store.ts to exercise the room-default
  * wiring those tests cover.
  */
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { readFileSync } from "fs";
 import { tmpdir } from "os";
@@ -19,7 +19,9 @@ import {
   listBuddies,
   presenceForSession,
   presenceThresholds,
+  paneHandleFor,
   prunePresence,
+  rememberPaneHandle,
   setAway,
   signIn,
   signOut,
@@ -490,4 +492,50 @@ test("an explicitly named pool name counts as used; a non-pool base is not recor
   const ledger = getKvValue<Record<string, number>>("chat", "names", {}, db);
   expect(ledger.kai).toBe(now);
   expect(ledger["mr-board"]).toBeUndefined();
+});
+
+test("rememberPaneHandle round-trips a pane's base handle; an unknown pane resolves undefined", () => {
+  const db = fresh();
+  expect(paneHandleFor("wAR:p3", db)).toBeUndefined();
+  rememberPaneHandle("wAR:p3", "max", db);
+  expect(paneHandleFor("wAR:p3", db)).toBe("max");
+  rememberPaneHandle("wAR:p3", "kai", db);
+  expect(paneHandleFor("wAR:p3", db)).toBe("kai");
+  expect(paneHandleFor("wZZ:p9", db)).toBeUndefined();
+});
+
+test("the pane-handle ledger caps at the 200 most-recently-written pins, even when every write shares a timestamp", () => {
+  const db = fresh();
+  const frozen = spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+  try {
+    for (let i = 1; i <= 250; i++) rememberPaneHandle(`w:p${i}`, `h${i}`, db);
+  } finally {
+    frozen.mockRestore();
+  }
+  const count = (db.query("SELECT COUNT(*) AS n FROM kv WHERE ns = 'chat_pane_handles';").get() as { n: number }).n;
+  expect(count).toBe(200);
+  // The 50 oldest writes are evicted; the newest 200 survive by insertion order.
+  expect(paneHandleFor("w:p50", db)).toBeUndefined();
+  expect(paneHandleFor("w:p51", db)).toBe("h51");
+  expect(paneHandleFor("w:p250", db)).toBe("h250");
+});
+
+test("re-pinning an old pane survives the cap as a most-recent write, even sharing a timestamp with fresh pins", () => {
+  const db = fresh();
+  const frozen = spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+  try {
+    for (let i = 1; i <= 200; i++) rememberPaneHandle(`w:p${i}`, `h${i}`, db);
+    // Re-pin the OLDEST key (the upsert path CodeRabbit flagged): it must count
+    // as the newest write, not keep its stale rowid.
+    rememberPaneHandle("w:p1", "repinned", db);
+    // Push past the cap with fresh pins so eviction actually runs.
+    for (let i = 201; i <= 205; i++) rememberPaneHandle(`w:p${i}`, `h${i}`, db);
+  } finally {
+    frozen.mockRestore();
+  }
+  const count = (db.query("SELECT COUNT(*) AS n FROM kv WHERE ns = 'chat_pane_handles';").get() as { n: number }).n;
+  expect(count).toBe(200);
+  expect(paneHandleFor("w:p1", db)).toBe("repinned"); // re-pinned oldest survives
+  expect(paneHandleFor("w:p2", db)).toBeUndefined();   // genuinely-old untouched key evicted
+  expect(paneHandleFor("w:p205", db)).toBe("h205");    // newest survives
 });

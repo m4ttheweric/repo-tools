@@ -472,7 +472,7 @@ export interface Commands {
   "chat:read": { payload: { handle: string; room?: string; limit?: number; sinceMs?: number }; data: { rooms: { room: string; messages: ChatMessage[] }[] } };
   "chat:rooms": { payload: { handle: string; includeArchived?: boolean }; data: { rooms: RoomSummary[] } };
   "chat:who": { payload: { room: string }; data: { members: ChatMember[] } };
-  "chat:mark": { payload: { handle: string; room?: string }; data: Record<string, never> };
+  "chat:mark": { payload: { handle: string; room?: string; upto?: number }; data: Record<string, never> };
   "chat:messages": { payload: { room: string; before?: number; limit?: number }; data: { messages: ChatMessage[] } };
 
   // A session id keys these to one signed-in handle, not a room-membership

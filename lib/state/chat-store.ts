@@ -547,14 +547,26 @@ export function pruneMessages(
   return { removed: result.changes };
 }
 
-export function markRead(handle: string, room?: string, db: Database = getStateDb()): void {
+/**
+ * With no `upto`, clears the room: the cursor jumps to the room's newest id
+ * (unchanged behaviour). With `upto`, the cursor advances only to that
+ * message, bounded above by the room's real max and never walked backwards,
+ * so anything newer than `upto` stays unread.
+ */
+export function markRead(handle: string, room?: string, upto?: number, db: Database = getStateDb()): void {
   const members = membershipsFor(handle, room, db);
   for (const member of members) {
     const maxId = getRoomMaxId(member.room, db);
     // Cache-class (R057): the next mark-read retries whatever this one drops.
     persistOrWarn(
       "chat",
-      () => { db.query(UPDATE_LAST_READ_SQL).run(maxId, member.room, handle); },
+      () => {
+        if (upto === undefined) {
+          db.query(UPDATE_LAST_READ_SQL).run(maxId, member.room, handle);
+        } else {
+          db.query(UPDATE_LAST_READ_CLAMPED_SQL).run(Math.min(upto, maxId), member.room, handle);
+        }
+      },
       { op: "markRead", room: member.room, handle },
     );
   }

@@ -222,6 +222,59 @@ test("chat:read clamps a negative limit into [1,500] rather than reaching SQLite
   expect(res.data.rooms[0]!.messages.length).toBeLessThanOrEqual(500);
 });
 
+test("chat:mark --upto advances the cursor only to that message, leaving the later ones unread", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:join"]({ room: "r", handle: "b" });
+  postMessage({ room: "r", handle: "a", body: "one" }, h.db);
+  const two = postMessage({ room: "r", handle: "a", body: "two" }, h.db);
+  postMessage({ room: "r", handle: "a", body: "three" }, h.db);
+
+  const marked = await h["chat:mark"]({ handle: "b", room: "r", upto: two!.id });
+  expect(marked.ok).toBe(true);
+  const after = await h["chat:read"]({ handle: "b", room: "r", limit: 20 });
+  if (!after.ok) throw new Error("unreachable");
+  expect(after.data.rooms[0]!.messages.map((m) => m.body)).toEqual(["three"]);
+});
+
+test("chat:mark with no upto clears the whole room", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:join"]({ room: "r", handle: "b" });
+  postMessage({ room: "r", handle: "a", body: "one" }, h.db);
+  postMessage({ room: "r", handle: "a", body: "two" }, h.db);
+
+  const marked = await h["chat:mark"]({ handle: "b", room: "r" });
+  expect(marked.ok).toBe(true);
+  const after = await h["chat:read"]({ handle: "b", room: "r", limit: 20 });
+  if (!after.ok) throw new Error("unreachable");
+  expect(after.data.rooms).toEqual([]);
+});
+
+test("chat:mark rejects a non-positive upto with a reason", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "b" });
+  const res = await h["chat:mark"]({ handle: "b", room: "r", upto: 0 } as any);
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toContain("upto");
+});
+
+test("chat:mark rejects an unsafe-integer upto instead of clamping the whole room read", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:join"]({ room: "r", handle: "b" });
+  postMessage({ room: "r", handle: "a", body: "one" }, h.db);
+  postMessage({ room: "r", handle: "a", body: "two" }, h.db);
+
+  const res = await h["chat:mark"]({ handle: "b", room: "r", upto: Number.MAX_SAFE_INTEGER + 1 } as any);
+  expect(res.ok).toBe(false);
+  // The rejected mark must leave the cursor untouched, not clamp it to maxId.
+  const after = await h["chat:read"]({ handle: "b", room: "r", limit: 20 });
+  if (!after.ok) throw new Error("unreachable");
+  expect(after.data.rooms[0]!.messages.map((m) => m.body)).toEqual(["one", "two"]);
+});
+
 test("the read-only handlers mutate nothing", async () => {
   const h = freshHandlers();
   await h["chat:join"]({ room: "r", handle: "a" });
@@ -324,6 +377,35 @@ test("sign-in without a baseHandle draws a first name from the pool", async () =
   if (!res.ok) throw new Error("unreachable");
   expect(AGENT_NAMES).toContain(res.data.baseHandle);
   expect(res.data.handle).toBe(res.data.baseHandle);
+});
+
+test("a herdr pane redraws its earlier pool handle on the next session; a different pane draws fresh", async () => {
+  const h = freshHandlers();
+  const first = await h["chat:sign-in"]({ sessionId: "s1", pane: "wAR:p3" });
+  if (!first.ok) throw new Error("unreachable");
+  const drawn = first.data.baseHandle;
+  expect(AGENT_NAMES).toContain(drawn);
+
+  await h["chat:sign-out"]({ sessionId: "s1" });
+
+  const again = await h["chat:sign-in"]({ sessionId: "s2", pane: "wAR:p3" });
+  if (!again.ok) throw new Error("unreachable");
+  expect(again.data.baseHandle).toBe(drawn);
+
+  const elsewhere = await h["chat:sign-in"]({ sessionId: "s3", pane: "wZZ:p9" });
+  if (!elsewhere.ok) throw new Error("unreachable");
+  expect(elsewhere.data.baseHandle).not.toBe(drawn);
+});
+
+test("an explicit baseHandle still wins over a pane's pinned handle", async () => {
+  const h = freshHandlers();
+  const first = await h["chat:sign-in"]({ sessionId: "s1", pane: "wAR:p3" });
+  if (!first.ok) throw new Error("unreachable");
+  await h["chat:sign-out"]({ sessionId: "s1" });
+
+  const explicit = await h["chat:sign-in"]({ sessionId: "s2", pane: "wAR:p3", baseHandle: "kai" });
+  if (!explicit.ok) throw new Error("unreachable");
+  expect(explicit.data.baseHandle).toBe("kai");
 });
 
 test("renderWelcome carries the handle, room list, the automatic-delivery sentence, the two-line reply contract, the read/skill pointers, and catch-up capped at 10 lines per room", () => {

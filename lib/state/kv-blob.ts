@@ -21,7 +21,23 @@ const KV_UPSERT_SQL = `
   INSERT INTO kv (ns, k, v, updated_at) VALUES (?, ?, ?, ?)
   ON CONFLICT(ns, k) DO UPDATE SET v = excluded.v, updated_at = excluded.updated_at
 `;
+// INSERT OR REPLACE deletes the conflicting row and inserts a new one, so a
+// repeat write lands on a fresh (highest) rowid, unlike KV_UPSERT_SQL's
+// DO UPDATE, which keeps the existing rowid. capKvNamespace's rowid tiebreak
+// only reflects write order for writers that use this.
+const KV_REPLACE_SQL = `INSERT OR REPLACE INTO kv (ns, k, v, updated_at) VALUES (?, ?, ?, ?);`;
 const KV_DELETE_SQL = `DELETE FROM kv WHERE ns = ? AND k = ?;`;
+// updated_at is Date.now(), which ties for writes in the same millisecond;
+// rowid breaks those ties by insertion order. This is only a total
+// write-recency order for a namespace written through replaceKvValue, whose
+// every write (a re-write included) takes a rowid higher than every existing
+// row; a plain setKvValue upsert keeps its rowid and would defeat the tiebreak.
+// ns is bound twice (outer filter and inner ranking), then keep.
+const KV_CAP_NS_SQL = `
+  DELETE FROM kv WHERE ns = ? AND k NOT IN (
+    SELECT k FROM kv WHERE ns = ? ORDER BY updated_at DESC, rowid DESC LIMIT ?
+  );
+`;
 
 /**
  * `onCorrupt` fires only when a row EXISTS but its JSON fails to parse —
@@ -60,6 +76,21 @@ export function setKvValue<T>(ns: string, key: string, value: T, db: Database = 
   );
 }
 
+/**
+ * Like setKvValue, but a repeat write replaces the row (fresh, highest rowid)
+ * rather than updating it in place. Only for a namespace capped by
+ * capKvNamespace, whose (updated_at, rowid) recency order needs every write,
+ * a re-write included, to sort after every earlier one. Atomic: INSERT OR
+ * REPLACE never leaves the key absent between a delete and an insert.
+ */
+export function replaceKvValue<T>(ns: string, key: string, value: T, db: Database = getStateDb()): void {
+  persistOrWarn(
+    `kv:${ns}`,
+    () => { db.query(KV_REPLACE_SQL).run(ns, key, JSON.stringify(value), Date.now()); },
+    { ns, k: key, op: "replace" },
+  );
+}
+
 /** Critical write: retries via runCriticalWrite (busy.ts) and reports whether the row actually landed, so a destructive caller can refuse to advance state on a dropped write. */
 export function setKvValueCritical<T>(ns: string, key: string, value: T, db: Database = getStateDb()): boolean {
   const done = runCriticalWrite(
@@ -75,6 +106,20 @@ export function deleteKvValue(ns: string, key: string, db: Database = getStateDb
     `kv:${ns}`,
     () => { db.query(KV_DELETE_SQL).run(ns, key); },
     { ns, k: key, op: "delete" },
+  );
+}
+
+/**
+ * Caps `ns` to its `keep` most-recently-written rows, deleting the rest.
+ * Recency is (updated_at, rowid), so same-millisecond `Date.now()` writes
+ * evict by insertion order rather than arbitrarily. Cache-class write: a
+ * dropped delete just leaves the namespace briefly over its cap.
+ */
+export function capKvNamespace(ns: string, keep: number, db: Database = getStateDb()): void {
+  persistOrWarn(
+    `kv:${ns}`,
+    () => { db.query(KV_CAP_NS_SQL).run(ns, ns, keep); },
+    { ns, op: "cap" },
   );
 }
 
