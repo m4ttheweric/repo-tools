@@ -139,9 +139,11 @@ gui/$UID/<wrong-label>`.
 `appcast.sh` signs the feed; the appcast URL is baked prod-side, and a
 prod build honours `MATTSTACK_APPCAST_URL` only with
 `--allow-appcast-override` (the VM walkthrough's update leg uses this).
-The update path end-to-end (Create Release → appcast → installed app
-updates) has NOT run yet — it needs the first real tag; treat its first
-run as a verification exercise, not a routine.
+The update path is proven in the VM harness (MAT-394, rt#195): silent
+in-place install and relaunch, daemon restart, `rt --version`, 2.8.0 to a
+real 2.8.1 build. The prod-Mac leg (Create Release → appcast → an installed
+app on real hardware) still awaits the first real tag; treat that first run
+as a verification exercise, not a routine.
 
 ## App-bundle CI (bundle-apps.yml)
 
