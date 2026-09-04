@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, realpathSync } from "fs";
 import { homedir } from "os";
-import { dirname, isAbsolute, join, resolve } from "path";
+import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { stripJsonc } from "./sources.ts";
 
@@ -126,6 +126,34 @@ export function discoverPacks(opts: DiscoverOpts = {}): PackInfo[] {
   }
 
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * The pack whose tree contains startDir, or null. Walks upward on the same
+ * surface.jsonc marker discovery uses, so a compile run from inside a
+ * worktree acts on that worktree's sources rather than whatever checkout the
+ * marketplace registry points at. The name is the directory basename;
+ * callers with a better identity source (the pack's own plugin.json) may
+ * override it.
+ */
+export function findEnclosingPack(startDir: string): PackInfo | null {
+  let dir: string;
+  try {
+    dir = realpathSync(startDir);
+  } catch {
+    return null;
+  }
+  while (true) {
+    const surfacePath = surfaceFileFor(dir);
+    // In the grouped layout the surface lives at <root>/pack/surface.jsonc,
+    // so standing inside pack/ matches its own bare candidate; the pack root
+    // is the parent, which the next iteration finds via its pack/ candidate.
+    const insidePackSubdir = basename(dir) === "pack" && surfacePath === join(dir, "surface.jsonc");
+    if (surfacePath && !insidePackSubdir) return packFromDir(basename(dir), dir);
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
 }
 
 export function packDirOf(pack: PackInfo): string {

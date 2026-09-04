@@ -7,15 +7,19 @@
  *   rt skills check [--team <name>] [--verb <name> ...] [--manifest <path>]
  *   rt skills materialize [--repo <name>] [--json]
  *
- * --pack-dir / --mattstack-dir are test-only escape hatches (hidden from the
- * command tree): they let tests point the whole resolution chain at a
- * mkdtemp fixture instead of the real ~/.mattstack, without a PATH-shimmed
- * `claude` binary -- execSync inside this process ignores runtime PATH
- * mutations (resolved at Bun's own startup), so a fake `claude` on PATH is
- * not a reliable test seam. --mattstack-dir stands in for both the
- * ~/.mattstack root (pack-dir and manifest defaults) and the Claude plugin
- * cache (mirrored under <dir>/plugins/<name>/) that resolvePluginRoots()
- * queries for real via `claude plugin list --json`.
+ * --pack-dir names the pack directory to act on directly, bypassing registry
+ * discovery -- the way to target a worktree's sources from outside its tree
+ * (from inside, cwd resolution already prefers the enclosing pack).
+ *
+ * --mattstack-dir is a test-only escape hatch (hidden from the command
+ * tree): it lets tests point the whole resolution chain at a mkdtemp
+ * fixture instead of the real ~/.mattstack, without a PATH-shimmed `claude`
+ * binary -- execSync inside this process ignores runtime PATH mutations
+ * (resolved at Bun's own startup), so a fake `claude` on PATH is not a
+ * reliable test seam. It stands in for both the ~/.mattstack root (pack-dir
+ * and manifest defaults) and the Claude plugin cache (mirrored under
+ * <dir>/plugins/<name>/) that resolvePluginRoots() queries for real via
+ * `claude plugin list --json`.
  */
 
 import { execFileSync, spawnSync } from "child_process";
@@ -31,7 +35,7 @@ import { materializeSkills } from "../lib/setup/skills-materialize.ts";
 import { validateChain } from "../lib/skills/chain.ts";
 import { compileSkill, HEADER_COMMENT, isInlined } from "../lib/skills/compile.ts";
 import { skillMdDriftCauses, type DriftCause } from "../lib/skills/drift.ts";
-import { discoverPacks, surfaceFileFor, type PackInfo } from "../lib/skills/packs.ts";
+import { discoverPacks, findEnclosingPack, surfaceFileFor, type PackInfo } from "../lib/skills/packs.ts";
 import { findPlaceholders } from "../lib/skills/placeholders.ts";
 import { buildStageEntries, hostDir, outDirFor, otherSideDir, targetOutDirs } from "../lib/skills/layout.ts";
 import { computePackSha, maskProvenance, mattstackProvenance, packPluginIdentity } from "../lib/skills/provenance.ts";
@@ -140,6 +144,16 @@ function packNameFor(packDir: string): string {
 async function resolvePack(flags: { team: string | null; packDir: string | null; mattstackDir: string | null }): Promise<PackTarget> {
   const mattstackRoot = flags.mattstackDir ?? mattstackHome();
   if (flags.packDir) return { team: flags.team ?? packNameFor(flags.packDir), packDir: flags.packDir };
+
+  // A cwd inside a pack tree beats registry discovery: the registry maps a
+  // pack name to its canonical checkout, so from a worktree it would compile
+  // the wrong tree's sources. A named --pack only takes the enclosing dir
+  // when the names agree; otherwise it still means the registry's pack.
+  const enclosing = findEnclosingPack(process.cwd());
+  if (enclosing) {
+    const name = packPluginIdentity(enclosing.dir)?.name ?? enclosing.name;
+    if (!flags.team || flags.team === name) return { team: flags.team ?? name, packDir: enclosing.dir };
+  }
 
   const packs = flags.mattstackDir ? [] : discoverPacks();
   if (flags.team) {
@@ -736,6 +750,9 @@ export async function skillsCompile(args: string[]): Promise<void> {
     if (flags.preview && (flags.verbs?.length ?? 0) !== 1) {
       throw new SkillsUsageError("--preview needs a single --verb");
     }
+    if (flags.preview && flags.json) {
+      throw new SkillsUsageError("--preview and --json cannot be combined (--preview prints the compiled body; --json compiles, writes, and reports)");
+    }
 
     const chainErrors = pipelineChainErrors(resolved);
     if (chainErrors.length > 0) throw new SkillsUsageError(chainErrors.join("\n"));
@@ -744,33 +761,6 @@ export async function skillsCompile(args: string[]): Promise<void> {
     // Lint accepts a relative path to any KNOWN target, not only emitted ones: a
     // scoped compile still renders {{verb.path}} to siblings it is not writing.
     const emittedTargetDirs = knownTargetDirs;
-
-    if (flags.json) {
-      const rows: CompileVerbRow[] = [];
-      for (const target of targets) {
-        const { verb, isPublic } = target;
-        const side: Side = isPublic ? "skills" : "attachments";
-        const outcome = tryCompileVerb(target, resolved, emittedTargetDirs, verbSides);
-        if (!outcome.ok) {
-          rows.push({ name: verb.name, status: "errored", files: [], warnings: [], errors: [outcome.message], side });
-        } else {
-          rows.push({
-            name: verb.name,
-            status: "compiled",
-            files: outcome.result.files.map((f) => ({ path: f.path })),
-            warnings: outcome.result.warnings,
-            errors: [],
-            side,
-          });
-        }
-      }
-      // An errored verb is a failed compile: exit non-zero so a caller reading
-      // the code (not just the payload) sees it, matching the non-JSON path's
-      // throw and check --json's stale exit.
-      if (rows.some((row) => row.status === "errored")) process.exitCode = 1;
-      console.log(JSON.stringify({ pack: resolved.team, packDir: resolved.packDir, verbs: rows }));
-      return;
-    }
 
     if (flags.preview) {
       for (const target of targets) {
@@ -797,25 +787,26 @@ export async function skillsCompile(args: string[]): Promise<void> {
 
     // Every target is compiled before any is written: a run that aborts midway
     // leaves already-emitted verbs referencing stage dirs that never landed.
-    const planned: { target: CompileTarget; result: CompileResult }[] = [];
-    const failures: string[] = [];
-    for (const target of targets) {
-      const outcome = tryCompileVerb(target, resolved, emittedTargetDirs, verbSides);
-      if (outcome.ok) planned.push({ target, result: outcome.result });
-      else failures.push(outcome.message);
-    }
-    if (failures.length > 0) {
+    const outcomes: { target: CompileTarget; outcome: CompileOutcome }[] = targets.map(
+      (target) => ({ target, outcome: tryCompileVerb(target, resolved, emittedTargetDirs, verbSides) }),
+    );
+    const failures = outcomes.flatMap(({ outcome }) => (outcome.ok ? [] : [outcome.message]));
+    if (failures.length > 0 && !flags.json) {
       for (const message of failures) console.error(`rt skills: ${message}`);
       process.exit(1);
     }
 
-    for (const { target, result } of planned) {
+    const writing = failures.length === 0 && !flags.dryRun;
+    for (const { target, outcome } of outcomes) {
+      if (!outcome.ok) continue;
       const { verb, isPublic } = target;
       const side: Side = isPublic ? "skills" : "attachments";
 
-      if (flags.dryRun) {
-        console.log(`would write ${result.files.length} files for ${verb.name}`);
-        for (const warning of result.warnings) console.log(`  ${warning}`);
+      if (!writing) {
+        if (!flags.json) {
+          console.log(`would write ${outcome.result.files.length} files for ${verb.name}`);
+          for (const warning of outcome.result.warnings) console.log(`  ${warning}`);
+        }
         continue;
       }
 
@@ -824,18 +815,38 @@ export async function skillsCompile(args: string[]): Promise<void> {
       // it carries the compiler header, never when it is the hand-written source.
       const stale = otherSideDir(resolved.packDir, verb.name, isPublic);
       if (existsSync(stale) && !isHandWrittenDir(stale)) rmSync(stale, { recursive: true, force: true });
-      writeCompiledVerb(outDirFor(resolved.packDir, verb.name, isPublic), result);
-      console.log(`compiled ${verb.name} -> ${side} (${result.files.length} files, ${result.warnings.length} warnings)`);
-      for (const warning of result.warnings) console.log(`  ${warning}`);
+      writeCompiledVerb(outDirFor(resolved.packDir, verb.name, isPublic), outcome.result);
+      if (!flags.json) {
+        console.log(`compiled ${verb.name} -> ${side} (${outcome.result.files.length} files, ${outcome.result.warnings.length} warnings)`);
+        for (const warning of outcome.result.warnings) console.log(`  ${warning}`);
+      }
     }
 
+    const misplaced: string[] = [];
     if (publicSet) {
       for (const name of enumerateRegistered(resolved.packDir).keys()) {
-        if (!publicSet.has(name)) {
-          console.log(`misplaced: ${name} (run rt skills surface apply, or move it)`);
-          process.exitCode = 1;
-        }
+        if (!publicSet.has(name)) misplaced.push(name);
       }
+    }
+
+    if (flags.json) {
+      const rows: CompileVerbRow[] = outcomes.map(({ target, outcome }) => {
+        const side: Side = target.isPublic ? "skills" : "attachments";
+        return outcome.ok
+          ? { name: target.verb.name, status: "compiled", files: outcome.result.files.map((f) => ({ path: f.path })), warnings: outcome.result.warnings, errors: [], side }
+          : { name: target.verb.name, status: "errored", files: [], warnings: [], errors: [outcome.message], side };
+      });
+      // An errored or misplaced verb is a failed compile: exit non-zero so a
+      // caller reading the code (not just the payload) sees it, matching the
+      // non-JSON path's exits.
+      if (failures.length > 0 || misplaced.length > 0) process.exitCode = 1;
+      console.log(JSON.stringify({ pack: resolved.team, packDir: resolved.packDir, written: writing, verbs: rows, misplaced }));
+      return;
+    }
+
+    for (const name of misplaced) {
+      console.log(`misplaced: ${name} (run rt skills surface apply, or move it)`);
+      process.exitCode = 1;
     }
   });
 }
