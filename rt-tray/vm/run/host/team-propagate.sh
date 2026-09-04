@@ -50,6 +50,13 @@ vm_log "joiner: team pull (daemon) + assert"
 vm_scp "$VM_TESTER_USER" "$JOINER" "$RT_BIN" /tmp/rt-new
 vm_scp "$VM_TESTER_USER" "$JOINER" "$EXPECT" /tmp/team-expect.json
 vm_scp "$VM_TESTER_USER" "$JOINER" "$VM_ROOT/run/guest/assert-team.sh" /tmp/assert-team.sh
+# Owner-path default so the harness is not welded to one machine's filesystem; most runs have no key file at all.
+LINEAR_KEY_FILE="${MATTSTACK_VMTEST_LINEAR_KEY_FILE:-$HOME/.mattstack/vmtest/linear-api-key.txt}"
+if [ -f "$LINEAR_KEY_FILE" ]; then
+  vm_scp "$VM_TESTER_USER" "$JOINER" "$LINEAR_KEY_FILE" /tmp/linear-key.txt
+else
+  vm_log "joiner: no Linear key file at $LINEAR_KEY_FILE, skipping the Linear leg"
+fi
 vm_ssh "$VM_TESTER_USER" "$JOINER" "SLUG='$SLUG' VM_TESTER_PASS='$VM_TESTER_PASS' bash -s" <<'GUEST' | tee "$LOGS/propagate-joiner.log"
 set -euo pipefail
 export PATH="$HOME/.local/bin:/Applications/mattstack.app/Contents/Helpers:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -65,5 +72,17 @@ echo "$PULL_JSON"
 [ "$PULL_RC" -eq 0 ] || exit 1
 
 echo "joiner clone at $(git rev-parse --short HEAD)"
+
+# Connect runs after team pull: the verb validates the key against the
+# team's declared mattstack.integrations.linear.teamKey, which only exists
+# once the clone has landed. The key must not outlive its use on the guest,
+# so rm -f runs whether or not the connect succeeded; its own output is
+# suppressed since a failure envelope could carry the value back into the log.
+if [ -f /tmp/linear-key.txt ]; then
+  RT_BATCH=1 "$RT" setup linear connect --json < /tmp/linear-key.txt >/dev/null 2>&1 \
+    && echo "joiner: linear connected" || echo "joiner: linear connect failed"
+  rm -f /tmp/linear-key.txt
+fi
+
 bash /tmp/assert-team.sh "$SLUG" /tmp/team-expect.json
 GUEST
