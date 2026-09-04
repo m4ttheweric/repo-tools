@@ -53,14 +53,23 @@ vm_scp "$VM_TESTER_USER" "$JOINER" "$VM_ROOT/run/guest/assert-team.sh" /tmp/asse
 # Owner-path default so the harness is not welded to one machine's filesystem; most runs have no key file at all.
 LINEAR_KEY_FILE="${MATTSTACK_VMTEST_LINEAR_KEY_FILE:-$HOME/.mattstack/vmtest/linear-api-key.txt}"
 if [ -f "$LINEAR_KEY_FILE" ]; then
-  vm_scp "$VM_TESTER_USER" "$JOINER" "$LINEAR_KEY_FILE" /tmp/linear-key.txt
+  # A joiner-owned 0700 dir, never a fixed /tmp path: scp follows an existing
+  # symlink at the destination, which another account could plant.
+  vm_ssh "$VM_TESTER_USER" "$JOINER" "rm -rf \$HOME/.vmtest-key && install -d -m 700 \$HOME/.vmtest-key"
+  vm_scp "$VM_TESTER_USER" "$JOINER" "$LINEAR_KEY_FILE" "/Users/$VM_TESTER_USER/.vmtest-key/linear-key.txt"
 else
   vm_log "joiner: no Linear key file at $LINEAR_KEY_FILE, skipping the Linear leg"
+  # assert-team's Linear block must stay inert on a keyless run: nothing
+  # connected, so the rows it would demand cannot exist.
+  jq 'del(.linearMcp)' "$EXPECT" > "$LOGS/team-expect.keyless.json"
+  EXPECT="$LOGS/team-expect.keyless.json"
 fi
 vm_ssh "$VM_TESTER_USER" "$JOINER" "SLUG='$SLUG' VM_TESTER_PASS='$VM_TESTER_PASS' bash -s" <<'GUEST' | tee "$LOGS/propagate-joiner.log"
 set -euo pipefail
 export PATH="$HOME/.local/bin:/Applications/mattstack.app/Contents/Helpers:/usr/bin:/bin:/usr/sbin:/sbin"
 RT=/tmp/rt-new; chmod +x "$RT" /tmp/assert-team.sh
+# The staged key must not survive this session on any exit path, success or not.
+trap 'rm -rf "$HOME/.vmtest-key"' EXIT
 security unlock-keychain -p "$VM_TESTER_PASS" "$HOME/Library/Keychains/login.keychain-db"
 cd "$HOME/.mattstack/teams/$SLUG"
 
@@ -78,8 +87,8 @@ echo "joiner clone at $(git rev-parse --short HEAD)"
 # once the clone has landed. The key must not outlive its use on the guest,
 # so rm -f runs whether or not the connect succeeded; its own output is
 # suppressed since a failure envelope could carry the value back into the log.
-if [ -f /tmp/linear-key.txt ]; then
-  if RT_BATCH=1 "$RT" setup linear connect --json < /tmp/linear-key.txt >/dev/null 2>&1; then
+if [ -f "$HOME/.vmtest-key/linear-key.txt" ]; then
+  if RT_BATCH=1 "$RT" setup linear connect --json < "$HOME/.vmtest-key/linear-key.txt" >/dev/null 2>&1; then
     echo "joiner: linear connected"
     # --from resumes Install from linear.mcp onward (fastbrowser.setup,
     # herdr.integration, extension.install, services.start, snapshot.push,
@@ -91,7 +100,7 @@ if [ -f /tmp/linear-key.txt ]; then
   else
     echo "joiner: linear connect failed"
   fi
-  rm -f /tmp/linear-key.txt
+  rm -rf "$HOME/.vmtest-key"
 fi
 
 bash /tmp/assert-team.sh "$SLUG" /tmp/team-expect.json

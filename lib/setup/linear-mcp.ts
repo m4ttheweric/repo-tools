@@ -127,6 +127,10 @@ export function withLinearEntry(config: ClaudeConfig, apiKey: string): ClaudeCon
 export function writeClaudeConfig(p: Pick<Probes, "mkdirp" | "writeFile" | "rename" | "chmod" | "removeFile">, path: string, config: ClaudeConfig): void {
   const tmp = `${path}.rt-tmp`;
   p.mkdirp(dirname(path));
+  // Unlink first so the token always lands on a fresh 0600 inode: writing
+  // through a temp file left by an earlier failed rename would expose the
+  // content at that file's old mode until the chmod below.
+  p.removeFile(tmp);
   p.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", 0o600);
   p.chmod(tmp, 0o600);
   try {

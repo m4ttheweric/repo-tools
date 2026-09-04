@@ -192,9 +192,9 @@ Throwaway GitHub org (default `mattstack-vmtest`; override with `MATTSTACK_VMTES
 A Linear API key for `team-propagate.sh`'s Linear leg lives at
 `$HOME/.mattstack/vmtest/linear-api-key.txt` on the host by default; override
 the path with `MATTSTACK_VMTEST_LINEAR_KEY_FILE`. Its content travels to the
-joiner by `vm_scp`, over stdin into `rt setup linear connect --json`, and is
-removed from the guest right after (`rm -f`, run whether or not connect
-succeeded). It is never echoed, never in argv, never committed, and a run
+joiner by `vm_scp` into a joiner-owned 0700 directory, over stdin into
+`rt setup linear connect --json`, and is removed on every exit path (an EXIT
+trap in the guest session, plus an eager remove after the connect attempt). It is never echoed, never in argv, never committed, and a run
 with no key file at that path simply skips the Linear leg rather than
 failing. On a successful connect, the joiner also resumes Install from
 `linear.mcp` (`rt setup apply --from linear.mcp --json`) so the

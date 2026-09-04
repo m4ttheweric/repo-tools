@@ -144,6 +144,15 @@ describe("writeClaudeConfig", () => {
     expect(p.calls.modes["/h/.claude.json"]).toBe(0o600);
   });
 
+  test("a leftover temp file is unlinked before the token is written, never written through", () => {
+    // The write must land on a fresh 0600 inode: writing through a leftover
+    // 0644 temp file exposes the token until the later chmod.
+    const p = fakeProbes({ files: { "/h/.claude.json.rt-tmp": "{}\n" } });
+    p.chmod("/h/.claude.json.rt-tmp", 0o644);
+    writeClaudeConfig(p, "/h/.claude.json", { a: 1 });
+    expect(p.calls.removed).toContain("/h/.claude.json.rt-tmp");
+  });
+
   test("a rename that throws takes the token-bearing temp file with it", () => {
     const p = fakeProbes({});
     const throwing = {

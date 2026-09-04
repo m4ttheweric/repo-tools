@@ -41,8 +41,17 @@ if [ -d "$FIX/plugins" ]; then
   mv "$TEAM/.claude-plugin/marketplace.json.new" "$TEAM/.claude-plugin/marketplace.json"
 fi
 if [ -f "$FIX/settings.team.json" ]; then
+  # Object values deep-merge over the team's current value (fixture wins):
+  # a wholesale set would clobber what team create already declared under the
+  # same key, e.g. the forge inside mattstack.integrations.
   for key in $(jq -r 'keys[]' "$FIX/settings.team.json"); do
-    "$RT" settings set "$key" "$(jq -c --arg k "$key" '.[$k]' "$FIX/settings.team.json")" --scope team --team "$SLUG"
+    VAL=$(jq -c --arg k "$key" '.[$k]' "$FIX/settings.team.json")
+    CUR=$("$RT" settings get "$key" --json 2>/dev/null | tail -1 | jq -c '.value // empty' 2>/dev/null || true)
+    if [ -n "$CUR" ] && printf '%s' "$CUR" | jq -e 'type=="object"' >/dev/null 2>&1 \
+        && printf '%s' "$VAL" | jq -e 'type=="object"' >/dev/null 2>&1; then
+      VAL=$(jq -cn --argjson a "$CUR" --argjson b "$VAL" '$a * $b')
+    fi
+    "$RT" settings set "$key" "$VAL" --scope team --team "$SLUG"
   done
 fi
 if [ -f "$FIX/secrets.json" ]; then
