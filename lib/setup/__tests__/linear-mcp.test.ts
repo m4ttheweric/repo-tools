@@ -1,0 +1,97 @@
+import { describe, expect, test } from "bun:test";
+import {
+  callableBySkills,
+  claudeJsonPath,
+  isLinearMcp,
+  linearServerNames,
+  nameTaken,
+  readClaudeConfig,
+  withLinearEntry,
+  LINEAR_MCP_URL,
+} from "../linear-mcp.ts";
+import { fakeProbes } from "./fakes.ts";
+
+const hosted = { type: "http", url: LINEAR_MCP_URL, headers: { Authorization: "Bearer lin_api_x" } };
+
+describe("claudeJsonPath", () => {
+  test("no CLAUDE_CONFIG_DIR -> ~/.claude.json, not ~/.claude/.claude.json", () => {
+    expect(claudeJsonPath({ env: {}, home: "/h" })).toBe("/h/.claude.json");
+  });
+  test("CLAUDE_CONFIG_DIR set -> that dir's .claude.json", () => {
+    expect(claudeJsonPath({ env: { CLAUDE_CONFIG_DIR: "/cfg" }, home: "/h" })).toBe("/cfg/.claude.json");
+  });
+});
+
+describe("isLinearMcp", () => {
+  test("hosted http entry", () => expect(isLinearMcp(hosted)).toBe(true));
+  test("sse transport at the same host", () => expect(isLinearMcp({ type: "sse", url: "https://mcp.linear.app/sse" })).toBe(true));
+  test("hosted entry with no auth header is still a Linear MCP (OAuth)", () => {
+    expect(isLinearMcp({ type: "http", url: LINEAR_MCP_URL })).toBe(true);
+  });
+  test("stdio linear-mcp package", () => {
+    expect(isLinearMcp({ command: "npx", args: ["-y", "@anthropic-ai/linear-mcp-server"] })).toBe(true);
+  });
+  test("a different host that merely mentions linear is not one", () => {
+    expect(isLinearMcp({ type: "http", url: "https://evil.example.com/mcp.linear.app" })).toBe(false);
+  });
+  test("an unrelated server is not one", () => expect(isLinearMcp({ type: "http", url: "https://mcp.railway.app/mcp" })).toBe(false));
+  test("junk values do not throw", () => {
+    expect(isLinearMcp(null)).toBe(false);
+    expect(isLinearMcp("linear")).toBe(false);
+    expect(isLinearMcp({ url: 42 })).toBe(false);
+  });
+});
+
+describe("readClaudeConfig", () => {
+  test("absent file", () => {
+    expect(readClaudeConfig(fakeProbes({}), "/h/.claude.json")).toEqual({ ok: false, reason: "absent" });
+  });
+  test("unparsable file", () => {
+    const p = fakeProbes({ files: { "/h/.claude.json": "{ not json" } });
+    expect(readClaudeConfig(p, "/h/.claude.json")).toEqual({ ok: false, reason: "unparsable" });
+  });
+  test("a JSON scalar is not a config object", () => {
+    const p = fakeProbes({ files: { "/h/.claude.json": "42" } });
+    expect(readClaudeConfig(p, "/h/.claude.json")).toEqual({ ok: false, reason: "unparsable" });
+  });
+  test("parses", () => {
+    const p = fakeProbes({ files: { "/h/.claude.json": JSON.stringify({ numStartups: 3 }) } });
+    expect(readClaudeConfig(p, "/h/.claude.json")).toEqual({ ok: true, config: { numStartups: 3 } });
+  });
+});
+
+describe("detection by shape, under any name", () => {
+  test("finds every Linear MCP whatever it is called", () => {
+    const config = { mcpServers: { "linear-matt": hosted, railway: { type: "http", url: "https://mcp.railway.app/mcp" }, work: hosted } };
+    expect(linearServerNames(config)).toEqual(["linear-matt", "work"]);
+  });
+  test("no mcpServers at all", () => expect(linearServerNames({})).toEqual([]));
+  test("callableBySkills needs the name linear AND the shape", () => {
+    expect(callableBySkills({ mcpServers: { linear: hosted } })).toBe(true);
+    expect(callableBySkills({ mcpServers: { "linear-matt": hosted } })).toBe(false);
+    expect(callableBySkills({ mcpServers: { linear: { type: "http", url: "https://mcp.railway.app/mcp" } } })).toBe(false);
+  });
+  test("nameTaken is about the key, not the shape", () => {
+    expect(nameTaken({ mcpServers: { linear: { type: "http", url: "https://mcp.railway.app/mcp" } } })).toBe(true);
+    expect(nameTaken({ mcpServers: { "linear-matt": hosted } })).toBe(false);
+  });
+});
+
+describe("withLinearEntry", () => {
+  test("adds exactly one key and preserves everything else", () => {
+    const before = { numStartups: 3, mcpServers: { "linear-matt": hosted, railway: { type: "http", url: "https://mcp.railway.app/mcp" } } };
+    const after = withLinearEntry(before, "lin_api_new");
+    expect(after.mcpServers!.linear).toEqual({ type: "http", url: LINEAR_MCP_URL, headers: { Authorization: "Bearer lin_api_new" } });
+    expect(after.mcpServers!["linear-matt"]).toBe(hosted);
+    expect(after.mcpServers!.railway).toEqual({ type: "http", url: "https://mcp.railway.app/mcp" });
+    expect(after.numStartups).toBe(3);
+  });
+  test("creates mcpServers when the config has none", () => {
+    expect(Object.keys(withLinearEntry({ numStartups: 1 }, "k").mcpServers!)).toEqual(["linear"]);
+  });
+  test("does not mutate its input", () => {
+    const before = { mcpServers: {} as Record<string, never> };
+    withLinearEntry(before, "k");
+    expect(before.mcpServers).toEqual({});
+  });
+});
