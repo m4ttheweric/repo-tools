@@ -22,11 +22,40 @@ ditto "$APP" "$STAGE/mattstack.app"
 PL="$STAGE/mattstack.app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEWV" "$PL"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEWB" "$PL"
+# An ad-hoc signature carries no Team ID, and hardened runtime turns on Library Validation,
+# which then refuses to load the app's own (equally ad-hoc) frameworks. The update installs
+# and the new app dies at launch on "different Team IDs" -- a crash the appcast, the enclosure
+# signature and `codesign --verify --deep --strict` all still call healthy. A real release is
+# signed by one team and never hits this, so the bypass rides only on the ad-hoc default, and
+# only on the outer bundle: Library Validation is enforced against the process's main
+# executable, not against each nested Mach-O.
+APP_SIGN=(--force --options runtime --timestamp=none --sign "$SIGN")
+if [ "$SIGN" = "-" ]; then
+  ENT="$STAGE/entitlements.plist"
+  codesign -d --entitlements :- "$APP" >"$ENT" 2>/dev/null || true
+  [ -s "$ENT" ] || printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+    '<plist version="1.0"><dict/></plist>' >"$ENT"
+  /usr/libexec/PlistBuddy -c "Add :com.apple.security.cs.disable-library-validation bool true" "$ENT" >/dev/null 2>&1 \
+    || /usr/libexec/PlistBuddy -c "Set :com.apple.security.cs.disable-library-validation true" "$ENT" >/dev/null \
+    || vm_die "could not add the library-validation bypass to $ENT"
+  APP_SIGN+=(--entitlements "$ENT")
+fi
+
 # Inside-out re-sign: every nested Mach-O first, then the bundle (never --deep).
 find "$STAGE/mattstack.app/Contents" -type f -perm -u+x -not -path '*/Info.plist' | while read -r f; do
   file -b "$f" | grep -q Mach-O && codesign --force --options runtime --timestamp=none --sign "$SIGN" "$f" 2>/dev/null || true
 done
-codesign --force --options runtime --timestamp=none --sign "$SIGN" "$STAGE/mattstack.app"
+codesign "${APP_SIGN[@]}" "$STAGE/mattstack.app"
+
+# Postcondition, not trust: this is the one failure mode `codesign --verify --deep --strict`
+# cannot see, because it passes on a bundle dyld will refuse to start.
+if [ "$SIGN" = "-" ]; then
+  codesign -d --entitlements :- "$STAGE/mattstack.app" 2>/dev/null \
+    | grep -q 'com.apple.security.cs.disable-library-validation' \
+    || vm_die "the re-signed app has no library-validation bypass; it would install and then crash at launch"
+fi
+
 rm -f "$OUT"/mattstack-*.zip "$OUT"/appcast.xml
 REL="$VM_ROOT/../../scripts/release"
 if [ -x "$REL/make-zip.sh" ]; then
