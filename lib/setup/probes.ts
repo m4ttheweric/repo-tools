@@ -5,7 +5,7 @@
  * the real machine.
  */
 
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { daemonSocketQuery, trayRequest, type DaemonResponse, type TrayClient } from "../daemon-client.ts";
@@ -35,6 +35,8 @@ export interface Probes {
   readDir(path: string): string[];
   readlink(path: string): string | null;
   writeFile(path: string, content: string, mode?: number): void;
+  /** Atomic replace. The only safe way to rewrite a live config file: a partial writeFile over it leaves the user with a truncated one. */
+  rename(from: string, to: string): void;
   /** Best-effort, like removeFile: a missing path is not an error. `writeFile`'s mode only takes effect on a freshly-created inode, so a secrets-bearing file that already exists looser needs an explicit chmod to tighten. */
   chmod(path: string, mode: number): void;
   removeFile(path: string): void;
@@ -231,6 +233,10 @@ export function createRealProbes(): Probes {
 
     writeFile(path, content, mode) {
       writeFileSync(path, content, mode !== undefined ? { mode } : undefined);
+    },
+
+    rename(from, to) {
+      renameSync(from, to);
     },
 
     chmod(path, mode) {

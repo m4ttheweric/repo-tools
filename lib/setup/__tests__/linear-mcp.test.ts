@@ -7,6 +7,7 @@ import {
   nameTaken,
   readClaudeConfig,
   withLinearEntry,
+  writeClaudeConfig,
   LINEAR_MCP_URL,
 } from "../linear-mcp.ts";
 import { fakeProbes } from "./fakes.ts";
@@ -93,5 +94,30 @@ describe("withLinearEntry", () => {
     const before = { mcpServers: {} as Record<string, never> };
     withLinearEntry(before, "k");
     expect(before.mcpServers).toEqual({});
+  });
+});
+
+describe("writeClaudeConfig", () => {
+  test("lands the merged config at the real path via a temp file", () => {
+    const p = fakeProbes({ files: { "/h/.claude.json": JSON.stringify({ numStartups: 3 }, null, 2) } });
+    writeClaudeConfig(p, "/h/.claude.json", withLinearEntry({ numStartups: 3 }, "lin_api_k"));
+    expect(p.calls.renames).toEqual([["/h/.claude.json.rt-tmp", "/h/.claude.json"]]);
+    expect(JSON.parse(p.readFile("/h/.claude.json")!)).toEqual({
+      numStartups: 3,
+      mcpServers: { linear: { type: "http", url: LINEAR_MCP_URL, headers: { Authorization: "Bearer lin_api_k" } } },
+    });
+    expect(p.readFile("/h/.claude.json.rt-tmp")).toBeNull();
+  });
+
+  test("writes 2-space JSON, matching the file Claude Code keeps", () => {
+    const p = fakeProbes({});
+    writeClaudeConfig(p, "/h/.claude.json", { a: 1 });
+    expect(p.readFile("/h/.claude.json")).toBe('{\n  "a": 1\n}\n');
+  });
+
+  test("the temp file is created 0600 so a rename cannot widen a token-bearing file", () => {
+    const p = fakeProbes({});
+    writeClaudeConfig(p, "/h/.claude.json", { a: 1 });
+    expect(p.calls.modes["/h/.claude.json.rt-tmp"]).toBe(0o600);
   });
 });

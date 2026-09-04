@@ -35,6 +35,7 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
     removed: string[];
     symlinks: Record<string, string>;
     modes: Record<string, number>;
+    renames: Array<[string, string]>;
   };
 } {
   const files = { ...(opts.files ?? {}) };
@@ -49,6 +50,7 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
     removed: [] as string[],
     symlinks: {} as Record<string, string>,
     modes: {} as Record<string, number>,
+    renames: [] as Array<[string, string]>,
   };
 
   const defaultTray: TrayClient = async () => ({ status: 0, json: null });
@@ -119,6 +121,16 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
       const parentList = dirs[parent] ?? (dirs[parent] = []);
       const base = basename(path);
       if (!parentList.includes(base)) parentList.push(base);
+    },
+
+    rename(from, to) {
+      calls.renames.push([from, to]);
+      if (files[from] !== undefined) {
+        files[to] = files[from]!;
+        calls.writes[to] = files[from]!;
+        delete files[from];
+        delete calls.writes[from];
+      }
     },
 
     chmod(path, mode) {

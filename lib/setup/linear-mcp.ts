@@ -5,7 +5,7 @@
  * `tool.linear-mcp` row so the validator never imports a step and the two
  * can never disagree about what they are looking at.
  */
-import { join } from "path";
+import { dirname, join } from "path";
 import type { Probes } from "./probes.ts";
 
 export const LINEAR_MCP_SERVER_NAME = "linear";
@@ -97,4 +97,17 @@ export function withLinearEntry(config: ClaudeConfig, apiKey: string): ClaudeCon
       [LINEAR_MCP_SERVER_NAME]: { type: "http", url: LINEAR_MCP_URL, headers: { Authorization: `Bearer ${apiKey}` } },
     },
   };
+}
+
+/**
+ * The target is Claude Code's live state file (hundreds of KB of session
+ * state), so the replace is atomic: a partial write over it would leave the
+ * user with a corrupt config. 0600 on the temp file because the rename
+ * carries the temp file's own mode onto a path holding an API token.
+ */
+export function writeClaudeConfig(p: Pick<Probes, "mkdirp" | "writeFile" | "rename">, path: string, config: ClaudeConfig): void {
+  const tmp = `${path}.rt-tmp`;
+  p.mkdirp(dirname(path));
+  p.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", 0o600);
+  p.rename(tmp, path);
 }
