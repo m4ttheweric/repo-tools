@@ -189,6 +189,21 @@ Phases: preflight · clone · boot · stage · install · launch · screens · a
 
 Throwaway GitHub org (default `mattstack-vmtest`; override with `MATTSTACK_VMTEST_ORG`, and if the name lacks `vmtest` also set `MATTSTACK_VMTEST_ORG_CONFIRM=<org>`), repos `mattstack-vmtest-home`, `mattstack-vmtest-team`, plus the wizard's own `mattstack-home` / `mattstack-team-<slug>`. Token in `MATTSTACK_VMTEST_PAT` (env only; never in the repo or artifacts) — the `repo` scope is enough (`gh auth token` works): `reset` retires existing repos by rename+archive (`trash-<name>-<stamp>`), never deletes. Run `run/team-setup.sh reset` before a `create` run. No real team data ever enters this org.
 
+A Linear API key for `team-propagate.sh`'s Linear leg lives at
+`$HOME/.mattstack/vmtest/linear-api-key.txt` on the host by default; override
+the path with `MATTSTACK_VMTEST_LINEAR_KEY_FILE`. Its content travels to the
+joiner by `vm_scp` into a joiner-owned 0700 directory, over stdin into
+`rt setup linear connect --json`, and is removed on every exit path (an EXIT
+trap in the guest session, plus an eager remove after the connect attempt). It is never echoed, never in argv, never committed, and a run
+with no key file at that path simply skips the Linear leg rather than
+failing. On a successful connect, the joiner also resumes Install from
+`linear.mcp` (`rt setup apply --from linear.mcp --json`) so the
+`mcpServers.linear` entry actually gets written: Install already ran once at
+join time, before the key existed, so `linear.mcp` skipped it then and
+nothing else re-runs Install. Setting `"linearMcp": true` in a fixture's
+`expect.json` is what turns the `assert-team.sh` Linear MCP block on; every
+other fixture leaves it unset and the block stays inert.
+
 ## Costs (fill in after the first builds)
 
 | image | pull | disk | golden build | walkthrough (create) |

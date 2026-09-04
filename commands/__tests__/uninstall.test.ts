@@ -163,7 +163,7 @@ describe("rt uninstall — the --delete-data consent gate", () => {
     const payload = JSON.parse(deps.lines[0]!) as { error: { code: string } };
     expect(payload.error.code).toBe("confirm-required");
     // Nothing was ever executed against the machine.
-    expect(deps.probes.calls).toEqual({ exec: [], fetch: [], tray: [], writes: {}, removed: [], symlinks: {}, modes: {} });
+    expect(deps.probes.calls).toEqual({ exec: [], fetch: [], tray: [], writes: {}, removed: [], symlinks: {}, modes: {}, renames: [] });
   });
 
   test("--keep-data and --delete-data together: exit 2, conflicting-data-flags, nothing runs", async () => {

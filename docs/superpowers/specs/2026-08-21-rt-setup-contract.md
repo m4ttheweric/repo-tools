@@ -141,7 +141,7 @@ Team-scope secrets layout (in the home repo): `teams/<slug>/.sops.yaml` and
 `git.identity` · `path.link` · `intercepts.install` · `settings.seed` · `repos.clone` ·
 `services.register` (app) · `proxy.install` (privileged) · `deck.managed` ·
 `skills.materialize` · `skills.link` · `board.keys` · `cron.triage` · `plugins.install` ·
-`fastbrowser.setup` · `herdr.integration` · `extension.install` ·
+`linear.mcp` · `fastbrowser.setup` · `herdr.integration` · `extension.install` ·
 `services.start` · `snapshot.push` · `verify`
 
 ## tray.sock (app → rt callbacks and app-side truth)

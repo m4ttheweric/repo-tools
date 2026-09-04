@@ -65,5 +65,23 @@ for label in $(launchctl print "gui/$(id -u)" 2>/dev/null | grep -oE 'com\.matts
   if launchctl print "gui/$(id -u)/$label" 2>/dev/null | grep -qE '^\s*pid = [0-9]+'; then ok "$label running"; else bad "$label not running ($(launchctl print "gui/$(id -u)/$label" 2>/dev/null | grep -oE 'last exit code = [^,]*' | head -1))"; fi
 done
 
+# Linear MCP: the entry the pack skills call by name, plus rt's own proof the key
+# behind it works. The credential check is account.linear's row rather than a curl
+# from here: rt makes the api.linear.app call itself.
+if jq -e '.linearMcp == true' "$EXPECT" >/dev/null 2>&1; then
+  CJ="$HOME/.claude.json"
+  if [ -f "$CJ" ] && jq -e '.mcpServers.linear.url == "https://mcp.linear.app/mcp"' "$CJ" >/dev/null 2>&1; then
+    ok "linear MCP entry present in ~/.claude.json"
+  else
+    bad "no linear MCP entry in ~/.claude.json"
+  fi
+  for id in tool.linear-mcp account.linear; do
+    ROW=$(printf '%s' "$SETUP_JSON" | jq -c --arg id "$id" '.groups[]?.rows[]? | select(.id == $id)' 2>/dev/null | head -1)
+    if [ -z "$ROW" ]; then bad "$id row absent"; continue; fi
+    S=$(printf '%s' "$ROW" | jq -r '.status'); D=$(printf '%s' "$ROW" | jq -r '.detail // empty')
+    if [ "$S" = "ready" ]; then ok "$id row ready"; else bad "$id row $S: $D"; fi
+  done
+fi
+
 echo "TEAM fails=$fails"
 [ "$fails" -eq 0 ]

@@ -14,6 +14,8 @@ export interface FakeProbesOpts {
   files?: Record<string, string>;
   dirs?: Record<string, string[]>;
   links?: Record<string, string>;
+  /** Paths whose reads fail although the path exists (root-owned, mode 0000, an ELOOPing chain, a transient EMFILE) — register them in `files` too, and readFile/readPrefix return null the way the real probe does for every one of those errors. */
+  unreadable?: string[];
   /** Explicit fileSize() overrides, keyed by the queried path — for simulating a large binary without storing megabytes of fake content. */
   sizes?: Record<string, number>;
   exec?: ExecScript;
@@ -35,11 +37,13 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
     removed: string[];
     symlinks: Record<string, string>;
     modes: Record<string, number>;
+    renames: Array<[string, string]>;
   };
 } {
   const files = { ...(opts.files ?? {}) };
   const dirs: Record<string, string[]> = { ...(opts.dirs ?? {}) };
   const links = { ...(opts.links ?? {}) };
+  const unreadable = new Set(opts.unreadable ?? []);
 
   const calls = {
     exec: [] as string[][],
@@ -49,6 +53,7 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
     removed: [] as string[],
     symlinks: {} as Record<string, string>,
     modes: {} as Record<string, number>,
+    renames: [] as Array<[string, string]>,
   };
 
   const defaultTray: TrayClient = async () => ({ status: 0, json: null });
@@ -85,6 +90,7 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
     },
 
     readFile(path) {
+      if (unreadable.has(path)) return null;
       return files[path] ?? null;
     },
 
@@ -93,6 +99,7 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
     // registering an rt bundle target) must resolve here too, not just for
     // real files planted via `files`.
     readPrefix(path) {
+      if (unreadable.has(path)) return null;
       const resolved = resolveThroughLinks(path);
       if (resolved === null || resolved in dirs) return null;
       return (files[resolved] ?? "").slice(0, 4096);
@@ -110,15 +117,35 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
     },
 
     writeFile(path, content, mode) {
+      // Real writeFileSync applies `mode` only to a freshly created inode, so
+      // a path that already exists keeps whatever mode it had — the reason a
+      // secrets-bearing file needs an explicit chmod to be tightened.
+      const created = !(path in files);
       files[path] = content;
       calls.writes[path] = content;
-      if (mode !== undefined) calls.modes[path] = mode;
+      if (mode !== undefined && created) calls.modes[path] = mode;
       // Mirrors real writeFileSync: the new entry must show up in a
       // subsequent readDir(parent), same as mkdirp does for child dirs.
       const parent = dirname(path);
       const parentList = dirs[parent] ?? (dirs[parent] = []);
       const base = basename(path);
       if (!parentList.includes(base)) parentList.push(base);
+    },
+
+    rename(from, to) {
+      calls.renames.push([from, to]);
+      if (files[from] !== undefined) {
+        files[to] = files[from]!;
+        calls.writes[to] = files[from]!;
+        delete files[from];
+        delete calls.writes[from];
+      }
+      // The inode moves, and its mode with it: without this the destination's
+      // mode is unassertable and a rename that widens a file reads as clean.
+      if (calls.modes[from] !== undefined) {
+        calls.modes[to] = calls.modes[from]!;
+        delete calls.modes[from];
+      }
     },
 
     chmod(path, mode) {

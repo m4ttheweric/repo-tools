@@ -20,10 +20,13 @@ import { resolveTool } from "../../deps/resolve.ts";
 import { detectEditors } from "../../editors.ts";
 import { BASE_PLUGINS } from "../base-plugins.ts";
 import { row, type Action, type Row } from "../contract.ts";
+import { integrationDef } from "../integrations.ts";
+import { callableBySkills, claudeJsonPath, linearServerNames, nameTaken, readClaudeConfig } from "../linear-mcp.ts";
 import type { ExecResult, Probes } from "../probes.ts";
 import type { PackRequirements, ToolRequirement } from "../requirements.ts";
 import { atLeast } from "../semver.ts";
 import { isValidBrewFormula } from "../tools-install.ts";
+import type { SecretPresence } from "./accounts.ts";
 
 const HERDR_FLOOR = "0.7.5";
 /** Every exec in this module is bounded — a hung team-declared `--version`, or a wedged herdr/claude/fast-browser subprocess, must surface as "error" (124), never hang `rt setup plan` forever. */
@@ -556,9 +559,56 @@ function pluginsRow(pluginList: ExecResult): Row {
   return row({ ...base, status: "ready", detail: `${BASE_PLUGINS.length} plugins installed` });
 }
 
+// ─── tool.linear-mcp ────────────────────────────────────────────────────────
+
+const CONNECT_LINEAR_ACTION: Action = { type: "connect", label: "Connect Linear", integration: "linear", fields: integrationDef("linear").fields };
+
+/** Wiring only: the credential itself is `account.linear`'s job, which validates this same secret against api.linear.app. Two probes of one key is one probe too many, and two rows that can disagree. */
+async function linearMcpRow(p: Probes, secrets: SecretPresence): Promise<Row> {
+  const base = {
+    id: "tool.linear-mcp",
+    kind: "tool" as const,
+    title: "Linear MCP",
+    why: "Skills that read and update Linear tickets reach them through this MCP server.",
+    required: false,
+    optionalNote: "Installed by Install (linear.mcp).",
+  };
+  const path = claudeJsonPath(p);
+  const read = readClaudeConfig(p, path);
+  if (!read.ok && read.reason === "unparsable") return row({ ...base, status: "error", detail: `${path} is not valid JSON` });
+  if (!read.ok && read.reason === "unreadable") return row({ ...base, status: "error", detail: `${path} could not be read` });
+
+  const config = read.ok ? read.config : {};
+  if (callableBySkills(config)) return row({ ...base, status: "ready", detail: "linear" });
+  if (nameTaken(config)) return row({ ...base, status: "needs-you", detail: "a server named linear is not a Linear MCP" });
+
+  // Every remaining state depends on the key, because Install skips without
+  // one: a row promising Install will act, on a machine where it would not,
+  // leaves the user with no next step anywhere. The seam throwing (a locked
+  // keychain, a bad recipient, a corrupt sops file) degrades this row alone;
+  // uncaught it would take the whole tools group down with it.
+  let hasKey: boolean;
+  try {
+    hasKey = (await secrets.has("rt", "linearApiKey")) !== null;
+  } catch (err) {
+    return row({ ...base, status: "error", detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  const others = linearServerNames(config);
+  if (others.length > 0) {
+    const present = `Linear MCP present as ${others.join(", ")}`;
+    return hasKey
+      ? row({ ...base, status: "missing", detail: `${present}; skills call mcp__linear__*` })
+      : row({ ...base, status: "needs-you", detail: `${present}; connect Linear so Install can add linear`, action: CONNECT_LINEAR_ACTION });
+  }
+
+  if (!hasKey) return row({ ...base, status: "needs-you", detail: "no Linear account connected", action: CONNECT_LINEAR_ACTION });
+  return row({ ...base, status: "missing", detail: "installed by Install (linear.mcp)" });
+}
+
 // ─── entry point ────────────────────────────────────────────────────────────
 
-export async function toolRows(p: Probes, reqs: PackRequirements[], opts: { hasBrew: boolean }, seams: ToolsSeams = REAL_SEAMS): Promise<Row[]> {
+export async function toolRows(p: Probes, reqs: PackRequirements[], opts: { hasBrew: boolean; secrets: SecretPresence }, seams: ToolsSeams = REAL_SEAMS): Promise<Row[]> {
   const fastBrowser = await probeFastBrowser(p, seams);
   const rows: Row[] = [
     await herdrRow(p, opts),
@@ -581,6 +631,8 @@ export async function toolRows(p: Probes, reqs: PackRequirements[], opts: { hasB
   const pluginList = await exec(p, ["claude", "plugin", "list", "--json"]);
   rows.push(pluginsRow(pluginList));
   for (const req of reqs) rows.push(packRow(req, pluginList));
+
+  rows.push(await linearMcpRow(p, opts.secrets));
 
   return rows;
 }
