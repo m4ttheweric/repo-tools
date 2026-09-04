@@ -129,6 +129,26 @@ describe("notify_queue — spec test 9", () => {
     expect(peekNotificationQueue(db)).toEqual([]);
     db.close();
   });
+
+  test("paneId round-trips through enqueue/peek/drain (gate events pass, Task 3)", () => {
+    const db = openDb();
+    const e = event({ paneId: "w1:p1" });
+    enqueueNotification(e, db);
+
+    expect(peekNotificationQueue(db)).toEqual([e]);
+    expect(drainNotificationQueue(db)).toEqual([e]);
+    db.close();
+  });
+
+  test("an event with no paneId still round-trips with paneId absent", () => {
+    const db = openDb();
+    const e = event();
+    enqueueNotification(e, db);
+
+    const [drained] = drainNotificationQueue(db);
+    expect(drained!.paneId).toBeUndefined();
+    db.close();
+  });
 });
 
 describe("notify_queue — bounded retry on SQLITE_BUSY", () => {

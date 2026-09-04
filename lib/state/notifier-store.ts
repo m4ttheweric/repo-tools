@@ -43,6 +43,9 @@ export interface NotificationEvent {
   /** Offending process pids, when the notification is about processes —
    *  lets the tray offer a Kill action. */
   pids?: number[];
+  /** herdr pane_id the source event named, when there is one: lets a
+   *  consumer suppress or route the notification by pane focus. */
+  paneId?: string;
 }
 
 const NOTIFIER_NS = "notifier";

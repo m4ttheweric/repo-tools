@@ -202,6 +202,8 @@ export interface ChatPane {
   agentStatus: AgentStatus;
   sessionId?: string;
   presence?: { handle: string; status: BuddyStatus; rooms: string[] };
+  /** herdr's per-pane focus flag; false when herdr itself is backgrounded */
+  focused?: boolean;
 }
 
 export interface PaneAccount { slot: number; email: string; alias?: string; headroom?: string }

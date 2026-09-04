@@ -301,4 +301,6 @@ struct NotificationEvent: Decodable {
     let timestamp: Int
     // Offending process pids for categories that offer a Kill action
     let pids: [Int]?
+    // herdr pane id to focus on click, when the event carries one
+    let paneId: String?
 }

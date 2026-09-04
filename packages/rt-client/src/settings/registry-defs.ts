@@ -80,6 +80,14 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Desktop notification preferences (which events notify, sound on/off).",
   },
   {
+    key: "rt.notify.eventBridges",
+    type: "array",
+    scopes: ["user"],
+    default: [],
+    merge: "replace",
+    description: "Event-bus glob rules that raise a desktop notification: [{pattern, category, title, message}]. pattern is matched against the events-bus topic (Bun.Glob semantics); title/message may interpolate `{field}` from the event payload. A fresh key, not an ownership-latch port, so a default is fine here.",
+  },
+  {
     key: "rt.cron",
     type: "object",
     scopes: ["machine"],
@@ -431,6 +439,13 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Days of MR inactivity before the board flags it stale, for this developer.",
   },
   {
+    key: "board.gateGraceMinutes",
+    type: "number",
+    scopes: ["user"],
+    merge: "replace",
+    description: "Minutes an unanswered review gate stays open before the board parks the review (closes the pane, keeps the gate open). Default 90.",
+  },
+  {
     key: "board.workspaces",
     type: "object",
     scopes: ["user"],
@@ -461,11 +476,25 @@ export const REGISTRY: readonly SettingDef[] = [
 
   // --- board (machine) ---------------------------------------------------
   {
-    key: "board.claudeCommand",
+    key: "board.agent.account",
     type: "string",
-    scopes: ["machine"],
+    scopes: ["user", "machine"],
     merge: "replace",
-    description: "Local command used to launch Claude Code for the board's review/respond/doctor panes.",
+    description: "cswap account the board's review/respond/doctor panes launch under; unset uses the default claude profile. Replaces the retired board.claudeCommand.",
+  },
+  {
+    key: "board.agent.model",
+    type: "string",
+    scopes: ["user", "machine"],
+    merge: "replace",
+    description: "Default --model for the board's review/respond/doctor panes; unset omits the flag.",
+  },
+  {
+    key: "board.agent.effort",
+    type: "string",
+    scopes: ["user", "machine"],
+    merge: "replace",
+    description: "Default --effort for the board's review/respond/doctor panes; unset omits the flag.",
   },
   {
     key: "board.cwds",
