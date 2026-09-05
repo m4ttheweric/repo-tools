@@ -605,6 +605,27 @@ describe("skillsCompile", () => {
     expect(logs.some((l) => /would write \d+ files/.test(l) && l.includes("watch-ci"))).toBe(true);
   });
 
+  test("a team-shaped pack OUTSIDE the teams zone (a worktree) still never falls back to its pack/skills.jsonc fragment", async () => {
+    const mattstackDir = makeMattstackDir();
+    const worktreeRoot = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-worktree-")));
+    const packDir = join(worktreeRoot, "mattstack", "packs", "t");
+    writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_JSONC);
+    writeFile(join(packDir, "pack", "skills.jsonc"), manifestJsonc("t", true));
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile([
+        "--team", "t",
+        "--dry-run",
+        "--pack-dir", packDir,
+        "--mattstack-dir", mattstackDir,
+        "--verb", "watch-ci",
+      ]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("pass --manifest");
+  });
+
   test("a team-zone pack never falls back to its own pack/skills.jsonc: that file is a fragment, not the repo's manifest", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = join(mattstackDir, "teams", "t", "mattstack", "packs", "t");

@@ -370,7 +370,12 @@ function findDefaultManifest(mattstackRoot: string, team: string, packDir: strin
 
   if (candidates.length === 0) {
     const ownManifest = join(packDir, "pack", "skills.jsonc");
-    const standalone = !isUnder(join(mattstackRoot, "teams"), packDir);
+    // Team packs sit at <repo>/mattstack/packs/<team>; that path shape
+    // survives worktrees, unlike the teams-zone location -- and a team
+    // pack's pack/skills.jsonc is a merge fragment, never its manifest.
+    const parts = resolvePath(packDir).split(sep);
+    const teamShaped = parts.at(-2) === "packs" && parts.at(-3) === "mattstack";
+    const standalone = !isUnder(join(mattstackRoot, "teams"), packDir) && !teamShaped;
     if (standalone && existsSync(ownManifest)) return ownManifest;
     throw new SkillsUsageError(
       `no skills.jsonc under ${reposRoot}/*/ names team "${team}" in its provenance header (<- ${team}@...)` +
