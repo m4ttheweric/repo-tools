@@ -738,6 +738,26 @@ describe("skillsCompile --json write semantics", () => {
     expect(process.exitCode).not.toBe(1);
   });
 
+  test("a failure-aborted --json run does not predict sweeps: the stale dir it leaves behind stays misplaced", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    await skillsCompile(["--team", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+    // Retire the verb AND break a sibling: the aborted run sweeps nothing,
+    // so the stale compiler-headed skills/watch-ci really is still on disk.
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
+    writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_TWO_VERBS);
+    logs.length = 0;
+    process.exitCode = 0;
+
+    await skillsCompile(["--team", "t", "--json", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+
+    const payload = JSON.parse(logs[0]!);
+    expect(payload.written).toBe(false);
+    expect(payload.misplaced).toEqual(["watch-ci"]);
+  });
+
   test("--json reports misplaced skills in the payload, not as stray stdout lines", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
@@ -780,6 +800,19 @@ describe("skillsCompile --pack-dir validation", () => {
 
     expect(exitCode).toBe(1);
     expect(errors.join("\n")).toContain(missing);
+  });
+
+  test("--pack-dir pointing at a regular file is a usage error", async () => {
+    const mattstackDir = makeMattstackDir();
+    const manifestPath = makeManifest("t");
+    const filePath = join(realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-file-"))), "not-a-dir");
+    writeFileSync(filePath, "");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile(["--pack-dir", filePath, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--dry-run"]));
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain(filePath);
   });
 
   test("--pack-dir derives the team from the pack's plugin identity, not the directory basename", async () => {

@@ -165,7 +165,9 @@ async function resolvePack(flags: { team: string | null; packDir: string | null;
   const mattstackRoot = flags.mattstackDir ?? mattstackHome();
   if (flags.packDir) {
     const packDir = resolvePath(flags.packDir);
-    if (!existsSync(packDir)) throw new SkillsUsageError(`--pack-dir ${packDir} does not exist`);
+    if (!existsSync(packDir) || !statSync(packDir).isDirectory()) {
+      throw new SkillsUsageError(`--pack-dir ${packDir} is not an existing directory`);
+    }
     return { team: flags.team || packTeamFor(packDir), packDir };
   }
 
@@ -858,9 +860,10 @@ export async function skillsCompile(args: string[]): Promise<void> {
     if (publicSet) {
       // Prediction must match what the write pass leaves behind: a target's
       // stale compiler-headed other-side dir gets swept by the real run, so
-      // a non-writing pass must not call it misplaced.
+      // a dry-run must not call it misplaced. A failure-aborted run sweeps
+      // nothing, so it gets no such credit -- its stale dirs stay on disk.
       const wouldBeSwept = new Set<string>();
-      if (!writing) {
+      if (flags.dryRun && failures.length === 0) {
         for (const { target, outcome } of outcomes) {
           if (!outcome.ok) continue;
           const stale = otherSideDir(resolved.packDir, target.verb.name, target.isPublic);
