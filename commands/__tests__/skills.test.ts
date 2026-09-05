@@ -685,6 +685,38 @@ describe("skillsCompile --json write semantics", () => {
     expect(errors.join("\n")).toContain("--preview");
   });
 
+  test("--json on a rosterless pack reports written false, not a phantom success", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "stubs.jsonc"), `{ "verbs": {} }\n`);
+
+    await skillsCompile(["--team", "t", "--json", "--pack-dir", packDir, "--mattstack-dir", mattstackDir]);
+
+    const payload = JSON.parse(logs[0]!);
+    expect(payload.verbs).toEqual([]);
+    expect(payload.written).toBe(false);
+  });
+
+  test("--json --dry-run misplaced prediction matches what the real run leaves behind", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    // A real compile leaves a compiler-headed skills/watch-ci; retiring the
+    // verb afterward is the transition window whose stale dir the next real
+    // run sweeps -- so a dry-run must not call it misplaced.
+    await skillsCompile(["--team", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
+    logs.length = 0;
+    process.exitCode = 0;
+
+    await skillsCompile(["--team", "t", "--json", "--dry-run", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+
+    const payload = JSON.parse(logs[0]!);
+    expect(payload.misplaced).toEqual([]);
+    expect(process.exitCode).not.toBe(1);
+  });
+
   test("--json reports misplaced skills in the payload, not as stray stdout lines", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
@@ -708,7 +740,60 @@ describe("skillsCompile --json write semantics", () => {
   });
 });
 
+describe("skillsCompile --pack-dir validation", () => {
+  test("--pack-dir without a value is a usage error, not a silent fallthrough", async () => {
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile(["--pack-dir"]));
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--pack-dir");
+  });
+
+  test("--pack-dir pointing at a missing directory is a usage error, not an empty exit 0", async () => {
+    const mattstackDir = makeMattstackDir();
+    const manifestPath = makeManifest("t");
+    const missing = join(tmpdir(), "rt-skills-no-such-pack-dir");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile(["--pack-dir", missing, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--dry-run"]));
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain(missing);
+  });
+
+  test("--pack-dir derives the team from the pack's plugin identity, not the directory basename", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "t", version: "0.0.1" }));
+    const manifestPath = makeManifest("t");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci", "--dry-run", "--json"]);
+
+    const payload = JSON.parse(logs[0]!);
+    expect(payload.pack).toBe("t");
+  });
+});
+
 describe("skillsCompile pack resolution from cwd", () => {
+  test("empty --pack inside a pack tree resolves the enclosing pack's own name, not an empty team", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    writeFile(join(packDir, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "t", version: "0.0.1" }));
+    const manifestPath = makeManifest("t");
+
+    const prevCwd = process.cwd();
+    process.chdir(packDir);
+    try {
+      await skillsCompile(["--pack", "", "--dry-run", "--json", "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+    } finally {
+      process.chdir(prevCwd);
+    }
+
+    const payload = JSON.parse(logs[0]!);
+    expect(payload.pack).toBe("t");
+  });
+
   test("cwd inside a pack dir resolves that pack when no --pack/--pack-dir is given", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
@@ -720,7 +805,7 @@ describe("skillsCompile pack resolution from cwd", () => {
     try {
       const { exitCode, errors } = await runExpectingCleanExit(() =>
         skillsCompile(["--dry-run", "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]));
-      expect(errors).toEqual([]);
+      expect(errors).toEqual([expect.stringContaining("acting on the pack tree enclosing cwd")]);
       expect(exitCode).toBeUndefined();
     } finally {
       process.chdir(prevCwd);
@@ -740,7 +825,7 @@ describe("skillsCompile pack resolution from cwd", () => {
     try {
       const { exitCode, errors } = await runExpectingCleanExit(() =>
         skillsCompile(["--dry-run", "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]));
-      expect(errors).toEqual([]);
+      expect(errors).toEqual([expect.stringContaining("acting on the pack tree enclosing cwd")]);
       expect(exitCode).toBeUndefined();
     } finally {
       process.chdir(prevCwd);
@@ -761,7 +846,7 @@ describe("skillsCompile pack resolution from cwd", () => {
     try {
       const { exitCode, errors } = await runExpectingCleanExit(() =>
         skillsCompile(["--pack", "t", "--dry-run", "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]));
-      expect(errors).toEqual([]);
+      expect(errors).toEqual([expect.stringContaining("acting on the pack tree enclosing cwd")]);
       expect(exitCode).toBeUndefined();
     } finally {
       process.chdir(prevCwd);

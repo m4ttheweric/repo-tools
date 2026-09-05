@@ -145,12 +145,14 @@ export function findEnclosingPack(startDir: string): PackInfo | null {
   }
   while (true) {
     const surfacePath = surfaceFileFor(dir);
-    // In the grouped layout the surface lives at <root>/pack/surface.jsonc,
-    // so standing inside pack/ matches its own bare candidate; the pack root
-    // is the parent, which the next iteration finds via its pack/ candidate.
-    const insidePackSubdir = basename(dir) === "pack" && surfacePath === join(dir, "surface.jsonc");
-    if (surfacePath && !insidePackSubdir) return packFromDir(basename(dir), dir);
     const parent = dirname(dir);
+    // When the parent claims this same surface file (its pack/surface.jsonc
+    // candidate), dir is a grouped root's pack/ config subdir, not the root
+    // -- defer to the parent, which the next iteration accepts. A flat pack
+    // whose root directory is literally named "pack" loses this tiebreak and
+    // resolves to its parent; that shape has no unambiguous marker.
+    const parentClaimsSame = parent !== dir && surfaceFileFor(parent) === surfacePath;
+    if (surfacePath && !parentClaimsSame) return packFromDir(basename(dir), dir);
     if (parent === dir) return null;
     dir = parent;
   }
