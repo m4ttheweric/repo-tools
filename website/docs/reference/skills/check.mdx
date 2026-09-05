@@ -19,9 +19,10 @@ rt skills check [flags]
 
 | Flag / Arg | Type | Default | Description |
 | --- | --- | --- | --- |
-| `--pack` | text |  | Pack name (--team still accepted); omit to pick from the discovered packs |
+| `--pack` | text |  | Pack name (--team still accepted); omit to pick from the discovered packs, or run from inside a pack tree to check that tree |
 | `--verb` | text |  | Check only this verb (repeatable); omit for every compiled verb |
 | `--manifest` | text |  | Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this pack |
+| `--pack-dir` | text |  | Check this pack directory's sources (a worktree, say) instead of resolving --pack through the registry |
 | [`--json`](/guides/common-flags) | boolean | `false` | Machine-readable result |
 
 _See code: [commands/skills.ts › skillsCheck](https://github.com/m4ttstack/rt/blob/main/commands/skills.ts)_

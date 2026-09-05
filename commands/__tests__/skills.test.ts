@@ -605,6 +605,27 @@ describe("skillsCompile", () => {
     expect(logs.some((l) => /would write \d+ files/.test(l) && l.includes("watch-ci"))).toBe(true);
   });
 
+  test("a team-shaped pack OUTSIDE the teams zone (a worktree) still never falls back to its pack/skills.jsonc fragment", async () => {
+    const mattstackDir = makeMattstackDir();
+    const worktreeRoot = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-worktree-")));
+    const packDir = join(worktreeRoot, "mattstack", "packs", "t");
+    writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_JSONC);
+    writeFile(join(packDir, "pack", "skills.jsonc"), manifestJsonc("t", true));
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile([
+        "--team", "t",
+        "--dry-run",
+        "--pack-dir", packDir,
+        "--mattstack-dir", mattstackDir,
+        "--verb", "watch-ci",
+      ]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("pass --manifest");
+  });
+
   test("a team-zone pack never falls back to its own pack/skills.jsonc: that file is a fragment, not the repo's manifest", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = join(mattstackDir, "teams", "t", "mattstack", "packs", "t");
@@ -623,6 +644,287 @@ describe("skillsCompile", () => {
     expect(exitCode).toBe(1);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("skills.jsonc");
+  });
+});
+
+describe("skillsCompile --json write semantics", () => {
+  test("--json --dry-run reports the plan, written false, and touches nothing", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+
+    await skillsCompile([
+      "--team", "t",
+      "--json",
+      "--dry-run",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    const payload = JSON.parse(logs[0]!);
+    expect(payload.written).toBe(false);
+    expect(payload.verbs[0].status).toBe("compiled");
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
+  });
+
+  test("--json with an errored verb writes nothing, reports every row, exits 1", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_ONE_GOOD_TWO_BROKEN);
+    const manifestPath = makeManifest("t");
+
+    await skillsCompile([
+      "--team", "t",
+      "--json",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+    ]);
+
+    expect(process.exitCode).toBe(1);
+    const payload = JSON.parse(logs[0]!);
+    expect(payload.written).toBe(false);
+    const statuses = Object.fromEntries(payload.verbs.map((v: { name: string; status: string }) => [v.name, v.status]));
+    expect(statuses["watch-ci"]).toBe("compiled");
+    expect(statuses["broken-a"]).toBe("errored");
+    expect(statuses["broken-b"]).toBe("errored");
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
+  });
+
+  test("--preview with --json is a usage error, not a silent report", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview", "--json",
+        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]));
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--preview");
+  });
+
+  test("--json on a rosterless pack reports written false, not a phantom success", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "stubs.jsonc"), `{ "verbs": {} }\n`);
+
+    await skillsCompile(["--team", "t", "--json", "--pack-dir", packDir, "--mattstack-dir", mattstackDir]);
+
+    const payload = JSON.parse(logs[0]!);
+    expect(payload.verbs).toEqual([]);
+    expect(payload.written).toBe(false);
+  });
+
+  test("--json --dry-run misplaced prediction matches what the real run leaves behind", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    // A real compile leaves a compiler-headed skills/watch-ci; retiring the
+    // verb afterward is the transition window whose stale dir the next real
+    // run sweeps -- so a dry-run must not call it misplaced.
+    await skillsCompile(["--team", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
+    logs.length = 0;
+    process.exitCode = 0;
+
+    await skillsCompile(["--team", "t", "--json", "--dry-run", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+
+    const payload = JSON.parse(logs[0]!);
+    expect(payload.misplaced).toEqual([]);
+    expect(process.exitCode).not.toBe(1);
+  });
+
+  test("a failure-aborted --json run does not predict sweeps: the stale dir it leaves behind stays misplaced", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    await skillsCompile(["--team", "t", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+    // Retire the verb AND break a sibling: the aborted run sweeps nothing,
+    // so the stale compiler-headed skills/watch-ci really is still on disk.
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
+    writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_TWO_VERBS);
+    logs.length = 0;
+    process.exitCode = 0;
+
+    await skillsCompile(["--team", "t", "--json", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+
+    const payload = JSON.parse(logs[0]!);
+    expect(payload.written).toBe(false);
+    expect(payload.misplaced).toEqual(["watch-ci"]);
+  });
+
+  test("--json reports misplaced skills in the payload, not as stray stdout lines", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    writeFile(join(packDir, "skills", "stray-skill", "SKILL.md"), "# stray\n");
+
+    await skillsCompile([
+      "--team", "t",
+      "--json",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    expect(logs).toHaveLength(1);
+    const payload = JSON.parse(logs[0]!);
+    expect(payload.misplaced).toEqual(["stray-skill"]);
+    expect(process.exitCode).toBe(1);
+  });
+});
+
+describe("skillsCompile --pack-dir validation", () => {
+  test("--pack-dir without a value is a usage error, not a silent fallthrough", async () => {
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile(["--pack-dir"]));
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--pack-dir");
+  });
+
+  test("--pack-dir pointing at a missing directory is a usage error, not an empty exit 0", async () => {
+    const mattstackDir = makeMattstackDir();
+    const manifestPath = makeManifest("t");
+    const missing = join(tmpdir(), "rt-skills-no-such-pack-dir");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile(["--pack-dir", missing, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--dry-run"]));
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain(missing);
+  });
+
+  test("--pack-dir pointing at a regular file is a usage error", async () => {
+    const mattstackDir = makeMattstackDir();
+    const manifestPath = makeManifest("t");
+    const filePath = join(realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-file-"))), "not-a-dir");
+    writeFileSync(filePath, "");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile(["--pack-dir", filePath, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--dry-run"]));
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain(filePath);
+  });
+
+  test("--pack-dir derives the team from the pack's plugin identity, not the directory basename", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "t", version: "0.0.1" }));
+    const manifestPath = makeManifest("t");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci", "--dry-run", "--json"]);
+
+    const payload = JSON.parse(logs[0]!);
+    expect(payload.pack).toBe("t");
+  });
+});
+
+describe("skillsCompile pack resolution from cwd", () => {
+  test("empty --pack inside a pack tree resolves the enclosing pack's own name, not an empty team", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    writeFile(join(packDir, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "t", version: "0.0.1" }));
+    const manifestPath = makeManifest("t");
+
+    const prevCwd = process.cwd();
+    process.chdir(packDir);
+    try {
+      await skillsCompile(["--pack", "", "--dry-run", "--json", "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+    } finally {
+      process.chdir(prevCwd);
+    }
+
+    const payload = JSON.parse(logs[0]!);
+    expect(payload.pack).toBe("t");
+  });
+
+  test("cwd inside a pack dir resolves that pack when no --pack/--pack-dir is given", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    const manifestPath = makeManifest("t");
+
+    const prevCwd = process.cwd();
+    process.chdir(packDir);
+    try {
+      const { exitCode, errors } = await runExpectingCleanExit(() =>
+        skillsCompile(["--dry-run", "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]));
+      expect(errors).toEqual([expect.stringContaining("acting on the pack tree enclosing cwd")]);
+      expect(exitCode).toBeUndefined();
+    } finally {
+      process.chdir(prevCwd);
+    }
+
+    expect(logs.some((l) => /would write \d+ files/.test(l) && l.includes("watch-ci"))).toBe(true);
+  });
+
+  test("cwd below the pack root still resolves the enclosing pack", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    const manifestPath = makeManifest("t");
+
+    const prevCwd = process.cwd();
+    process.chdir(join(packDir, "pack"));
+    try {
+      const { exitCode, errors } = await runExpectingCleanExit(() =>
+        skillsCompile(["--dry-run", "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]));
+      expect(errors).toEqual([expect.stringContaining("acting on the pack tree enclosing cwd")]);
+      expect(exitCode).toBeUndefined();
+    } finally {
+      process.chdir(prevCwd);
+    }
+
+    expect(logs.some((l) => /would write \d+ files/.test(l) && l.includes("watch-ci"))).toBe(true);
+  });
+
+  test("--pack matching the enclosing pack's plugin name resolves to the enclosing dir, not the registry", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    writeFile(join(packDir, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "t", version: "0.0.1" }));
+    const manifestPath = makeManifest("t");
+
+    const prevCwd = process.cwd();
+    process.chdir(packDir);
+    try {
+      const { exitCode, errors } = await runExpectingCleanExit(() =>
+        skillsCompile(["--pack", "t", "--dry-run", "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]));
+      expect(errors).toEqual([expect.stringContaining("acting on the pack tree enclosing cwd")]);
+      expect(exitCode).toBeUndefined();
+    } finally {
+      process.chdir(prevCwd);
+    }
+
+    expect(logs.some((l) => /would write \d+ files/.test(l) && l.includes("watch-ci"))).toBe(true);
+  });
+
+  test("--pack naming a different pack does not hijack onto the enclosing dir", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    const manifestPath = makeManifest("t");
+
+    const prevCwd = process.cwd();
+    process.chdir(packDir);
+    try {
+      const { exitCode, errors } = await runExpectingCleanExit(() =>
+        skillsCompile(["--pack", "other", "--dry-run", "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]));
+      expect(exitCode).toBe(1);
+      expect(errors.join("\n")).toContain(`no pack named "other"`);
+    } finally {
+      process.chdir(prevCwd);
+    }
   });
 });
 
@@ -1202,7 +1504,7 @@ describe("skillsCheck --json", () => {
 });
 
 describe("skillsCompile --json", () => {
-  test("compiled verb: files + warnings reported, nothing written to disk", async () => {
+  test("compiled verb: files + warnings reported, files written to disk like the plain form", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
     const manifestPath = makeManifest("acme");
@@ -1211,6 +1513,7 @@ describe("skillsCompile --json", () => {
 
     const parsed = JSON.parse(logs.join("\n"));
     expect(parsed.pack).toBe("acme");
+    expect(parsed.written).toBe(true);
     expect(parsed.verbs).toHaveLength(1);
     const verb = parsed.verbs[0];
     expect(verb.name).toBe("watch-ci");
@@ -1221,12 +1524,14 @@ describe("skillsCompile --json", () => {
       "parts/domain/ci-config.json",
       "scripts/ci-watch.sh",
     ]);
-    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
+    for (const file of verb.files) {
+      expect(existsSync(join(packDir, "skills", "watch-ci", file.path))).toBe(true);
+    }
     // A clean compile leaves the exit code unset: a caller reading it sees success.
     expect(process.exitCode).not.toBe(1);
   });
 
-  test("internal (retired) verb: compiled row with side attachments, still no disk write under --json", async () => {
+  test("internal (retired) verb: compiled row with side attachments, written to the attachments side", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
     const manifestPath = makeManifest("acme");
@@ -1246,7 +1551,8 @@ describe("skillsCompile --json", () => {
       "parts/domain/ci-config.json",
       "scripts/ci-watch.sh",
     ]);
-    expect(existsSync(join(packDir, "attachments", "watch-ci"))).toBe(false);
+    expect(existsSync(join(packDir, "attachments", "watch-ci", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
   });
 
   test("lint-erroring verb (returned errors[]): errored with the message, other verbs unaffected -- command does not die", async () => {

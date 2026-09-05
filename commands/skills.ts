@@ -7,15 +7,22 @@
  *   rt skills check [--team <name>] [--verb <name> ...] [--manifest <path>]
  *   rt skills materialize [--repo <name>] [--json]
  *
- * --pack-dir / --mattstack-dir are test-only escape hatches (hidden from the
- * command tree): they let tests point the whole resolution chain at a
- * mkdtemp fixture instead of the real ~/.mattstack, without a PATH-shimmed
- * `claude` binary -- execSync inside this process ignores runtime PATH
- * mutations (resolved at Bun's own startup), so a fake `claude` on PATH is
- * not a reliable test seam. --mattstack-dir stands in for both the
- * ~/.mattstack root (pack-dir and manifest defaults) and the Claude plugin
- * cache (mirrored under <dir>/plugins/<name>/) that resolvePluginRoots()
- * queries for real via `claude plugin list --json`.
+ * --pack-dir names the pack directory to act on directly, bypassing registry
+ * discovery -- the way to target a worktree's sources from outside its tree
+ * (from inside, cwd resolution already prefers the enclosing pack).
+ *
+ * --mattstack-dir is a test-only escape hatch (hidden from the command
+ * tree): it lets tests point the whole resolution chain at a mkdtemp
+ * fixture instead of the real ~/.mattstack, without a PATH-shimmed `claude`
+ * binary -- execSync inside this process ignores runtime PATH mutations
+ * (resolved at Bun's own startup), so a fake `claude` on PATH is not a
+ * reliable test seam. It stands in for both the ~/.mattstack root (pack-dir
+ * and manifest defaults) and the Claude plugin cache (mirrored under
+ * <dir>/plugins/<name>/) that resolvePluginRoots() queries for real via
+ * `claude plugin list --json`. One deliberate hole in the seam: enclosing-
+ * cwd resolution runs before it, so a test that wants the fixture must
+ * either chdir into the fixture pack or pass --pack-dir -- running from
+ * inside a real pack tree is not isolated.
  */
 
 import { execFileSync, spawnSync } from "child_process";
@@ -31,7 +38,7 @@ import { materializeSkills } from "../lib/setup/skills-materialize.ts";
 import { validateChain } from "../lib/skills/chain.ts";
 import { compileSkill, HEADER_COMMENT, isInlined } from "../lib/skills/compile.ts";
 import { skillMdDriftCauses, type DriftCause } from "../lib/skills/drift.ts";
-import { discoverPacks, surfaceFileFor, type PackInfo } from "../lib/skills/packs.ts";
+import { discoverPacks, findEnclosingPack, surfaceFileFor, type PackInfo } from "../lib/skills/packs.ts";
 import { findPlaceholders } from "../lib/skills/placeholders.ts";
 import { buildStageEntries, hostDir, outDirFor, otherSideDir, targetOutDirs } from "../lib/skills/layout.ts";
 import { computePackSha, maskProvenance, mattstackProvenance, packPluginIdentity } from "../lib/skills/provenance.ts";
@@ -73,6 +80,14 @@ async function withCleanErrors(fn: () => Promise<void>): Promise<void> {
   }
 }
 
+/** A forgotten flag value must not fall through to a different resolution
+    path (a bare `--pack-dir` would otherwise compile whatever cwd/registry
+    resolution picks) -- reject absent or flag-shaped values. */
+function requireFlagValue(flag: string, value: string | undefined): string {
+  if (!value || value.startsWith("--")) throw new SkillsUsageError(`${flag} needs a value`);
+  return value;
+}
+
 type Flags = {
   team: string | null;
   verbs: string[] | null;
@@ -103,7 +118,7 @@ function parseFlags(args: string[]): Flags {
       case "--manifest": manifest = args[++i] ?? null; break;
       case "--dry-run": dryRun = true; break;
       case "--preview": preview = true; break;
-      case "--pack-dir": packDir = args[++i] ?? null; break;
+      case "--pack-dir": packDir = requireFlagValue("--pack-dir", args[++i]); break;
       case "--mattstack-dir": mattstackDir = args[++i] ?? null; break;
       case "--json": json = true; break;
       default:
@@ -121,25 +136,50 @@ function packRootDir(mattstackRoot: string, team: string): string {
 type PackTarget = { team: string; packDir: string };
 
 /**
- * Which pack a command acts on. Explicit --pack-dir wins (tests); a named
- * pack resolves through marketplace discovery, falling back to the teams-zone
- * path for packs installed by hand; no name at all follows the rt convention
- * -- offer a picker over what is actually installed, auto-selecting when only
- * one pack exists, and name the choices instead of guessing when there is no tty.
+ * Which pack a command acts on, in resolution order: an explicit --pack-dir
+ * wins; then the pack tree enclosing cwd (a worktree compile must act on the
+ * tree the user is standing in, not the checkout the registry points at --
+ * announced on stderr, since a same-named copy is exactly where "which tree
+ * am I writing?" must not be a surprise); then a named --pack through
+ * marketplace discovery, falling back to the teams-zone path for packs
+ * installed by hand; no name at all offers a picker over what is actually
+ * installed, auto-selecting when only one pack exists, and names the
+ * choices instead of guessing when there is no tty.
  */
 /**
  * A pack directory is named for its pack in every layout that produces one
  * (`packs/<name>/`, `plugins/<name>/`), so the directory answers "which pack"
- * when `--pack` was omitted. Naming a specific team here instead meant a
- * general-purpose tool carried one team's slug as its default.
+ * when the pack carries no plugin identity and `--pack` was omitted. Naming
+ * a specific team here instead meant a general-purpose tool carried one
+ * team's slug as its default.
  */
 function packNameFor(packDir: string): string {
   return basename(resolvePath(packDir)) || "pack";
 }
 
+function packTeamFor(packDir: string): string {
+  return packPluginIdentity(packDir)?.name ?? packNameFor(packDir);
+}
+
 async function resolvePack(flags: { team: string | null; packDir: string | null; mattstackDir: string | null }): Promise<PackTarget> {
   const mattstackRoot = flags.mattstackDir ?? mattstackHome();
-  if (flags.packDir) return { team: flags.team ?? packNameFor(flags.packDir), packDir: flags.packDir };
+  if (flags.packDir) {
+    const packDir = resolvePath(flags.packDir);
+    if (!existsSync(packDir) || !statSync(packDir).isDirectory()) {
+      throw new SkillsUsageError(`--pack-dir ${packDir} is not an existing directory`);
+    }
+    return { team: flags.team || packTeamFor(packDir), packDir };
+  }
+
+  const enclosing = findEnclosingPack(process.cwd());
+  if (enclosing) {
+    const name = packTeamFor(enclosing.dir);
+    if (!flags.team || flags.team === name) {
+      console.error(`rt skills: acting on the pack tree enclosing cwd (${enclosing.dir})`);
+      return { team: name, packDir: enclosing.dir };
+    }
+    console.error(`rt skills: cwd is inside pack tree "${name}" (${enclosing.dir}) but --pack ${flags.team} was given; resolving through the registry`);
+  }
 
   const packs = flags.mattstackDir ? [] : discoverPacks();
   if (flags.team) {
@@ -332,7 +372,12 @@ function findDefaultManifest(mattstackRoot: string, team: string, packDir: strin
 
   if (candidates.length === 0) {
     const ownManifest = join(packDir, "pack", "skills.jsonc");
-    const standalone = !isUnder(join(mattstackRoot, "teams"), packDir);
+    // Team packs sit at <repo>/mattstack/packs/<team>; that path shape
+    // survives worktrees, unlike the teams-zone location -- and a team
+    // pack's pack/skills.jsonc is a merge fragment, never its manifest.
+    const parts = resolvePath(packDir).split(sep);
+    const teamShaped = parts.at(-2) === "packs" && parts.at(-3) === "mattstack";
+    const standalone = !isUnder(join(mattstackRoot, "teams"), packDir) && !teamShaped;
     if (standalone && existsSync(ownManifest)) return ownManifest;
     throw new SkillsUsageError(
       `no skills.jsonc under ${reposRoot}/*/ names team "${team}" in its provenance header (<- ${team}@...)` +
@@ -730,12 +775,18 @@ function compileTargets(resolved: Resolved, publicSet: Set<string> | null, verbF
 export async function skillsCompile(args: string[]): Promise<void> {
   await withCleanErrors(async () => {
     const flags = parseFlags(args);
-    const resolved = await resolve(flags);
-    const publicSet = resolved.surface ? new Set(resolved.surface.public) : null;
 
+    // Flag-shape errors before resolve(): pack resolution can open a picker
+    // and shell out, and cancelling the picker would swallow the diagnostic.
     if (flags.preview && (flags.verbs?.length ?? 0) !== 1) {
       throw new SkillsUsageError("--preview needs a single --verb");
     }
+    if (flags.preview && flags.json) {
+      throw new SkillsUsageError("--preview and --json cannot be combined (--preview prints the compiled body; --json compiles, writes, and reports)");
+    }
+
+    const resolved = await resolve(flags);
+    const publicSet = resolved.surface ? new Set(resolved.surface.public) : null;
 
     const chainErrors = pipelineChainErrors(resolved);
     if (chainErrors.length > 0) throw new SkillsUsageError(chainErrors.join("\n"));
@@ -744,33 +795,6 @@ export async function skillsCompile(args: string[]): Promise<void> {
     // Lint accepts a relative path to any KNOWN target, not only emitted ones: a
     // scoped compile still renders {{verb.path}} to siblings it is not writing.
     const emittedTargetDirs = knownTargetDirs;
-
-    if (flags.json) {
-      const rows: CompileVerbRow[] = [];
-      for (const target of targets) {
-        const { verb, isPublic } = target;
-        const side: Side = isPublic ? "skills" : "attachments";
-        const outcome = tryCompileVerb(target, resolved, emittedTargetDirs, verbSides);
-        if (!outcome.ok) {
-          rows.push({ name: verb.name, status: "errored", files: [], warnings: [], errors: [outcome.message], side });
-        } else {
-          rows.push({
-            name: verb.name,
-            status: "compiled",
-            files: outcome.result.files.map((f) => ({ path: f.path })),
-            warnings: outcome.result.warnings,
-            errors: [],
-            side,
-          });
-        }
-      }
-      // An errored verb is a failed compile: exit non-zero so a caller reading
-      // the code (not just the payload) sees it, matching the non-JSON path's
-      // throw and check --json's stale exit.
-      if (rows.some((row) => row.status === "errored")) process.exitCode = 1;
-      console.log(JSON.stringify({ pack: resolved.team, packDir: resolved.packDir, verbs: rows }));
-      return;
-    }
 
     if (flags.preview) {
       for (const target of targets) {
@@ -797,25 +821,26 @@ export async function skillsCompile(args: string[]): Promise<void> {
 
     // Every target is compiled before any is written: a run that aborts midway
     // leaves already-emitted verbs referencing stage dirs that never landed.
-    const planned: { target: CompileTarget; result: CompileResult }[] = [];
-    const failures: string[] = [];
-    for (const target of targets) {
-      const outcome = tryCompileVerb(target, resolved, emittedTargetDirs, verbSides);
-      if (outcome.ok) planned.push({ target, result: outcome.result });
-      else failures.push(outcome.message);
-    }
-    if (failures.length > 0) {
+    const outcomes: { target: CompileTarget; outcome: CompileOutcome }[] = targets.map(
+      (target) => ({ target, outcome: tryCompileVerb(target, resolved, emittedTargetDirs, verbSides) }),
+    );
+    const failures = outcomes.flatMap(({ outcome }) => (outcome.ok ? [] : [outcome.message]));
+    if (failures.length > 0 && !flags.json) {
       for (const message of failures) console.error(`rt skills: ${message}`);
       process.exit(1);
     }
 
-    for (const { target, result } of planned) {
+    const writing = failures.length === 0 && !flags.dryRun;
+    for (const { target, outcome } of outcomes) {
+      if (!outcome.ok) continue;
       const { verb, isPublic } = target;
-      const side: Side = isPublic ? "skills" : "attachments";
+      const side = verbSides[verb.name]!;
 
-      if (flags.dryRun) {
-        console.log(`would write ${result.files.length} files for ${verb.name}`);
-        for (const warning of result.warnings) console.log(`  ${warning}`);
+      if (!writing) {
+        if (!flags.json) {
+          console.log(`would write ${outcome.result.files.length} files for ${verb.name}`);
+          for (const warning of outcome.result.warnings) console.log(`  ${warning}`);
+        }
         continue;
       }
 
@@ -824,18 +849,51 @@ export async function skillsCompile(args: string[]): Promise<void> {
       // it carries the compiler header, never when it is the hand-written source.
       const stale = otherSideDir(resolved.packDir, verb.name, isPublic);
       if (existsSync(stale) && !isHandWrittenDir(stale)) rmSync(stale, { recursive: true, force: true });
-      writeCompiledVerb(outDirFor(resolved.packDir, verb.name, isPublic), result);
-      console.log(`compiled ${verb.name} -> ${side} (${result.files.length} files, ${result.warnings.length} warnings)`);
-      for (const warning of result.warnings) console.log(`  ${warning}`);
+      writeCompiledVerb(outDirFor(resolved.packDir, verb.name, isPublic), outcome.result);
+      if (!flags.json) {
+        console.log(`compiled ${verb.name} -> ${side} (${outcome.result.files.length} files, ${outcome.result.warnings.length} warnings)`);
+        for (const warning of outcome.result.warnings) console.log(`  ${warning}`);
+      }
     }
 
+    const misplaced: string[] = [];
     if (publicSet) {
-      for (const name of enumerateRegistered(resolved.packDir).keys()) {
-        if (!publicSet.has(name)) {
-          console.log(`misplaced: ${name} (run rt skills surface apply, or move it)`);
-          process.exitCode = 1;
+      // Prediction must match what the write pass leaves behind: a target's
+      // stale compiler-headed other-side dir gets swept by the real run, so
+      // a dry-run must not call it misplaced. A failure-aborted run sweeps
+      // nothing, so it gets no such credit -- its stale dirs stay on disk.
+      const wouldBeSwept = new Set<string>();
+      if (flags.dryRun && failures.length === 0) {
+        for (const { target, outcome } of outcomes) {
+          if (!outcome.ok) continue;
+          const stale = otherSideDir(resolved.packDir, target.verb.name, target.isPublic);
+          if (existsSync(stale) && !isHandWrittenDir(stale)) wouldBeSwept.add(target.verb.name);
         }
       }
+      for (const name of enumerateRegistered(resolved.packDir).keys()) {
+        if (!publicSet.has(name) && !wouldBeSwept.has(name)) misplaced.push(name);
+      }
+    }
+
+    if (flags.json) {
+      const rows: CompileVerbRow[] = outcomes.map(({ target, outcome }) => {
+        const side = verbSides[target.verb.name]!;
+        return outcome.ok
+          ? { name: target.verb.name, status: "compiled", files: outcome.result.files.map((f) => ({ path: f.path })), warnings: outcome.result.warnings, errors: [], side }
+          : { name: target.verb.name, status: "errored", files: [], warnings: [], errors: [outcome.message], side };
+      });
+      // An errored or misplaced verb is a failed compile: exit non-zero so a
+      // caller reading the code (not just the payload) sees it, matching the
+      // non-JSON path's exits. `written` stays honest on an empty target set.
+      if (failures.length > 0 || misplaced.length > 0) process.exitCode = 1;
+      const written = writing && outcomes.length > 0;
+      console.log(JSON.stringify({ pack: resolved.team, packDir: resolved.packDir, written, verbs: rows, misplaced }));
+      return;
+    }
+
+    for (const name of misplaced) {
+      console.log(`misplaced: ${name} (run rt skills surface apply, or move it)`);
+      process.exitCode = 1;
     }
   });
 }
@@ -1320,7 +1378,7 @@ function parseSurfaceFlags(args: string[]): { flags: SurfaceFlags; rest: string[
       case "--pack":
       case "--team": team = args[++i] ?? team; break;
       case "--dry-run": dryRun = true; break;
-      case "--pack-dir": packDir = args[++i] ?? null; break;
+      case "--pack-dir": packDir = requireFlagValue("--pack-dir", args[++i]); break;
       case "--mattstack-dir": mattstackDir = args[++i] ?? null; break;
       case "--manifest": manifest = args[++i] ?? null; break;
       case "--json": json = true; break;
@@ -1815,7 +1873,7 @@ function parseBindFlags(args: string[]): BindFlags {
       case "--team": team = args[++i] ?? team; break;
       case "--manifest": manifest = args[++i] ?? null; break;
       case "--dry-run": dryRun = true; break;
-      case "--pack-dir": packDir = args[++i] ?? null; break;
+      case "--pack-dir": packDir = requireFlagValue("--pack-dir", args[++i]); break;
       case "--mattstack-dir": mattstackDir = args[++i] ?? null; break;
       default:
         throw new SkillsUsageError(`unrecognized argument "${a}"`);
