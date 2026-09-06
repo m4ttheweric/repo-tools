@@ -204,7 +204,8 @@ export function createGateHandlers(
       const payload = rawPayload as Commands["gate:open"]["payload"] | undefined;
       const subject = typeof payload?.subject === "string" ? payload.subject.trim() : "";
       const kind = typeof payload?.kind === "string" ? payload.kind.trim() : "";
-      if (!subject || !subject.includes(":")) return { ok: false as const, error: "invalid subject" };
+      const colonAt = subject.indexOf(":");
+      if (!subject || colonAt === -1 || colonAt === subject.length - 1) return { ok: false as const, error: "invalid subject" };
       if (!kind) return { ok: false as const, error: "missing kind" };
       const questions = payload?.questions;
       if (!Array.isArray(questions) || questions.length === 0 || !questions.every(isValidQuestion)) {
