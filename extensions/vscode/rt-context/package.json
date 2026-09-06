@@ -86,6 +86,6 @@
   },
   "dependencies": {
     "@mattstack/glance": "^0.24.0",
-    "@mattstack/rt-client": "^0.14.0"
+    "@mattstack/rt-client": "^0.16.0"
   }
 }
