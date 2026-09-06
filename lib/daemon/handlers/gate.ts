@@ -17,6 +17,7 @@ import type { GatePush } from "../gate-push.ts";
 const noopPush: GatePush = {
   onAnswered: async () => {},
   onOpened: async () => {},
+  onClosed: async () => {},
 };
 
 // gates.db is a shared registry (mirrors events.ts's DEFAULT_LIST_LIMIT
@@ -244,6 +245,13 @@ export function createGateHandlers(
           id: supersededId, subject: row.subject, kind: row.kind,
           reason: "superseded", supersededBy: row.id,
         }, emittedAt);
+        // Fetched fresh (unlike the event payload above): a form-blocked pane
+        // on the superseded gate never gets an answer, so it needs the same
+        // doorbell-then-Escape delivery onAnswered gives a real answer.
+        const supersededRow = store.get(supersededId);
+        if (supersededRow) {
+          firePush(push.onClosed(supersededRow), { verb: "gate:open", gateId: supersededRow.id });
+        }
       }
 
       firePush(push.onOpened(row), { verb: "gate:open", gateId: row.id });
@@ -345,6 +353,7 @@ export function createGateHandlers(
       if (result.ok) {
         const row = store.get(id)!;
         emitGateEvent(`gate/closed/${row.id}`, { id: row.id, subject: row.subject, kind: row.kind, reason: row.closedReason }, Date.now());
+        firePush(push.onClosed(row), { verb: "gate:close", gateId: row.id });
         return { ok: true as const, data: { ok: true as const } };
       }
       return { ok: false as const, error: result.reason };
