@@ -9,7 +9,7 @@ import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import { gateOptionValue } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult } from "./types.ts";
 import type { EventsBus } from "../events-bus.ts";
-import type { GatesStore, GateQuestion, GateAnswer, GateRow, GateOrigin } from "../gates-store.ts";
+import type { GatesStore, GateQuestion, GateAnswer, GateRow } from "../gates-store.ts";
 import type { GatePush } from "../gate-push.ts";
 
 /** Callers that omit `push` (e.g. handler-only tests) get a no-op: gate:*
@@ -17,6 +17,7 @@ import type { GatePush } from "../gate-push.ts";
 const noopPush: GatePush = {
   onAnswered: async () => {},
   onOpened: async () => {},
+  onClosed: async () => {},
 };
 
 // gates.db is a shared registry (mirrors events.ts's DEFAULT_LIST_LIMIT
@@ -72,23 +73,52 @@ function oversizedLabel(questions: GateQuestion[]): string | null {
 }
 
 const ORIGIN_STRING_KEYS: ReadonlySet<string> = new Set(["paneId", "tabId", "runId", "worktree"]);
+const ORIGIN_FIELD_CAP_BYTES = 1024;
 
-function isValidOrigin(v: unknown): v is GateOrigin {
-  if (!isPlainObject(v)) return false;
+/** Returns an error message on an invalid origin, null when it validates.
+    Each string field is capped like label/context: the row and the
+    gate/opened payload carry origin verbatim to every surface, so an
+    unbounded field defeats the "at-most-8KB payload growth" budget. */
+function invalidOrigin(v: unknown): string | null {
+  if (!isPlainObject(v)) return "origin must be an object of string fields with presentation form|wait";
   for (const [key, val] of Object.entries(v)) {
     if (key === "presentation") {
-      if (val !== "form" && val !== "wait") return false;
+      if (val !== "form" && val !== "wait") {
+        return "origin must be an object of string fields with presentation form|wait";
+      }
       continue;
     }
-    if (!ORIGIN_STRING_KEYS.has(key) || typeof val !== "string") return false;
+    if (!ORIGIN_STRING_KEYS.has(key) || typeof val !== "string") {
+      return "origin must be an object of string fields with presentation form|wait";
+    }
+    if (Buffer.byteLength(val, "utf8") > ORIGIN_FIELD_CAP_BYTES) {
+      return `origin.${key} exceeds ${ORIGIN_FIELD_CAP_BYTES} bytes`;
+    }
   }
-  return true;
+  return null;
 }
 
 /** gate-push resolves delivery off `nudge.session`; a malformed nudge would
     silently become "no delivery target" instead of a loud open-time reject. */
 function isValidNudge(v: unknown): v is { session: string } {
   return isPlainObject(v) && typeof v.session === "string" && v.session.length > 0;
+}
+
+/** A wrapper relaunch opens a fresh gate that supersedes its own prior one
+    from the SAME pane; delivering the closed-doorbell there would Escape
+    the pane's brand-new form, an avoidable self-interrupt (recoverable via
+    the queued doorbell, but not worth causing). Compares origin.paneId
+    first, falling back to nudge.session when either paneId is absent; with
+    nothing comparable on either axis, the two gates are treated as
+    different panes and the push proceeds. */
+function sameOpenerPane(a: GateRow, b: GateRow): boolean {
+  const paneA = a.origin?.paneId;
+  const paneB = b.origin?.paneId;
+  if (paneA && paneB) return paneA === paneB;
+  const sessionA = a.nudge?.session;
+  const sessionB = b.nudge?.session;
+  if (sessionA && sessionB) return sessionA === sessionB;
+  return false;
 }
 
 /** Both wire shapes carry the same value underneath: bare, or `{value, note?}`
@@ -202,8 +232,9 @@ export function createGateHandlers(
           return { ok: false as const, error: `context exceeds ${CONTEXT_CAP_BYTES} bytes` };
         }
       }
-      if (payload?.origin !== undefined && !isValidOrigin(payload.origin)) {
-        return { ok: false as const, error: "origin must be an object of string fields with presentation form|wait" };
+      if (payload?.origin !== undefined) {
+        const originError = invalidOrigin(payload.origin);
+        if (originError) return { ok: false as const, error: originError };
       }
 
       const { row, supersededId } = store.open({
@@ -231,6 +262,13 @@ export function createGateHandlers(
           id: supersededId, subject: row.subject, kind: row.kind,
           reason: "superseded", supersededBy: row.id,
         }, emittedAt);
+        // Fetched fresh (unlike the event payload above): a form-blocked pane
+        // on the superseded gate never gets an answer, so it needs the same
+        // doorbell-then-Escape delivery onAnswered gives a real answer.
+        const supersededRow = store.get(supersededId);
+        if (supersededRow && !sameOpenerPane(row, supersededRow)) {
+          firePush(push.onClosed(supersededRow), { verb: "gate:open", gateId: supersededRow.id });
+        }
       }
 
       firePush(push.onOpened(row), { verb: "gate:open", gateId: row.id });
@@ -332,6 +370,7 @@ export function createGateHandlers(
       if (result.ok) {
         const row = store.get(id)!;
         emitGateEvent(`gate/closed/${row.id}`, { id: row.id, subject: row.subject, kind: row.kind, reason: row.closedReason }, Date.now());
+        firePush(push.onClosed(row), { verb: "gate:close", gateId: row.id });
         return { ok: true as const, data: { ok: true as const } };
       }
       return { ok: false as const, error: result.reason };

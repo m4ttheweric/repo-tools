@@ -4,7 +4,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import pino from "pino";
 import { createGatesStore, type GatesStore, type GateQuestion } from "../gates-store.ts";
-import { createGatePush, GATE_ANSWERED_PHRASE, GATE_SUBSCRIPTION_PHRASE } from "../gate-push.ts";
+import { createGatePush, GATE_ANSWERED_PHRASE, GATE_CLOSED_PHRASE, GATE_SUBSCRIPTION_PHRASE } from "../gate-push.ts";
 import { wrapCrossSession } from "../inbox.ts";
 
 const log = pino({ level: "silent" });
@@ -260,5 +260,84 @@ describe("gate-push escape injection (W4)", () => {
     const { push, store, events } = w4Harness({ withInjector: false });
     await push.onAnswered(answeredFormGate(store, "console"));
     expect(events).toEqual(["deliver"]);
+  });
+});
+
+/** Unanswered form gate: open() only, no answer -- exercises the
+    supersede/close paths, which never carry an answer. */
+function openFormGate(store: GatesStore, origin?: Record<string, unknown>) {
+  const passedOrigin = arguments.length >= 2 ? origin : { presentation: "form", paneId: "pane-7" };
+  return store.open({
+    subject: "mr:https://gitlab.example.com/x/1", kind: "review-post", questions: qs(),
+    nudge: { session: "sess-1" }, pane: "pane-7",
+    origin: passedOrigin as never,
+  }).row;
+}
+
+describe("gate-push onClosed (supersede/close, W4 final-review M4)", () => {
+  test("supersede: closing the stale gate fires the same doorbell-then-Escape delivery", async () => {
+    const { push, store, events } = w4Harness();
+    const stale = openFormGate(store);
+    // A second open on the same subject+kind supersedes the first (relaunch case).
+    store.open({ subject: stale.subject, kind: stale.kind, questions: qs() });
+    await push.onClosed(store.get(stale.id)!);
+    expect(events).toEqual(["deliver", "inject:pane-7"]);
+    expect(store.get(stale.id)!.delivery!.outcome).toBe("delivered");
+  });
+
+  test("close: gate:close (abandoned) fires the same doorbell-then-Escape delivery", async () => {
+    const { push, store, events } = w4Harness();
+    const row = openFormGate(store);
+    store.close(row.id, "abandoned");
+    await push.onClosed(store.get(row.id)!);
+    expect(events).toEqual(["deliver", "inject:pane-7"]);
+    expect(store.get(row.id)!.delivery!.outcome).toBe("delivered");
+  });
+
+  test("the closed doorbell phrase names the gate as abandoned/closed, never as answered", async () => {
+    const { push, store, delivered } = harness();
+    const row = store.open({
+      subject: "mr:https://x/1", kind: "review-post", questions: qs(), nudge: { session: "sess-1" },
+    }).row;
+    store.close(row.id, "abandoned");
+    await push.onClosed(store.get(row.id)!);
+    expect(delivered[0]!.body).toBe(wrapCrossSession("gate-facility", GATE_CLOSED_PHRASE(row.id, "abandoned")));
+    expect(delivered[0]!.body).not.toContain("answered");
+  });
+
+  test("no injection for wait presentation, missing paneId, or missing origin, on close", async () => {
+    for (const origin of [{ presentation: "wait", paneId: "pane-7" }, { presentation: "form" }, undefined]) {
+      const { push, store, events } = w4Harness();
+      const row = openFormGate(store, origin as never);
+      store.close(row.id, "abandoned");
+      await push.onClosed(store.get(row.id)!);
+      expect(events).toEqual(["deliver"]);
+    }
+  });
+
+  test("no injection when the close doorbell failed (dead-pane degrades to reconcile-at-next-touch)", async () => {
+    const { push, store, events } = w4Harness({ deliverOk: false });
+    const row = openFormGate(store);
+    store.close(row.id, "abandoned");
+    await push.onClosed(store.get(row.id)!);
+    expect(events).toEqual(["deliver"]);
+    expect(store.get(row.id)!.delivery!.outcome).toBe("dead-pane");
+  });
+
+  test("close injection failure is non-fatal and leaves the delivery outcome delivered", async () => {
+    const { push, store, events } = w4Harness({ injectOk: false });
+    const row = openFormGate(store);
+    store.close(row.id, "abandoned");
+    await push.onClosed(store.get(row.id)!);
+    expect(events).toEqual(["deliver", "inject:pane-7"]);
+    expect(store.get(row.id)!.delivery!.outcome).toBe("delivered");
+  });
+
+  test("no nudge means no pane push on close either", async () => {
+    const { push, store, events } = w4Harness();
+    const row = store.open({ subject: "run:r1", kind: "clarify", questions: qs() }).row;
+    store.close(row.id, "abandoned");
+    await push.onClosed(store.get(row.id)!);
+    expect(events.length).toBe(0);
   });
 });

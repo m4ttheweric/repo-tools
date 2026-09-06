@@ -24,6 +24,14 @@ import type { EscapeInjector } from "./gate-escape.ts";
 export const GATE_ANSWERED_PHRASE = (id: string) =>
   `[gate] ${id} answered elsewhere; re-read the registry and proceed on the recorded answer.`;
 
+/** Sibling of GATE_ANSWERED_PHRASE for the supersede/close paths, which end
+    a gate with no answer ever coming -- a form pane waiting on it needs the
+    same doorbell-then-Escape nudge, worded so it never reads as "answered". */
+export const GATE_CLOSED_PHRASE = (id: string, reason: GateRow["closedReason"]) =>
+  reason === "superseded"
+    ? `[gate] ${id} superseded by a newer gate; re-read the registry and proceed.`
+    : `[gate] ${id} closed; re-read the registry and proceed.`;
+
 /** Fan-out notification: push text is data, never instructions, and carries
     no opener-controlled content -- `subject` is opener-set and must never
     ride a cross-session message body. id + status only; the W2 protocol
@@ -38,6 +46,10 @@ export interface GatePush {
   onAnswered(row: GateRow): Promise<void>;
   /** Subscription fan-out only -- there is no pane to wake on open. */
   onOpened(row: GateRow): Promise<void>;
+  /** Pane push only, on a gate that ends WITHOUT an answer (supersede or
+      gate:close). Same doorbell-then-Escape delivery as onAnswered -- a
+      form-blocked pane otherwise never learns its gate ended. */
+  onClosed(row: GateRow): Promise<void>;
 }
 
 export function createGatePush(opts: {
@@ -74,7 +86,7 @@ export function createGatePush(opts: {
     }
   }
 
-  async function pushToPane(row: GateRow): Promise<void> {
+  async function pushToPane(row: GateRow, phrase: string): Promise<void> {
     const sessionId = row.nudge?.session;
     if (!sessionId) return;
     const binding = resolveSession(sessionId);
@@ -82,7 +94,7 @@ export function createGatePush(opts: {
       store.markDelivery(row.id, "dead-pane");
       return;
     }
-    const body = wrapCrossSession("gate-facility", GATE_ANSWERED_PHRASE(row.id));
+    const body = wrapCrossSession("gate-facility", phrase);
     const ok = await safeDeliver(binding.socketPath, body, { gateId: row.id, sessionId });
     store.markDelivery(row.id, ok ? "delivered" : "dead-pane");
     // Escape only ever follows an ACCEPTED doorbell: the dismissed form's
@@ -150,10 +162,13 @@ export function createGatePush(opts: {
 
   return {
     async onAnswered(row) {
-      await Promise.all([pushToPane(row), fanOut(row)]);
+      await Promise.all([pushToPane(row, GATE_ANSWERED_PHRASE(row.id)), fanOut(row)]);
     },
     async onOpened(row) {
       await fanOut(row);
+    },
+    async onClosed(row) {
+      await pushToPane(row, GATE_CLOSED_PHRASE(row.id, row.closedReason));
     },
   };
 }
