@@ -475,6 +475,21 @@ describe("gate:open W4 fields", () => {
     expect((r as { error: string }).error).toContain("200 bytes");
   });
 
+  test("option label cap is byte-based, not char-based: a 2-byte char at 100 reps (200 bytes) is accepted, 101 reps (202 bytes) is rejected", async () => {
+    const { handlers } = harness();
+    const at = await handlers["gate:open"]({
+      subject: "run:r1", kind: "clarify",
+      questions: [{ id: "q", label: "Pick", multi: false, options: [{ value: "a", label: "é".repeat(100) }] }],
+    });
+    expect(at.ok).toBe(true);
+    const over = await handlers["gate:open"]({
+      subject: "run:r1", kind: "clarify",
+      questions: [{ id: "q", label: "Pick", multi: false, options: [{ value: "a", label: "é".repeat(101) }] }],
+    });
+    expect(over.ok).toBe(false);
+    expect((over as { error: string }).error).toContain("200 bytes");
+  });
+
   test("rejects context over 8192 bytes, naming the cap; accepts one at the cap", async () => {
     const { handlers } = harness();
     const over = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), context: "x".repeat(8193) });
@@ -482,6 +497,15 @@ describe("gate:open W4 fields", () => {
     expect((over as { error: string }).error).toContain("8192 bytes");
     const at = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", context: "x".repeat(8192), questions: qs() });
     expect(at.ok).toBe(true);
+  });
+
+  test("context cap is byte-based, not char-based: a 2-byte char at 4096 reps (8192 bytes) is accepted, 4097 reps (8194 bytes) is rejected", async () => {
+    const { handlers } = harness();
+    const at = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), context: "é".repeat(4096) });
+    expect(at.ok).toBe(true);
+    const over = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), context: "é".repeat(4097) });
+    expect(over.ok).toBe(false);
+    expect((over as { error: string }).error).toContain("8192 bytes");
   });
 
   test("stores context and origin, serves them on the row AND the opened event payload", async () => {
