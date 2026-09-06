@@ -797,11 +797,14 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
                 typeof e.pattern === "string" && typeof e.category === "string" &&
                 typeof e.title === "string" && typeof e.message === "string"
               ) {
+                const rawSubjectPrefix = (e as { subjectPrefix?: unknown }).subjectPrefix;
+                if (rawSubjectPrefix !== undefined && typeof rawSubjectPrefix !== "string") {
+                  notifyBridgeLog.warn({ entry }, "rt.notify.eventBridges: skipping rule with non-string subjectPrefix");
+                  continue;
+                }
                 rules.push({
                   pattern: e.pattern, category: e.category, title: e.title, message: e.message,
-                  ...(typeof (e as { subjectPrefix?: unknown }).subjectPrefix === "string"
-                    ? { subjectPrefix: (e as { subjectPrefix: string }).subjectPrefix }
-                    : {}),
+                  ...(rawSubjectPrefix !== undefined ? { subjectPrefix: rawSubjectPrefix } : {}),
                 });
               } else {
                 notifyBridgeLog.warn({ entry }, "rt.notify.eventBridges: skipping invalid rule entry");
