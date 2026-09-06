@@ -85,6 +85,20 @@ describe("gates store", () => {
     expect(() => s.open({ subject: "nocolon", kind: "k", questions: qs() })).toThrow();
     s.close_();
   });
+
+  test("subject validation: rejects an empty remainder after the colon", () => {
+    const s = createGatesStore({ dbPath: tmp("gates.db"), log });
+    expect(() => s.open({ subject: "run:", kind: "k", questions: qs() })).toThrow();
+    s.close_();
+  });
+
+  test("subject validation: keeps every currently-valid subject shape working", () => {
+    const s = createGatesStore({ dbPath: tmp("gates.db"), log });
+    expect(() => s.open({ subject: "mr:https://gitlab.example.com/x/1", kind: "k1", questions: qs() })).not.toThrow();
+    expect(() => s.open({ subject: "run:r1", kind: "k2", questions: qs() })).not.toThrow();
+    expect(() => s.open({ subject: "spike:word", kind: "k3", questions: qs() })).not.toThrow();
+    s.close_();
+  });
 });
 
 describe("gates store — transitions", () => {

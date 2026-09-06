@@ -100,6 +100,18 @@ describe("gate:open", () => {
     expect((await handlers["gate:open"]({ subject: "run:r1", kind: "k", questions: [{ id: "q" }] as any })).ok).toBe(false);
   });
 
+  test("rejects a subject with an empty remainder after the colon", async () => {
+    const { handlers } = harness();
+    expect((await handlers["gate:open"]({ subject: "run:", kind: "k", questions: qs() })).ok).toBe(false);
+  });
+
+  test("accepts every currently-valid subject shape", async () => {
+    const { handlers } = harness();
+    expect((await handlers["gate:open"]({ subject: "mr:https://gitlab.example.com/x/1", kind: "k1", questions: qs() })).ok).toBe(true);
+    expect((await handlers["gate:open"]({ subject: "run:r1", kind: "k2", questions: qs() })).ok).toBe(true);
+    expect((await handlers["gate:open"]({ subject: "spike:word", kind: "k3", questions: qs() })).ok).toBe(true);
+  });
+
   test("rejects duplicate question ids (F10): an opener typo must not mint an unanswerable gate", async () => {
     const { handlers } = harness();
     const dup = [

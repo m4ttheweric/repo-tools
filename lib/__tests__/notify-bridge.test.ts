@@ -65,6 +65,50 @@ describe("startNotifyBridge", () => {
     expect(paneFocusedCalls).toEqual(["w1:p1"]);
   });
 
+  test("{question} resolves to the first question's label", async () => {
+    const bus = fakeBus();
+    const enqueued: NotificationEvent[] = [];
+
+    startNotifyBridge({
+      onBroadcast: bus.onBroadcast,
+      rules: () => [{ pattern: "board/gate/opened/*", category: "gate", title: "{label}", message: "{question}" }],
+      enqueue: (e) => { enqueued.push(e); },
+      paneFocused: async () => false,
+    });
+
+    await bus.emit("event", {
+      id: 9,
+      topic: "board/gate/opened/g9",
+      payload: { label: "review gate", questions: [{ id: "q1", label: "Approve this MR?" }, { id: "q2", label: "second" }] },
+      emittedAt: Date.now(),
+    });
+
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.message).toBe("Approve this MR?");
+  });
+
+  test("{question} renders empty when the event payload has no questions", async () => {
+    const bus = fakeBus();
+    const enqueued: NotificationEvent[] = [];
+
+    startNotifyBridge({
+      onBroadcast: bus.onBroadcast,
+      rules: () => [{ pattern: "board/gate/opened/*", category: "gate", title: "{label}", message: "{question}" }],
+      enqueue: (e) => { enqueued.push(e); },
+      paneFocused: async () => false,
+    });
+
+    await bus.emit("event", {
+      id: 10,
+      topic: "board/gate/opened/g10",
+      payload: { label: "review gate" },
+      emittedAt: Date.now(),
+    });
+
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.message).toBe("");
+  });
+
   test("an unknown template field renders literally, not as undefined", async () => {
     const bus = fakeBus();
     const enqueued: NotificationEvent[] = [];

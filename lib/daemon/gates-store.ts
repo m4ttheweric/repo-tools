@@ -158,10 +158,12 @@ function quarantineGatesDb(path: string, log: Logger): void {
   }
 }
 
-/** Non-empty and contains ":": the daemon never interprets a subject beyond that. */
+/** Non-empty, with a non-empty remainder after the first ":": the daemon never
+    interprets a subject beyond that split. */
 function assertValidSubject(subject: string): void {
-  if (!subject || !subject.includes(":")) {
-    throw new Error(`invalid gate subject (must be "<prefix>:<id>"): ${JSON.stringify(subject)}`);
+  const colonAt = subject.indexOf(":");
+  if (!subject || colonAt === -1 || colonAt === subject.length - 1) {
+    throw new Error(`invalid gate subject (must be "<prefix>:<id>" with a non-empty id): ${JSON.stringify(subject)}`);
   }
 }
 

@@ -31,10 +31,26 @@ interface BroadcastEventFrame {
 
 const TEMPLATE_FIELD_RE = /\{([^{}]+)\}/g;
 
-/** `{field}` -> String(payload[field]); an unknown field renders as the literal `{field}`. */
+/** The first question's label, or "" when the payload carries no questions
+    array or that entry has no string label -- a rule referencing `{question}`
+    must never surface `undefined` in a human-facing notification. */
+function firstQuestionLabel(payload: Record<string, unknown>): string {
+  const questions = payload.questions;
+  if (!Array.isArray(questions) || questions.length === 0) return "";
+  const first = questions[0];
+  if (!first || typeof first !== "object") return "";
+  const label = (first as Record<string, unknown>).label;
+  return typeof label === "string" ? label : "";
+}
+
+/** `{field}` -> String(payload[field]); an unknown field renders as the literal
+    `{field}`. `{question}` is the one computed field: it does not read
+    payload.question but resolves to payload.questions[0].label. */
 function interpolate(template: string, payload: Record<string, unknown>): string {
-  return template.replace(TEMPLATE_FIELD_RE, (literal, field: string) =>
-    Object.prototype.hasOwnProperty.call(payload, field) ? String(payload[field]) : literal);
+  return template.replace(TEMPLATE_FIELD_RE, (literal, field: string) => {
+    if (field === "question") return firstQuestionLabel(payload);
+    return Object.prototype.hasOwnProperty.call(payload, field) ? String(payload[field]) : literal;
+  });
 }
 
 function isEventFrame(data: unknown): data is BroadcastEventFrame {
