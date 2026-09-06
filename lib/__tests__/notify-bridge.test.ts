@@ -245,3 +245,27 @@ describe("startNotifyBridge", () => {
     expect(enqueued).toHaveLength(0);
   });
 });
+
+describe("subjectPrefix rule filter", () => {
+  const RUN_RULE: EventBridgeRule = {
+    pattern: "gate/opened/*", category: "gate", title: "gate", message: "{subject}", subjectPrefix: "mr:",
+  };
+
+  test("a rule with subjectPrefix fires only for matching subjects", async () => {
+    const bus = fakeBus();
+    const enqueued: NotificationEvent[] = [];
+    startNotifyBridge({ onBroadcast: bus.onBroadcast, rules: () => [RUN_RULE], enqueue: (e) => enqueued.push(e), paneFocused: async () => false });
+    await bus.emit("event", { id: 1, topic: "gate/opened/g1", payload: { subject: "run:r1" }, emittedAt: 0 });
+    expect(enqueued.length).toBe(0);
+    await bus.emit("event", { id: 2, topic: "gate/opened/g2", payload: { subject: "mr:https://gitlab.example.com/x/1" }, emittedAt: 0 });
+    expect(enqueued.length).toBe(1);
+  });
+
+  test("a subjectPrefix rule skips events with no string subject", async () => {
+    const bus = fakeBus();
+    const enqueued: NotificationEvent[] = [];
+    startNotifyBridge({ onBroadcast: bus.onBroadcast, rules: () => [RUN_RULE], enqueue: (e) => enqueued.push(e), paneFocused: async () => false });
+    await bus.emit("event", { id: 3, topic: "gate/opened/g3", payload: {}, emittedAt: 0 });
+    expect(enqueued.length).toBe(0);
+  });
+});

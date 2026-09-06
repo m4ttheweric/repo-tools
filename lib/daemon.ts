@@ -797,7 +797,12 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
                 typeof e.pattern === "string" && typeof e.category === "string" &&
                 typeof e.title === "string" && typeof e.message === "string"
               ) {
-                rules.push({ pattern: e.pattern, category: e.category, title: e.title, message: e.message });
+                rules.push({
+                  pattern: e.pattern, category: e.category, title: e.title, message: e.message,
+                  ...(typeof (e as { subjectPrefix?: unknown }).subjectPrefix === "string"
+                    ? { subjectPrefix: (e as { subjectPrefix: string }).subjectPrefix }
+                    : {}),
+                });
               } else {
                 notifyBridgeLog.warn({ entry }, "rt.notify.eventBridges: skipping invalid rule entry");
               }

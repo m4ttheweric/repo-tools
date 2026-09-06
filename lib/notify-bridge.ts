@@ -19,6 +19,7 @@ export interface EventBridgeRule {
   category: string;
   title: string;
   message: string;
+  subjectPrefix?: string;
 }
 
 interface BroadcastEventFrame {
@@ -102,6 +103,11 @@ export function startNotifyBridge(deps: {
         continue;
       }
       if (!matched) continue;
+      if (rule.subjectPrefix !== undefined) {
+        const payload = (data.payload && typeof data.payload === "object" ? data.payload : {}) as Record<string, unknown>;
+        const subject = payload.subject;
+        if (typeof subject !== "string" || !subject.startsWith(rule.subjectPrefix)) continue;
+      }
       await handleMatch(data, rule);
     }
   };
