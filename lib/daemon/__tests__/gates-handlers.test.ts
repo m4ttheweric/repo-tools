@@ -529,6 +529,36 @@ describe("gate:open W4 fields", () => {
     }
   });
 
+  test("rejects an oversized origin string field, naming the cap", async () => {
+    const { handlers } = harness();
+    const over = await handlers["gate:open"]({
+      subject: "run:r1", kind: "clarify", questions: qs(),
+      origin: { worktree: "x".repeat(1025) } as never,
+    });
+    expect(over.ok).toBe(false);
+    expect((over as { error: string }).error).toContain("1024 bytes");
+    const at = await handlers["gate:open"]({
+      subject: "run:r1", kind: "clarify", questions: qs(),
+      origin: { worktree: "x".repeat(1024) } as never,
+    });
+    expect(at.ok).toBe(true);
+  });
+
+  test("origin cap is byte-based, not char-based: a 2-byte char at 512 reps (1024 bytes) is accepted, 513 reps (1026 bytes) is rejected", async () => {
+    const { handlers } = harness();
+    const at = await handlers["gate:open"]({
+      subject: "run:r1", kind: "clarify", questions: qs(),
+      origin: { runId: "é".repeat(512) } as never,
+    });
+    expect(at.ok).toBe(true);
+    const over = await handlers["gate:open"]({
+      subject: "run:r1", kind: "clarify", questions: qs(),
+      origin: { runId: "é".repeat(513) } as never,
+    });
+    expect(over.ok).toBe(false);
+    expect((over as { error: string }).error).toContain("1024 bytes");
+  });
+
   test("old-style rows: no context/origin round-trips as null", async () => {
     const { handlers, store } = harness();
     const r = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs() });

@@ -9,7 +9,7 @@ import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import { gateOptionValue } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult } from "./types.ts";
 import type { EventsBus } from "../events-bus.ts";
-import type { GatesStore, GateQuestion, GateAnswer, GateRow, GateOrigin } from "../gates-store.ts";
+import type { GatesStore, GateQuestion, GateAnswer, GateRow } from "../gates-store.ts";
 import type { GatePush } from "../gate-push.ts";
 
 /** Callers that omit `push` (e.g. handler-only tests) get a no-op: gate:*
@@ -72,17 +72,29 @@ function oversizedLabel(questions: GateQuestion[]): string | null {
 }
 
 const ORIGIN_STRING_KEYS: ReadonlySet<string> = new Set(["paneId", "tabId", "runId", "worktree"]);
+const ORIGIN_FIELD_CAP_BYTES = 1024;
 
-function isValidOrigin(v: unknown): v is GateOrigin {
-  if (!isPlainObject(v)) return false;
+/** Returns an error message on an invalid origin, null when it validates.
+    Each string field is capped like label/context: the row and the
+    gate/opened payload carry origin verbatim to every surface, so an
+    unbounded field defeats the "at-most-8KB payload growth" budget. */
+function invalidOrigin(v: unknown): string | null {
+  if (!isPlainObject(v)) return "origin must be an object of string fields with presentation form|wait";
   for (const [key, val] of Object.entries(v)) {
     if (key === "presentation") {
-      if (val !== "form" && val !== "wait") return false;
+      if (val !== "form" && val !== "wait") {
+        return "origin must be an object of string fields with presentation form|wait";
+      }
       continue;
     }
-    if (!ORIGIN_STRING_KEYS.has(key) || typeof val !== "string") return false;
+    if (!ORIGIN_STRING_KEYS.has(key) || typeof val !== "string") {
+      return "origin must be an object of string fields with presentation form|wait";
+    }
+    if (Buffer.byteLength(val, "utf8") > ORIGIN_FIELD_CAP_BYTES) {
+      return `origin.${key} exceeds ${ORIGIN_FIELD_CAP_BYTES} bytes`;
+    }
   }
-  return true;
+  return null;
 }
 
 /** gate-push resolves delivery off `nudge.session`; a malformed nudge would
@@ -202,8 +214,9 @@ export function createGateHandlers(
           return { ok: false as const, error: `context exceeds ${CONTEXT_CAP_BYTES} bytes` };
         }
       }
-      if (payload?.origin !== undefined && !isValidOrigin(payload.origin)) {
-        return { ok: false as const, error: "origin must be an object of string fields with presentation form|wait" };
+      if (payload?.origin !== undefined) {
+        const originError = invalidOrigin(payload.origin);
+        if (originError) return { ok: false as const, error: originError };
       }
 
       const { row, supersededId } = store.open({
