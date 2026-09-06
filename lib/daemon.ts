@@ -91,6 +91,7 @@ import { installSignalHandlers, removeRuntimeFiles } from "./daemon/shutdown.ts"
 import { createEventsBus, type EventsBus } from "./daemon/events-bus.ts";
 import { createGatesStore, type GatesStore } from "./daemon/gates-store.ts";
 import { createGatePush, type GatePush } from "./daemon/gate-push.ts";
+import { createEscapeInjector } from "./daemon/gate-escape.ts";
 import { deliverToInbox } from "./daemon/inbox.ts";
 import { resolveInbox, resolveAllInboxes } from "./claude-registry.ts";
 import {
@@ -561,6 +562,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           resolveSession: resolveInbox,
           resolveAll: resolveAllInboxes,
           log,
+          injectEscape: createEscapeInjector(),
         });
         setPhase("events-db");
       },

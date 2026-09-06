@@ -178,3 +178,87 @@ describe("gate-push", () => {
     expect(delivered.map((d) => d.sessionId).sort()).toEqual(["shep-1", "shep-2"]);
   });
 });
+
+function w4Harness(opts: { deliverOk?: boolean; injectOk?: boolean; withInjector?: boolean } = {}) {
+  const store = freshStore();
+  const events: string[] = [];
+  const deliver = async (_socketPath: string, _body: string) => {
+    events.push("deliver");
+    return opts.deliverOk === false ? { ok: false as const, error: "boom" } : { ok: true as const };
+  };
+  const injectEscape = async (paneId: string) => {
+    events.push(`inject:${paneId}`);
+    return opts.injectOk === false
+      ? { ok: false as const, error: "pane_not_found: gone" }
+      : { ok: true as const };
+  };
+  const push = createGatePush({
+    store,
+    deliver,
+    resolveSession: (sessionId) => ({ socketPath: sessionId }),
+    log,
+    ...(opts.withInjector === false ? {} : { injectEscape }),
+  });
+  return { push, store, events };
+}
+
+function answeredFormGate(store: GatesStore, by: string, origin?: Record<string, unknown>) {
+  // arguments.length, not `origin ?? default`: the W4 loop passes an
+  // explicit `undefined` third argument to mean "no origin at all", which
+  // is distinct from the two-arg callers below that want the form default.
+  // `??` cannot tell those apart since both see `origin === undefined`.
+  const passedOrigin = arguments.length >= 3 ? origin : { presentation: "form", paneId: "pane-7" };
+  const row = store.open({
+    subject: "mr:https://gitlab.example.com/x/1", kind: "review-post", questions: qs(),
+    nudge: { session: "sess-1" }, pane: "pane-7",
+    origin: passedOrigin as never,
+  }).row;
+  store.answer(row.id, { q: "a" }, by);
+  return store.get(row.id)!;
+}
+
+describe("gate-push escape injection (W4)", () => {
+  test("injects Escape to origin.paneId strictly AFTER the doorbell accept, remote answer", async () => {
+    const { push, store, events } = w4Harness();
+    const row = answeredFormGate(store, "console");
+    await push.onAnswered(row);
+    expect(events).toEqual(["deliver", "inject:pane-7"]);
+    expect(store.get(row.id)!.delivery!.outcome).toBe("delivered");
+  });
+
+  test("no injection when the pane answered its own gate", async () => {
+    const { push, store, events } = w4Harness();
+    await push.onAnswered(answeredFormGate(store, "pane"));
+    expect(events).toEqual(["deliver"]);
+  });
+
+  test("no injection for wait presentation, missing paneId, or missing origin", async () => {
+    for (const origin of [{ presentation: "wait", paneId: "pane-7" }, { presentation: "form" }, undefined]) {
+      const { push, store, events } = w4Harness();
+      await push.onAnswered(answeredFormGate(store, "console", origin as never));
+      expect(events).toEqual(["deliver"]);
+    }
+  });
+
+  test("no injection when the doorbell failed (dead-pane degrades to reconcile-at-next-touch)", async () => {
+    const { push, store, events } = w4Harness({ deliverOk: false });
+    const row = answeredFormGate(store, "console");
+    await push.onAnswered(row);
+    expect(events).toEqual(["deliver"]);
+    expect(store.get(row.id)!.delivery!.outcome).toBe("dead-pane");
+  });
+
+  test("injection failure is non-fatal and leaves the delivery outcome delivered", async () => {
+    const { push, store, events } = w4Harness({ injectOk: false });
+    const row = answeredFormGate(store, "console");
+    await push.onAnswered(row);
+    expect(events).toEqual(["deliver", "inject:pane-7"]);
+    expect(store.get(row.id)!.delivery!.outcome).toBe("delivered");
+  });
+
+  test("no injector wired means today's doorbell-only behavior", async () => {
+    const { push, store, events } = w4Harness({ withInjector: false });
+    await push.onAnswered(answeredFormGate(store, "console"));
+    expect(events).toEqual(["deliver"]);
+  });
+});
