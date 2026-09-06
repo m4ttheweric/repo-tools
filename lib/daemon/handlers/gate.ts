@@ -6,9 +6,10 @@
 
 import type { Logger } from "pino";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
+import { gateOptionValue } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult } from "./types.ts";
 import type { EventsBus } from "../events-bus.ts";
-import type { GatesStore, GateQuestion, GateAnswer, GateRow } from "../gates-store.ts";
+import type { GatesStore, GateQuestion, GateAnswer, GateRow, GateOrigin } from "../gates-store.ts";
 import type { GatePush } from "../gate-push.ts";
 
 /** Callers that omit `push` (e.g. handler-only tests) get a no-op: gate:*
@@ -42,12 +43,46 @@ function isValidQuestion(q: unknown): q is GateQuestion {
     typeof cand.id === "string" && cand.id.length > 0 &&
     typeof cand.label === "string" &&
     typeof cand.multi === "boolean" &&
-    Array.isArray(cand.options) && cand.options.every((o) => typeof o === "string")
+    Array.isArray(cand.options) && cand.options.every(isValidOption)
   );
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+const LABEL_CAP_BYTES = 200;
+const CONTEXT_CAP_BYTES = 8192;
+
+function isValidOption(o: unknown): boolean {
+  if (typeof o === "string") return true;
+  if (!isPlainObject(o)) return false;
+  return typeof o.value === "string" && o.value.length > 0 && typeof o.label === "string";
+}
+
+function oversizedLabel(questions: GateQuestion[]): string | null {
+  for (const q of questions) {
+    for (const o of q.options) {
+      if (typeof o !== "string" && Buffer.byteLength(o.label, "utf8") > LABEL_CAP_BYTES) {
+        return `option label exceeds ${LABEL_CAP_BYTES} bytes (question "${q.id}")`;
+      }
+    }
+  }
+  return null;
+}
+
+const ORIGIN_STRING_KEYS: ReadonlySet<string> = new Set(["paneId", "tabId", "runId", "worktree"]);
+
+function isValidOrigin(v: unknown): v is GateOrigin {
+  if (!isPlainObject(v)) return false;
+  for (const [key, val] of Object.entries(v)) {
+    if (key === "presentation") {
+      if (val !== "form" && val !== "wait") return false;
+      continue;
+    }
+    if (!ORIGIN_STRING_KEYS.has(key) || typeof val !== "string") return false;
+  }
+  return true;
 }
 
 /** gate-push resolves delivery off `nudge.session`; a malformed nudge would
@@ -85,8 +120,9 @@ function validateAnswers(questions: GateQuestion[], answers: Record<string, unkn
     const values = isArray ? (value as unknown[]) : [value];
     if (!values.every((v) => typeof v === "string")) return `question ${qid} value must be a string`;
     if (question.options.length > 0) {
+      const members = question.options.map(gateOptionValue);
       for (const v of values as string[]) {
-        if (!question.options.includes(v)) return `answer for "${qid}" is not one of its options: "${v}"`;
+        if (!members.includes(v)) return `answer for "${qid}" is not one of its options: "${v}"`;
       }
     }
   }
@@ -158,10 +194,22 @@ export function createGateHandlers(
       if (payload?.nudge !== undefined && !isValidNudge(payload.nudge)) {
         return { ok: false as const, error: "nudge must be an object with a string session" };
       }
+      const labelError = oversizedLabel(questions);
+      if (labelError) return { ok: false as const, error: labelError };
+      if (payload?.context !== undefined) {
+        if (typeof payload.context !== "string") return { ok: false as const, error: "context must be a string" };
+        if (Buffer.byteLength(payload.context, "utf8") > CONTEXT_CAP_BYTES) {
+          return { ok: false as const, error: `context exceeds ${CONTEXT_CAP_BYTES} bytes` };
+        }
+      }
+      if (payload?.origin !== undefined && !isValidOrigin(payload.origin)) {
+        return { ok: false as const, error: "origin must be an object of string fields with presentation form|wait" };
+      }
 
       const { row, supersededId } = store.open({
         subject, kind, questions,
         meta: payload?.meta, agent: payload?.agent, pane: payload?.pane, nudge: payload?.nudge,
+        context: payload?.context, origin: payload?.origin,
       });
 
       // One timestamp for both the journal row and the broadcast frame (events:emit idiom).
@@ -170,6 +218,7 @@ export function createGateHandlers(
       const eventPayload = {
         id: row.id, subject: row.subject, kind: row.kind, questions: row.questions,
         meta: row.meta, agent: row.agent, paneId: row.pane, label,
+        context: row.context, origin: row.origin,
       };
       emitGateEvent(`gate/opened/${row.id}`, eventPayload, emittedAt);
 

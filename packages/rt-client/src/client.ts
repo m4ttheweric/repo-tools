@@ -451,7 +451,7 @@ export function gateOpen(
   o: RtClientOptions = {},
 ): Promise<RtResponse<Commands["gate:open"]["data"]>> {
   const payload: Record<string, unknown> = { subject: a.subject, kind: a.kind, questions: a.questions };
-  for (const k of ["meta", "agent", "pane", "nudge"] as const) if (a[k] !== undefined) payload[k] = a[k];
+  for (const k of ["meta", "agent", "pane", "nudge", "context", "origin"] as const) if (a[k] !== undefined) payload[k] = a[k];
   return rtCommand<Commands["gate:open"]["data"]>("gate:open", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
