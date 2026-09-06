@@ -91,6 +91,7 @@ import { installSignalHandlers, removeRuntimeFiles } from "./daemon/shutdown.ts"
 import { createEventsBus, type EventsBus } from "./daemon/events-bus.ts";
 import { createGatesStore, type GatesStore } from "./daemon/gates-store.ts";
 import { createGatePush, type GatePush } from "./daemon/gate-push.ts";
+import { createEscapeInjector } from "./daemon/gate-escape.ts";
 import { deliverToInbox } from "./daemon/inbox.ts";
 import { resolveInbox, resolveAllInboxes } from "./claude-registry.ts";
 import {
@@ -561,6 +562,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           resolveSession: resolveInbox,
           resolveAll: resolveAllInboxes,
           log,
+          injectEscape: createEscapeInjector(),
         });
         setPhase("events-db");
       },
@@ -795,7 +797,12 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
                 typeof e.pattern === "string" && typeof e.category === "string" &&
                 typeof e.title === "string" && typeof e.message === "string"
               ) {
-                rules.push({ pattern: e.pattern, category: e.category, title: e.title, message: e.message });
+                rules.push({
+                  pattern: e.pattern, category: e.category, title: e.title, message: e.message,
+                  ...(typeof (e as { subjectPrefix?: unknown }).subjectPrefix === "string"
+                    ? { subjectPrefix: (e as { subjectPrefix: string }).subjectPrefix }
+                    : {}),
+                });
               } else {
                 notifyBridgeLog.warn({ entry }, "rt.notify.eventBridges: skipping invalid rule entry");
               }

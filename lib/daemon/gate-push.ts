@@ -18,6 +18,8 @@
 import type { Logger } from "pino";
 import { deliverToInbox, wrapCrossSession } from "./inbox.ts";
 import type { GateRow, GateSubscription, GatesStore } from "./gates-store.ts";
+import { GATE_BY_PANE } from "./gates-store.ts";
+import type { EscapeInjector } from "./gate-escape.ts";
 
 export const GATE_ANSWERED_PHRASE = (id: string) =>
   `[gate] ${id} answered elsewhere; re-read the registry and proceed on the recorded answer.`;
@@ -49,6 +51,7 @@ export function createGatePush(opts: {
   resolveAll?: () => Map<string, { socketPath: string }>;
   log: Logger;
   deadAfterFailures?: number;
+  injectEscape?: EscapeInjector;
 }): GatePush {
   const { store, deliver, resolveSession, resolveAll, log } = opts;
   const deadAfterFailures = opts.deadAfterFailures ?? DEFAULT_DEAD_AFTER_FAILURES;
@@ -82,6 +85,16 @@ export function createGatePush(opts: {
     const body = wrapCrossSession("gate-facility", GATE_ANSWERED_PHRASE(row.id));
     const ok = await safeDeliver(binding.socketPath, body, { gateId: row.id, sessionId });
     store.markDelivery(row.id, ok ? "delivered" : "dead-pane");
+    // Escape only ever follows an ACCEPTED doorbell: the dismissed form's
+    // next input must be the queued frame, and a dead pane has nothing
+    // queued to find.
+    if (!ok || !opts.injectEscape) return;
+    if (row.origin?.presentation !== "form" || !row.origin.paneId) return;
+    if (row.answer?.by === GATE_BY_PANE) return;
+    const injected = await opts.injectEscape(row.origin.paneId);
+    if (!injected.ok) {
+      log.warn({ gateId: row.id, paneId: row.origin.paneId, error: injected.error }, "gate-push: escape injection failed; doorbell-only");
+    }
   }
 
   function recordSubscriptionOutcome(sub: GateSubscription, ok: boolean): void {

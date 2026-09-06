@@ -95,11 +95,27 @@ export interface EventsBusEvent { id: number; topic: string; payload: unknown; e
 export const GATE_BY_PANE = "pane";
 
 export type GateStatus = "open" | "answered" | "parked" | "closed";
-export interface GateQuestion { id: string; label: string; multi: boolean; options: string[] }
+export type GateOption = string | { value: string; label: string };
+export interface GateOrigin {
+  paneId?: string;
+  tabId?: string;
+  runId?: string;
+  worktree?: string;
+  presentation?: "form" | "wait";
+}
+export interface GateQuestion { id: string; label: string; multi: boolean; options: GateOption[] }
+export function gateOptionValue(o: GateOption): string {
+  return typeof o === "string" ? o : o.value;
+}
+export function gateOptionLabel(o: GateOption): string {
+  return typeof o === "string" ? o : (o.label || o.value);
+}
 export interface GateAnswer { answers: Record<string, string | string[] | { value: string | string[]; note?: string }>; by: string; answeredAt: number }
 export interface GateRow {
   id: string; subject: string; kind: string;
   questions: GateQuestion[]; meta: Record<string, unknown> | null;
+  context?: string | null;
+  origin?: GateOrigin | null;
   status: GateStatus; answer: GateAnswer | null;
   openedAt: number; parkedAt: number | null; closedAt: number | null;
   closedReason: "abandoned" | "superseded" | "pruned" | null;
@@ -574,7 +590,7 @@ export interface Commands {
   "freshness:reconcile": { payload: Record<string, never>; data: unknown };
 
   // ─── Gate facility (BOARD-20/21) ─────────────────────────────────────────
-  "gate:open": { payload: { subject: string; kind: string; questions: GateQuestion[]; meta?: Record<string, unknown>; agent?: string; pane?: string; nudge?: { session: string } }; data: { id: string; supersededId: string | null } };
+  "gate:open": { payload: { subject: string; kind: string; questions: GateQuestion[]; meta?: Record<string, unknown>; agent?: string; pane?: string; nudge?: { session: string }; context?: string; origin?: GateOrigin }; data: { id: string; supersededId: string | null } };
   /**
    * A CAS loss is a DEFINED OUTCOME, not an error: `ok:true` with
    * `conflict:true` and the WINNING row, so every consumer gets the winner

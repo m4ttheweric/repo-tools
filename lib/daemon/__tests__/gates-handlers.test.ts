@@ -449,3 +449,91 @@ describe("gate:subscribe / gate:unsubscribe / gate:subscriptions", () => {
     expect(bySession.data.subscriptions[0]!.session).toBe("s2");
   });
 });
+
+describe("gate:open W4 fields", () => {
+  test("accepts {value,label} options; membership validates against value only", async () => {
+    const { handlers } = harness();
+    const r = await handlers["gate:open"]({
+      subject: "run:r1", kind: "clarify",
+      questions: [{ id: "q", label: "Pick", multi: false, options: [{ value: "a", label: "Option A (2)" }, "b"] }],
+    });
+    expect(r.ok).toBe(true);
+    const id = (r as { data: { id: string } }).data.id;
+    const byLabel = await handlers["gate:answer"]({ id, answers: { q: "Option A (2)" }, by: "console" });
+    expect(byLabel.ok).toBe(false);
+    const byValue = await handlers["gate:answer"]({ id, answers: { q: "a" }, by: "console" });
+    expect(byValue.ok).toBe(true);
+  });
+
+  test("rejects an option label over 200 bytes, naming the cap", async () => {
+    const { handlers } = harness();
+    const r = await handlers["gate:open"]({
+      subject: "run:r1", kind: "clarify",
+      questions: [{ id: "q", label: "Pick", multi: false, options: [{ value: "a", label: "x".repeat(201) }] }],
+    });
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toContain("200 bytes");
+  });
+
+  test("option label cap is byte-based, not char-based: a 2-byte char at 100 reps (200 bytes) is accepted, 101 reps (202 bytes) is rejected", async () => {
+    const { handlers } = harness();
+    const at = await handlers["gate:open"]({
+      subject: "run:r1", kind: "clarify",
+      questions: [{ id: "q", label: "Pick", multi: false, options: [{ value: "a", label: "é".repeat(100) }] }],
+    });
+    expect(at.ok).toBe(true);
+    const over = await handlers["gate:open"]({
+      subject: "run:r1", kind: "clarify",
+      questions: [{ id: "q", label: "Pick", multi: false, options: [{ value: "a", label: "é".repeat(101) }] }],
+    });
+    expect(over.ok).toBe(false);
+    expect((over as { error: string }).error).toContain("200 bytes");
+  });
+
+  test("rejects context over 8192 bytes, naming the cap; accepts one at the cap", async () => {
+    const { handlers } = harness();
+    const over = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), context: "x".repeat(8193) });
+    expect(over.ok).toBe(false);
+    expect((over as { error: string }).error).toContain("8192 bytes");
+    const at = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", context: "x".repeat(8192), questions: qs() });
+    expect(at.ok).toBe(true);
+  });
+
+  test("context cap is byte-based, not char-based: a 2-byte char at 4096 reps (8192 bytes) is accepted, 4097 reps (8194 bytes) is rejected", async () => {
+    const { handlers } = harness();
+    const at = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), context: "é".repeat(4096) });
+    expect(at.ok).toBe(true);
+    const over = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), context: "é".repeat(4097) });
+    expect(over.ok).toBe(false);
+    expect((over as { error: string }).error).toContain("8192 bytes");
+  });
+
+  test("stores context and origin, serves them on the row AND the opened event payload", async () => {
+    const { handlers, store, emitted } = harness();
+    const origin = { paneId: "p1", worktree: "/tmp/wt", presentation: "form" as const };
+    const r = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), context: "the material", origin });
+    const id = (r as { data: { id: string } }).data.id;
+    const row = store.get(id)!;
+    expect(row.context).toBe("the material");
+    expect(row.origin).toEqual(origin);
+    const opened = emitted.find((e) => e.topic === `gate/opened/${id}`)!;
+    expect((opened.payload as { context: string }).context).toBe("the material");
+    expect((opened.payload as { origin: unknown }).origin).toEqual(origin);
+  });
+
+  test("rejects a malformed origin: unknown key, non-string value, bad presentation", async () => {
+    const { handlers } = harness();
+    for (const origin of [{ bogus: "x" }, { paneId: 7 }, { presentation: "maybe" }]) {
+      const r = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), origin: origin as never });
+      expect(r.ok).toBe(false);
+    }
+  });
+
+  test("old-style rows: no context/origin round-trips as null", async () => {
+    const { handlers, store } = harness();
+    const r = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs() });
+    const row = store.get((r as { data: { id: string } }).data.id)!;
+    expect(row.context).toBeNull();
+    expect(row.origin).toBeNull();
+  });
+});

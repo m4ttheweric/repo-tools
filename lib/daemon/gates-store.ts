@@ -17,10 +17,11 @@ import {
   type GateQuestion,
   type GateAnswer,
   type GateRow,
+  type GateOrigin,
   type GateSubscription,
 } from "../../packages/rt-client/src/commands.ts";
 
-export type { GateStatus, GateQuestion, GateAnswer, GateRow, GateSubscription };
+export type { GateStatus, GateQuestion, GateAnswer, GateRow, GateOrigin, GateSubscription };
 export { GATE_BY_PANE };
 
 export type WaitResult =
@@ -48,6 +49,8 @@ export interface GatesStore {
     agent?: string;
     pane?: string;
     nudge?: { session: string };
+    context?: string;
+    origin?: GateOrigin;
   }): OpenResult;
   get(id: string): GateRow | null;
   list(filter: { open?: boolean; subjectPrefix?: string; kind?: string; limit?: number; cursor?: number }): { gates: GateRow[]; cursor: number };
@@ -88,6 +91,8 @@ interface GateColumns {
   nudge: string | null;
   delivery: string | null;
   released: number;
+  context: string | null;
+  origin: string | null;
 }
 
 interface SubscriptionColumns {
@@ -128,6 +133,8 @@ function rowToGate(row: GateColumns): GateRow {
     nudge: row.nudge == null ? null : JSON.parse(row.nudge),
     delivery: row.delivery == null ? null : JSON.parse(row.delivery),
     released: row.released === 1,
+    context: row.context ?? null,
+    origin: row.origin == null ? null : JSON.parse(row.origin),
   };
 }
 
@@ -204,7 +211,9 @@ export function createGatesStore(opts: {
       pane          TEXT,
       nudge         TEXT,
       delivery      TEXT,
-      released      INTEGER NOT NULL DEFAULT 0
+      released      INTEGER NOT NULL DEFAULT 0,
+      context       TEXT,
+      origin        TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_gates_subject_kind_status ON gates(subject, kind, status);
 
@@ -218,12 +227,22 @@ export function createGatesStore(opts: {
     );
   `);
 
+  // Idempotent migration for a gates.db predating the W4 columns: CREATE
+  // TABLE IF NOT EXISTS above never adds columns to an existing table.
+  const gateCols = new Set(
+    (db.query("PRAGMA table_info(gates)").all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  for (const col of ["context", "origin"]) {
+    if (!gateCols.has(col)) db.exec(`ALTER TABLE gates ADD COLUMN ${col} TEXT;`);
+  }
+
   const getStmt = db.prepare("SELECT * FROM gates WHERE id = ?");
   const insertStmt = db.prepare(`
     INSERT INTO gates (
       id, subject, kind, questions, meta, status, answer,
-      openedAt, parkedAt, closedAt, closedReason, agent, pane, nudge, delivery, released
-    ) VALUES (?, ?, ?, ?, ?, 'open', NULL, ?, NULL, NULL, NULL, ?, ?, ?, NULL, 0)
+      openedAt, parkedAt, closedAt, closedReason, agent, pane, nudge, delivery, released,
+      context, origin
+    ) VALUES (?, ?, ?, ?, ?, 'open', NULL, ?, NULL, NULL, NULL, ?, ?, ?, NULL, 0, ?, ?)
   `);
   const supersedeStmt = db.prepare(
     "UPDATE gates SET status = 'closed', closedReason = 'superseded', closedAt = ? WHERE subject = ? AND kind = ? AND status = 'open'",
@@ -285,6 +304,8 @@ export function createGatesStore(opts: {
     agent: string | null;
     pane: string | null;
     nudge: string | null;
+    context: string | null;
+    origin: string | null;
   }): string | null => {
     const existing = findOpenSameKindStmt.get(input.subject, input.kind) as { id: string } | undefined;
     if (existing) supersedeStmt.run(input.openedAt, input.subject, input.kind);
@@ -298,6 +319,8 @@ export function createGatesStore(opts: {
       input.agent,
       input.pane,
       input.nudge,
+      input.context,
+      input.origin,
     );
     return existing?.id ?? null;
   });
@@ -364,6 +387,8 @@ export function createGatesStore(opts: {
         agent: input.agent ?? null,
         pane: input.pane ?? null,
         nudge: input.nudge ? JSON.stringify(input.nudge) : null,
+        context: input.context ?? null,
+        origin: input.origin ? JSON.stringify(input.origin) : null,
       });
       log.debug({ id, subject: input.subject, kind: input.kind, supersededId }, "gate opened");
       // The supersede path must not bypass wake-up: a waiter on the

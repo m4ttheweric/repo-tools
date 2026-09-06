@@ -44,6 +44,16 @@ describe("buildOpenPayload", () => {
       nudge: { session: "!7" },
     });
   });
+
+  test("--context is raw text and --origin is JSON, both carried through", () => {
+    const payload = buildOpenPayload([
+      "--subject", "run:abc123", "--kind", "approval", "--questions", "[]",
+      "--context", "the failing check output",
+      "--origin", '{"paneId":"p1","worktree":"/tmp/wt","presentation":"form"}',
+    ]);
+    expect(payload.context).toBe("the failing check output");
+    expect(payload.origin).toEqual({ paneId: "p1", worktree: "/tmp/wt", presentation: "form" });
+  });
 });
 
 // ─── answer ──────────────────────────────────────────────────────────────────

@@ -38,6 +38,7 @@ function fail(msg: string): never {
 // parse as positional.
 const FLAGS_WITH_VALUES = new Set([
   "--subject", "--kind", "--questions", "--meta", "--agent", "--pane", "--nudge",
+  "--context", "--origin",
   "--answers", "--by", "--timeout", "--subject-prefix", "--reason", "--session",
   "--limit", "--cursor",
 ]);
@@ -76,7 +77,7 @@ function unwrap<T>(res: RtResponse<T>, label: string): T {
 // ─── open ────────────────────────────────────────────────────────────────────
 
 const OPEN_USAGE =
-  "usage: rt gate open --subject <s> --kind <k> --questions <json> [--meta <json>] [--agent <id>] [--pane <id>] [--nudge <json>]";
+  "usage: rt gate open --subject <s> --kind <k> --questions <json> [--meta <json>] [--agent <id>] [--pane <id>] [--nudge <json>] [--context <text>] [--origin <json>]";
 
 export function buildOpenPayload(args: string[]): Commands["gate:open"]["payload"] {
   const subject = flagValue(args, "--subject");
@@ -97,6 +98,10 @@ export function buildOpenPayload(args: string[]): Commands["gate:open"]["payload
   if (pane !== undefined) payload.pane = pane;
   const nudge = parseJsonFlag(args, "--nudge");
   if (nudge !== undefined) payload.nudge = nudge as { session: string };
+  const context = flagValue(args, "--context");
+  if (context !== undefined) payload.context = context;
+  const origin = parseJsonFlag(args, "--origin");
+  if (origin !== undefined) payload.origin = origin as Commands["gate:open"]["payload"]["origin"];
   return payload;
 }
 

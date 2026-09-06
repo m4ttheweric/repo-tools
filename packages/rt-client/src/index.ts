@@ -56,7 +56,7 @@ export {
   gateSubscriptions,
 } from "./client.ts";
 
-export { COMMAND_NAMES, GATE_BY_PANE } from "./commands.ts";
+export { COMMAND_NAMES, GATE_BY_PANE, gateOptionValue, gateOptionLabel } from "./commands.ts";
 export type {
   Discussion,
   DemandDecl,
@@ -94,6 +94,8 @@ export type {
   PaneSendResult,
   PaneFocusResult,
   GateStatus,
+  GateOption,
+  GateOrigin,
   GateQuestion,
   GateAnswer,
   GateRow,

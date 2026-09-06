@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -270,4 +271,33 @@ describe("gates store — sweep", () => {
     expect(removed).toBe(0); // the floor (1) covers this single terminal row
     expect(s.get(id)).not.toBeNull();
   });
+});
+
+test("an existing gates.db without the W4 columns gains them on open (ALTER migration)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "rt-gates-migrate-"));
+  dirs.push(dir);
+  const path = join(dir, "gates.db");
+  const raw = new Database(path, { create: true });
+  raw.exec(`
+    CREATE TABLE gates (
+      id TEXT PRIMARY KEY, subject TEXT NOT NULL, kind TEXT NOT NULL,
+      questions TEXT NOT NULL, meta TEXT, status TEXT NOT NULL, answer TEXT,
+      openedAt INTEGER NOT NULL, parkedAt INTEGER, closedAt INTEGER,
+      closedReason TEXT, agent TEXT, pane TEXT, nudge TEXT, delivery TEXT,
+      released INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE gate_subscriptions (
+      id TEXT PRIMARY KEY, subjectPrefix TEXT NOT NULL, session TEXT NOT NULL,
+      createdAt INTEGER NOT NULL, lastDelivery TEXT, dead INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  raw.close();
+  const store = createGatesStore({ dbPath: path, log });
+  const row = store.open({
+    subject: "run:r1", kind: "k", questions: qs(),
+    context: "why", origin: { presentation: "form", paneId: "p1" },
+  }).row;
+  expect(row.context).toBe("why");
+  expect(row.origin).toEqual({ presentation: "form", paneId: "p1" });
+  store.close_();
 });
