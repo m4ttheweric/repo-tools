@@ -104,6 +104,23 @@ function isValidNudge(v: unknown): v is { session: string } {
   return isPlainObject(v) && typeof v.session === "string" && v.session.length > 0;
 }
 
+/** A wrapper relaunch opens a fresh gate that supersedes its own prior one
+    from the SAME pane; delivering the closed-doorbell there would Escape
+    the pane's brand-new form, an avoidable self-interrupt (recoverable via
+    the queued doorbell, but not worth causing). Compares origin.paneId
+    first, falling back to nudge.session when either paneId is absent; with
+    nothing comparable on either axis, the two gates are treated as
+    different panes and the push proceeds. */
+function sameOpenerPane(a: GateRow, b: GateRow): boolean {
+  const paneA = a.origin?.paneId;
+  const paneB = b.origin?.paneId;
+  if (paneA && paneB) return paneA === paneB;
+  const sessionA = a.nudge?.session;
+  const sessionB = b.nudge?.session;
+  if (sessionA && sessionB) return sessionA === sessionB;
+  return false;
+}
+
 /** Both wire shapes carry the same value underneath: bare, or `{value, note?}`
     when the panel attaches free text. Validation reads only the value. */
 function unwrapAnswerValue(raw: unknown): unknown {
@@ -249,7 +266,7 @@ export function createGateHandlers(
         // on the superseded gate never gets an answer, so it needs the same
         // doorbell-then-Escape delivery onAnswered gives a real answer.
         const supersededRow = store.get(supersededId);
-        if (supersededRow) {
+        if (supersededRow && !sameOpenerPane(row, supersededRow)) {
           firePush(push.onClosed(supersededRow), { verb: "gate:open", gateId: supersededRow.id });
         }
       }

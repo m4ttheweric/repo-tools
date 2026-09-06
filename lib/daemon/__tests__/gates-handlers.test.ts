@@ -6,6 +6,7 @@ import pino from "pino";
 import { createGatesStore, type GatesStore, type GateQuestion } from "../gates-store.ts";
 import { createGateHandlers } from "../handlers/gate.ts";
 import type { EventsBus } from "../events-bus.ts";
+import type { GatePush } from "../gate-push.ts";
 
 const log = pino({ level: "silent" });
 
@@ -26,7 +27,7 @@ function twoQuestions(): GateQuestion[] {
 
 /** Real store on a fresh tmp db, a fake bus capturing every emitAt call, and
     a fake broadcast capturing every frame -- mirrors events-handlers.test.ts. */
-function harness() {
+function harness(opts: { push?: GatePush } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "rt-gates-handlers-"));
   dirs.push(dir);
   const store: GatesStore = createGatesStore({ dbPath: join(dir, "gates.db"), log });
@@ -39,8 +40,20 @@ function harness() {
     },
   } as unknown as EventsBus;
   const broadcasts: Array<{ type: string; data: any }> = [];
-  const handlers = createGateHandlers(store, bus, (type, data) => broadcasts.push({ type, data }));
+  const handlers = createGateHandlers(store, bus, (type, data) => broadcasts.push({ type, data }), { push: opts.push });
   return { handlers, store, emitted, broadcasts };
+}
+
+/** Records every gateId passed to GatePush.onClosed; onAnswered/onOpened are
+    no-ops -- only the supersede/close wiring under test here calls onClosed. */
+function closedPushSpy() {
+  const closedIds: string[] = [];
+  const push: GatePush = {
+    onAnswered: async () => {},
+    onOpened: async () => {},
+    onClosed: async (row) => { closedIds.push(row.id); },
+  };
+  return { push, closedIds };
 }
 
 async function open(handlers: ReturnType<typeof createGateHandlers>, opts: { pane?: string } = {}) {
@@ -565,5 +578,51 @@ describe("gate:open W4 fields", () => {
     const row = store.get((r as { data: { id: string } }).data.id)!;
     expect(row.context).toBeNull();
     expect(row.origin).toBeNull();
+  });
+});
+
+describe("gate:open supersede push (final-review advisory: no self-Escape on relaunch)", () => {
+  test("same-pane supersede (wrapper relaunch from its own paneId) fires no doorbell/Escape", async () => {
+    const { push, closedIds } = closedPushSpy();
+    const { handlers } = harness({ push });
+    await handlers["gate:open"]({
+      subject: "mr:https://x/1", kind: "review-post", questions: qs(),
+      nudge: { session: "sess-1" }, origin: { presentation: "form", paneId: "pane-7" } as never,
+    });
+    await handlers["gate:open"]({
+      subject: "mr:https://x/1", kind: "review-post", questions: qs(),
+      nudge: { session: "sess-2" }, origin: { presentation: "form", paneId: "pane-7" } as never,
+    });
+    expect(closedIds).toEqual([]);
+  });
+
+  test("different-pane supersede still fires the doorbell/Escape delivery", async () => {
+    const { push, closedIds } = closedPushSpy();
+    const { handlers } = harness({ push });
+    const first = await handlers["gate:open"]({
+      subject: "mr:https://x/1", kind: "review-post", questions: qs(),
+      nudge: { session: "sess-1" }, origin: { presentation: "form", paneId: "pane-7" } as never,
+    });
+    const firstId = (first as { data: { id: string } }).data.id;
+    await handlers["gate:open"]({
+      subject: "mr:https://x/1", kind: "review-post", questions: qs(),
+      nudge: { session: "sess-2" }, origin: { presentation: "form", paneId: "pane-8" } as never,
+    });
+    expect(closedIds).toEqual([firstId]);
+  });
+
+  test("neither paneId nor nudge.session comparable: falls back to keeping the push", async () => {
+    const { push, closedIds } = closedPushSpy();
+    const { handlers } = harness({ push });
+    const first = await handlers["gate:open"]({
+      subject: "mr:https://x/1", kind: "review-post", questions: qs(),
+      nudge: { session: "sess-1" }, origin: { presentation: "form" } as never,
+    });
+    const firstId = (first as { data: { id: string } }).data.id;
+    await handlers["gate:open"]({
+      subject: "mr:https://x/1", kind: "review-post", questions: qs(),
+      nudge: { session: "sess-2" }, origin: { presentation: "form" } as never,
+    });
+    expect(closedIds).toEqual([firstId]);
   });
 });
