@@ -102,8 +102,10 @@ jobs:
           ')
           # Monorepo rows tag app-prefixed: chat and console can share a bare
           # version number, and an unprefixed v tag would collide on the
-          # shared repo.
+          # shared repo. The ref-format check rejects versions like "1..0"
+          # here, before a leg packages an artifact whose tag can never push.
           TAG="${SUBDIR:+$APP_NAME-}v$VERSION"
+          git check-ref-format "refs/tags/$TAG" || { echo "::error::version $VERSION forms an invalid tag $TAG"; exit 1; }
           {
             echo "APP_DIR=$APP_DIR"
             echo "BUILD_CMD=$BUILD_CMD"

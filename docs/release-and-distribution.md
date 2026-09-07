@@ -180,16 +180,19 @@ Two declarations drive it, each owned by the party that knows it:
 - `repo` on the deps.lock row (`"m4ttstack/<repo>"`) marks the app
   buildable. Rows without it (jq, node, cloudflared...) are third-party
   pins the pipeline never touches.
-- `bundle: { build, artifact }` in the app repo's `mattstack.deck.json` is
-  the compile recipe, run verbatim at the repo root. A dispatched app whose
+- `bundle: { build, artifact }` in the app's `mattstack.deck.json` is the
+  compile recipe, run verbatim at the app's root: the repo root for
+  single-repo rows, `subdir` for monorepo rows. A dispatched app whose
   manifest lacks it fails that leg loudly with the remediation; that
   failure IS the pairing enforcement between the two declarations.
 
-Version and tag rules: the tag is `v<version>` from the app repo's root
+Version and tag rules: the version comes from the app root's
 `package.json` (a missing version fails the leg, never a `vundefined`
-release). The guard checks the git tag ref, so a bare pre-existing tag
-refuses just like a full release... published artifacts are immutable; bump
-the version instead. One leg failing never blocks the others
+release); the tag is `v<version>` for single-repo rows and
+`<name>-v<version>` for monorepo rows. The guard checks the git tag ref,
+so a bare pre-existing tag refuses just like a full release... published
+artifacts are immutable; bump the version instead. One leg failing never
+blocks the others
 (`fail-fast: false`); the PR carries only the apps that succeeded.
 
 ### Adding a managed app to the bundle (the checklist that built console and chat)
@@ -238,12 +241,11 @@ Manual preconditions, once, both Actions secrets on repo-tools:
 - `MATTSTACK_RELEASE_TOKEN` ... a fine-grained org PAT with contents
   read+write on the m4ttstack app repos and contents write plus
   pull-requests write on repo-tools.
-- `NPM_READ_TOKEN` ... an npm token with READ access to the private
-  `@mattstack` org packages (deck and board depend on `@mattstack/tui-kit`,
-  published private). Read-only on purpose: the build job writes it to
-  `~/.npmrc` and then runs the app's own build recipe, which can read that
-  file. Without it those apps fail with a bare `404` on the package, which
-  reads like a missing package rather than a missing credential.
+- `NPM_READ_TOKEN` ... no longer used: tui-kit and the other platform
+  packages resolve in-workspace since the apps fold-in, and the registry
+  deps the legs still reach are public. The secret can stay configured
+  harmlessly; reintroduce its npmrc step only if a leg ever resolves a
+  restricted registry package again.
 
 Recovery: a release that published but whose PR step failed is durable and
 safe... re-run the pr job, or hand-edit deps.lock from the url and sha in
