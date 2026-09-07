@@ -155,6 +155,19 @@ carrying a `repo` field; build runs on macos-15 (arm64), one leg per app;
 release publishes the packaged tarballs; the PR job opens one deps.lock PR on
 `bundle-ci/<run_id>`. Nothing pushes to main.
 
+Since the apps fold-in (m4ttstack/apps, 2026-09-06): chat, console, board and
+deck are monorepo rows whose deps.lock entry carries `subdir` (e.g.
+`apps/chat`) alongside `repo`. A subdir leg installs the workspace and builds
+tui-kit's dist before the app's own recipe (recipe and version read from the
+subdir), and its releases land on m4ttstack/apps under app-prefixed tags
+(`chat-v0.1.1`) because two apps can share a bare version. Rows without
+`subdir` (gitq) keep plain `v` tags and single-repo behavior. There is no npm
+auth step: platform packages resolve in-workspace and every remaining
+registry dep is public. Old app repos stay unarchived until a SHIPPED
+mattstack.app release carries a deps.lock pointing at m4ttstack/apps release
+tarballs; archiving earlier would brick rebuilds of older tags (the cutover
+brief lives at docs/bundle-cutover-brief.md in m4ttstack/apps).
+
 Release is a separate job on purpose. The build job runs each app repo's own
 recipe verbatim, and a recipe can write `GITHUB_ENV` and `GITHUB_PATH`, so no
 step holding the release token may follow it in the same job... a poisoned

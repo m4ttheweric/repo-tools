@@ -20,22 +20,31 @@ const LOCK = JSON.stringify({
 
 test("all selects every repo-bearing row, pending or bundled", () => {
   expect(planMatrix(LOCK, "all")).toEqual([
-    { name: "deck", repo: "m4ttstack/deck" },
-    { name: "gitq", repo: "m4ttstack/gitq" },
+    { name: "deck", repo: "m4ttstack/deck", subdir: "" },
+    { name: "gitq", repo: "m4ttstack/gitq", subdir: "" },
+  ]);
+});
+
+test("a monorepo row's subdir passes through to its matrix leg", () => {
+  const lock = JSON.parse(LOCK);
+  lock.tools[1].repo = "m4ttstack/apps";
+  lock.tools[1].subdir = "apps/deck";
+  expect(planMatrix(JSON.stringify(lock), "deck")).toEqual([
+    { name: "deck", repo: "m4ttstack/apps", subdir: "apps/deck" },
   ]);
 });
 
 test("named subset, whitespace tolerated", () => {
   expect(planMatrix(LOCK, " deck , gitq ")).toEqual([
-    { name: "deck", repo: "m4ttstack/deck" },
-    { name: "gitq", repo: "m4ttstack/gitq" },
+    { name: "deck", repo: "m4ttstack/deck", subdir: "" },
+    { name: "gitq", repo: "m4ttstack/gitq", subdir: "" },
   ]);
 });
 
 test("a repeated name yields one leg, not a duplicate artifact name", () => {
   expect(planMatrix(LOCK, "deck,deck,gitq")).toEqual([
-    { name: "deck", repo: "m4ttstack/deck" },
-    { name: "gitq", repo: "m4ttstack/gitq" },
+    { name: "deck", repo: "m4ttstack/deck", subdir: "" },
+    { name: "gitq", repo: "m4ttstack/gitq", subdir: "" },
   ]);
 });
 

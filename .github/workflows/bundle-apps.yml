@@ -65,40 +65,49 @@ jobs:
           gh repo clone "$APP_REPO" app -- --depth 1 --branch main
           SOURCE_SHA=$(git -C app rev-parse HEAD)
           echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
-      # Some apps depend on private @mattstack packages, which bun cannot
-      # resolve without a token: the failure is a bare 404 that reads like a
-      # missing package rather than a missing credential. The token is
-      # deliberately READ-only and org-scoped, because the recipe this job
-      # runs next can read the file it is written to.
-      - name: Authenticate npm for private packages
-        env:
-          NPM_READ_TOKEN: ${{ secrets.NPM_READ_TOKEN }}
+      # No npm auth step: the monorepo's platform packages resolve in-workspace
+      # and every remaining @mattstack registry dep is public (verified against
+      # the registry unauthenticated, 2026-09-06). Reintroduce a READ-only
+      # token here if a restricted registry dep ever returns.
+      # A monorepo leg installs the workspace and builds tui-kit's dist first:
+      # board and deck consume it as built output, and the script probe keeps
+      # this inert for repos without that script.
+      - name: Prepare monorepo workspace
+        if: ${{ matrix.subdir != '' }}
         run: |
-          if [ -z "$NPM_READ_TOKEN" ]; then
-            echo "::warning::NPM_READ_TOKEN is not set; an app with private deps will fail to install"
-            exit 0
+          (cd app && bun install --frozen-lockfile)
+          if bun -e 'const s = JSON.parse(await Bun.file("app/package.json").text()).scripts ?? {}; process.exit(s["tui-kit:build"] ? 0 : 1)'; then
+            (cd app && bun run tui-kit:build)
           fi
-          printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_READ_TOKEN" >> "$HOME/.npmrc"
-          chmod 600 "$HOME/.npmrc"
       - name: Read and validate bundle recipe
+        env:
+          APP_NAME: ${{ matrix.name }}
+          SUBDIR: ${{ matrix.subdir }}
         run: |
-          bun scripts/bundle-ci/validate-manifest.ts app/mattstack.deck.json > recipe.json
+          APP_DIR="app${SUBDIR:+/$SUBDIR}"
+          bun scripts/bundle-ci/validate-manifest.ts "$APP_DIR/mattstack.deck.json" > recipe.json
           BUILD_CMD=$(bun -e 'console.log(JSON.parse(await Bun.file("recipe.json").text()).build)')
           ARTIFACT=$(bun -e 'console.log(JSON.parse(await Bun.file("recipe.json").text()).artifact)')
           # The version is app-controlled and lands in GITHUB_ENV, where a
           # newline would start a new variable, so the shape is constrained
           # here rather than trusted. No version at all must fail too, not
           # tag vundefined.
-          VERSION=$(bun -e '
-            const v = JSON.parse(await Bun.file("app/package.json").text()).version;
+          VERSION=$(APP_DIR="$APP_DIR" bun -e '
+            const v = JSON.parse(await Bun.file(process.env.APP_DIR + "/package.json").text()).version;
             if (typeof v !== "string" || !v) throw new Error("app package.json has no version");
             if (!/^[A-Za-z0-9._+-]+$/.test(v)) throw new Error("unsupported version string: " + v);
             console.log(v);
           ')
+          # Monorepo rows tag app-prefixed: chat and console can share a bare
+          # version number, and an unprefixed v tag would collide on the
+          # shared repo.
+          TAG="${SUBDIR:+$APP_NAME-}v$VERSION"
           {
+            echo "APP_DIR=$APP_DIR"
             echo "BUILD_CMD=$BUILD_CMD"
             echo "ARTIFACT=$ARTIFACT"
             echo "VERSION=$VERSION"
+            echo "TAG=$TAG"
           } >> "$GITHUB_ENV"
       - name: Refuse an already-released version
         if: ${{ !inputs.dry_run }}
@@ -109,8 +118,8 @@ jobs:
           # The tag ref covers both a bare pushed tag and a full release; a
           # release created onto a stale pre-existing tag would silently ship
           # that tag's commit instead of main.
-          if gh api "repos/$APP_REPO/git/ref/tags/v$VERSION" --silent 2>/dev/null; then
-            echo "::error::tag v$VERSION already exists on $APP_REPO; bump the version"
+          if gh api "repos/$APP_REPO/git/ref/tags/$TAG" --silent 2>/dev/null; then
+            echo "::error::tag $TAG already exists on $APP_REPO; bump the version"
             exit 1
           fi
       # Build and packaging share ONE step deliberately. A recipe can append to
@@ -122,29 +131,29 @@ jobs:
           APP_NAME: ${{ matrix.name }}
           APP_REPO: ${{ matrix.repo }}
         run: |
-          (cd app && bash -c "$BUILD_CMD")
-          test -x "app/$ARTIFACT" || { echo "::error::bundle.artifact app/$ARTIFACT missing or not executable"; exit 1; }
-          "app/$ARTIFACT" --version
+          (cd "$APP_DIR" && bash -c "$BUILD_CMD")
+          test -x "$APP_DIR/$ARTIFACT" || { echo "::error::bundle.artifact $APP_DIR/$ARTIFACT missing or not executable"; exit 1; }
+          "$APP_DIR/$ARTIFACT" --version
           # Catch a dotted skill dir here, while the release is still
           # preventable: codesign reads one as a nested bundle, and the .app
           # build would only reject it after this artifact is immutable.
-          if [ -d app/skills ]; then
+          if [ -d "$APP_DIR/skills" ]; then
             while IFS= read -r -d '' bad; do
               echo "::error::skills dir '$(basename "$bad")' contains a dot; rename it in $APP_REPO"; exit 1
-            done < <(find app/skills -type d -name '*.*' -print0)
+            done < <(find "$APP_DIR/skills" -type d -name '*.*' -print0)
             # check-bundle asserts a SKILL.md per skill dir; catching it here
             # keeps a malformed tree out of an already-immutable release.
             while IFS= read -r -d '' d; do
               [ -f "$d/SKILL.md" ] || { echo "::error::skills dir '$(basename "$d")' has no SKILL.md in $APP_REPO"; exit 1; }
-            done < <(find app/skills -mindepth 1 -maxdepth 1 -type d -print0)
+            done < <(find "$APP_DIR/skills" -mindepth 1 -maxdepth 1 -type d -print0)
           fi
           mkdir stage
-          cp "app/$ARTIFACT" "stage/$APP_NAME"
-          if [ -d app/skills ]; then cp -R app/skills stage/skills; fi
+          cp "$APP_DIR/$ARTIFACT" "stage/$APP_NAME"
+          if [ -d "$APP_DIR/skills" ]; then cp -R "$APP_DIR/skills" stage/skills; fi
           TGZ="$APP_NAME-darwin-arm64.tgz"
           tar czf "$TGZ" -C stage .
           SHA=$(shasum -a 256 "$TGZ" | cut -d' ' -f1)
-          URL="https://github.com/$APP_REPO/releases/download/v$VERSION/$TGZ"
+          URL="https://github.com/$APP_REPO/releases/download/$TAG/$TGZ"
           printf '{"name":"%s","version":"%s","url":"%s","sha256":"%s","sourceSha":"%s"}\n' \
             "$APP_NAME" "$VERSION" "$URL" "$SHA" "$SOURCE_SHA" > "result-$APP_NAME.json"
           cat "result-$APP_NAME.json"
@@ -190,7 +199,7 @@ jobs:
           MATRIX: ${{ needs.plan.outputs.matrix }}
         run: |
           published=0
-          while read -r name repo; do
+          while read -r name repo subdir; do
             f="result-$name.json"
             [ -f "$f" ] || { echo "::notice::$name did not package; skipping"; continue; }
             version=$(jq -r '.version // ""' "$f")
@@ -201,7 +210,10 @@ jobs:
             case "$source_sha" in
               *[!0-9a-f]*|"") echo "::error::$name reported an unusable source sha"; exit 1 ;;
             esac
-            gh release create "v$version" "$name-darwin-arm64.tgz" \
+            # Monorepo rows (subdir set) tag app-prefixed; the tag comes from
+            # the plan's trusted matrix, never from the artifact.
+            tag="v$version"; [ -n "$subdir" ] && tag="$name-v$version"
+            gh release create "$tag" "$name-darwin-arm64.tgz" \
               --repo "$repo" \
               --target "$source_sha" \
               --title "$name v$version" \
@@ -213,12 +225,12 @@ jobs:
             # wrong, and every later bundle build would then reject the asset.
             tgz_sha=$(sha256sum "$name-darwin-arm64.tgz" | cut -d' ' -f1)
             jq -n --arg n "$name" --arg v "$version" --arg r "$repo" \
-              --arg s "$tgz_sha" --arg c "$source_sha" \
+              --arg t "$tag" --arg s "$tgz_sha" --arg c "$source_sha" \
               '{name:$n, version:$v, sha256:$s, sourceSha:$c,
-                url:("https://github.com/"+$r+"/releases/download/v"+$v+"/"+$n+"-darwin-arm64.tgz")}' \
+                url:("https://github.com/"+$r+"/releases/download/"+$t+"/"+$n+"-darwin-arm64.tgz")}' \
               > "pinned-$name.json"
             published=$((published + 1))
-          done < <(jq -r '.include[] | "\(.name) \(.repo)"' <<< "$MATRIX")
+          done < <(jq -r '.include[] | "\(.name) \(.repo) \(.subdir // "")"' <<< "$MATRIX")
           if [ "$published" -eq 0 ]; then
             echo "::notice::no app packaged; nothing to release"
           fi

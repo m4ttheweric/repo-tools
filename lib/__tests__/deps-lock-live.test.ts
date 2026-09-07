@@ -8,18 +8,19 @@ const lock = parseDepsLock(
 );
 
 describe("live deps.lock buildable set", () => {
-  test("every managed app row carries its m4ttstack repo", () => {
-    const want: Record<string, string> = {
-      deck: "m4ttstack/deck",
-      board: "m4ttstack/board",
-      gitq: "m4ttstack/gitq",
-      console: "m4ttstack/console",
-      chat: "m4ttstack/chat",
+  test("every managed app row carries its m4ttstack repo (monorepo apps carry their subdir)", () => {
+    const want: Record<string, { repo: string; subdir?: string }> = {
+      deck: { repo: "m4ttstack/apps", subdir: "apps/deck" },
+      board: { repo: "m4ttstack/apps", subdir: "apps/board" },
+      gitq: { repo: "m4ttstack/gitq" },
+      console: { repo: "m4ttstack/apps", subdir: "apps/console" },
+      chat: { repo: "m4ttstack/apps", subdir: "apps/chat" },
     };
-    for (const [name, repo] of Object.entries(want)) {
+    for (const [name, w] of Object.entries(want)) {
       const row = lock.tools.find((t) => t.name === name);
       expect(row, name).toBeDefined();
-      expect(row!.repo, name).toBe(repo);
+      expect(row!.repo, name).toBe(w.repo);
+      expect(row!.subdir, name).toBe(w.subdir);
     }
   });
 

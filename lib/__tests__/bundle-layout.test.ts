@@ -164,6 +164,31 @@ describe("parseDepsLock repo field and pending-url rule", () => {
     expect(() => parseDepsLock(lockWith({ repo: 7 }))).toThrow(/repo/);
   });
 
+  test("subdir field: valid monorepo path parses and round-trips", () => {
+    const lock = parseDepsLock(lockWith({ repo: "m4ttstack/apps", subdir: "apps/chat" }));
+    expect(lock.tools[0]!.subdir).toBe("apps/chat");
+  });
+
+  test("subdir field: absent stays undefined", () => {
+    expect(parseDepsLock(lockWith({ repo: "m4ttstack/deck" })).tools[0]!.subdir).toBeUndefined();
+  });
+
+  test("subdir field: traversal rejected", () => {
+    expect(() => parseDepsLock(lockWith({ repo: "m4ttstack/apps", subdir: "../etc" }))).toThrow(/subdir/);
+  });
+
+  test("subdir field: absolute path rejected", () => {
+    expect(() => parseDepsLock(lockWith({ repo: "m4ttstack/apps", subdir: "/apps/chat" }))).toThrow(/subdir/);
+  });
+
+  test("subdir field: non-string rejected", () => {
+    expect(() => parseDepsLock(lockWith({ repo: "m4ttstack/apps", subdir: 7 }))).toThrow(/subdir/);
+  });
+
+  test("subdir without a repo is rejected", () => {
+    expect(() => parseDepsLock(lockWith({ subdir: "apps/chat" }))).toThrow(/subdir/);
+  });
+
   test("pending row carrying a url is rejected", () => {
     expect(() =>
       parseDepsLock(lockWith({ status: "pending", url: "https://example.com/x.tgz", sha256: "", version: "" })),
