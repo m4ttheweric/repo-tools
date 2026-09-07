@@ -65,10 +65,12 @@ jobs:
           gh repo clone "$APP_REPO" app -- --depth 1 --branch main
           SOURCE_SHA=$(git -C app rev-parse HEAD)
           echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
-      # No npm auth step: the monorepo's platform packages resolve in-workspace
-      # and every remaining @mattstack registry dep is public (verified against
-      # the registry unauthenticated, 2026-09-06). Reintroduce a READ-only
-      # token here if a restricted registry dep ever returns.
+      # No npm auth step: the platform packages (app-kit, app-server,
+      # mantine-tokyo, tui-kit) resolve in-workspace and are npm-restricted,
+      # while the registry deps the legs still reach (rt-client, glance,
+      # settings-kit, invadrs) are public. If a leg ever resolves a platform
+      # package from the registry again, that assumption inverts: reintroduce
+      # a READ-only token here.
       # A monorepo leg installs the workspace and builds tui-kit's dist first:
       # board and deck consume it as built output, and the script probe keeps
       # this inert for repos without that script.
