@@ -5,14 +5,17 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { parseDepsLock } from "../../lib/bundle-layout.ts";
 
-export function planMatrix(lockText: string, appsInput: string): { name: string; repo: string }[] {
+export function planMatrix(lockText: string, appsInput: string): { name: string; repo: string; subdir: string }[] {
+  // subdir is always present (empty for single-app repos) so every matrix leg
+  // has the same shape and the workflow's ${{ matrix.subdir }} never renders
+  // a missing key differently per leg.
   const buildable = parseDepsLock(lockText)
     .tools.filter((t) => t.repo)
-    .map((t) => ({ name: t.name, repo: t.repo! }));
+    .map((t) => ({ name: t.name, repo: t.repo!, subdir: t.subdir ?? "" }));
   const input = appsInput.trim();
   if (!input) throw new Error(`apps input is empty; pass app names or "all"`);
   if (input === "all") return buildable;
-  const picked: { name: string; repo: string }[] = [];
+  const picked: { name: string; repo: string; subdir: string }[] = [];
   for (const raw of input.split(",")) {
     const name = raw.trim();
     const row = buildable.find((b) => b.name === name);

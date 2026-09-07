@@ -40,6 +40,8 @@ export interface DepsLockTool {
   kind: DepsLockKind;
   /** m4ttstack source repo for CI-built helpers; absent for third-party pins. */
   repo?: string;
+  /** App directory inside a monorepo `repo` (e.g. "apps/chat"); drives the bundle build's recipe path, version path, and app-prefixed release tags. */
+  subdir?: string;
 }
 
 export interface DepsLock {
@@ -91,6 +93,12 @@ export function parseDepsLock(text: string): DepsLock {
     if (t.repo !== undefined) {
       if (typeof t.repo !== "string" || !/^m4ttstack\/[A-Za-z0-9._-]+$/.test(t.repo)) {
         throw new Error(`deps.lock: ${name} repo must be "m4ttstack/<repo>", got ${String(t.repo)}`);
+      }
+    }
+    if (t.subdir !== undefined) {
+      if (t.repo === undefined) throw new Error(`deps.lock: ${name} subdir requires a repo`);
+      if (typeof t.subdir !== "string" || isUnsafeRelativePath(t.subdir)) {
+        throw new Error(`deps.lock: ${name} subdir must be a relative in-repo path, got ${String(t.subdir)}`);
       }
     }
 
