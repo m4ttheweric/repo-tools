@@ -6,7 +6,7 @@
       "name": "worktree-context",
       "dependencies": {
         "@mattstack/glance": "^0.24.0",
-        "@mattstack/rt-client": "^0.14.0",
+        "@mattstack/rt-client": "^0.16.0",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -108,7 +108,7 @@
 
     "@mattstack/glance": ["@mattstack/glance@0.24.0", "", { "dependencies": { "@gitbeaker/rest": "^43.8.0", "@octokit/core": "^7.0.7", "@octokit/graphql": "^9.0.4", "@octokit/plugin-paginate-rest": "^15.0.0", "@octokit/plugin-retry": "^8.1.1", "@octokit/plugin-throttling": "^11.0.5", "@octokit/request-error": "^7.1.1" } }, "sha512-Pb9CcjThjI5JKWy0C/BfgyMo2rViGBq4jhbOOnYDSOj3QKudj6WE9dtcXsPKDTvmXFL2Dhkvzr/DHUlD5uZQJw=="],
 
-    "@mattstack/rt-client": ["@mattstack/rt-client@0.14.0", "", { "dependencies": { "jsonc-parser": "^3.3.1" }, "peerDependencies": { "@mattstack/glance": ">=0.23.0" } }, "sha512-4jn1FTE/DXQ3ZRAlWxf/CD/N7KpgVJydXGBFYCrfe8Vwke4gkFiSf23dQC3kNMEe/Ux8JdDT+O3bcVZsC9eRXQ=="],
+    "@mattstack/rt-client": ["@mattstack/rt-client@0.16.0", "", { "dependencies": { "jsonc-parser": "^3.3.1" }, "peerDependencies": { "@mattstack/glance": ">=0.24.0" } }, "sha512-Eiel3Enyo+zU3TlvRA5Gv8emivEMult1/nZvg5FtToeNazXxwl7omCnBCVVeiD6/uvqzu8xE825v90PzQxkQiw=="],
 
     "@nodelib/fs.scandir": ["@nodelib/fs.scandir@2.1.5", "", { "dependencies": { "@nodelib/fs.stat": "2.0.5", "run-parallel": "^1.1.9" } }, "sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g=="],
 
