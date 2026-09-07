@@ -163,9 +163,11 @@ subdir), and its releases land on m4ttstack/apps under app-prefixed tags
 (`chat-v0.1.1`) because two apps can share a bare version. Rows without
 `subdir` (gitq) keep plain `v` tags and single-repo behavior. There is no npm
 auth step: platform packages resolve in-workspace and every remaining
-registry dep is public. Old app repos stay unarchived until a SHIPPED
-mattstack.app release carries a deps.lock pointing at m4ttstack/apps release
-tarballs; archiving earlier would brick rebuilds of older tags (the cutover
+registry dep is public. The old app repos were DELETED 2026-09-07 on
+Matt's loud-failure ruling: branches live as archive/<app>/* refs and every
+release is ported byte-identical to m4ttstack/apps under prefixed tags, but
+pre-cutover mattstack.app tags (v2.8.0 included) rebuild only after
+hand-pointing their deps.lock at the ported assets (the cutover
 brief lives at docs/bundle-cutover-brief.md in m4ttstack/apps).
 
 Release is a separate job on purpose. The build job runs each app repo's own
