@@ -156,6 +156,9 @@ function herdrSocketFake(): ReturnType<typeof fakeHerdr> {
     if (method === "session.snapshot") {
       return { snapshot: { workspaces: [], panes: [{ pane_id: "w1:p1", agent_status: "idle" }] } };
     }
+    // A registered, idle agent: the spawn's trust check polls agent.get and
+    // then waits, and an idle settle means there is no dialog to dismiss.
+    if (method === "agent.get" || method === "agent.wait") return { agent: { pane_id: "w1:p1", agent_status: "idle" } };
     if (method === "events.subscribe") return { type: "subscribed" };
     return new HerdrFakeError("invalid_request", `${method} ${JSON.stringify(params)}`);
   };
@@ -317,7 +320,7 @@ describe("rt herd (e2e)", () => {
 
     const listed = await finished(runRt(["herd", "list"], home));
     expect(listed.exitCode).toBe(0);
-    expect(listed.stdout.trim()).toBe(`${herd.herd}  active  room ${herd.room}  1 jobs`);
+    expect(listed.stdout.trim()).toBe(`${herd.herd}  active  room ${herd.room}  1 job`);
 
     // One active herd, so the id is a lookup the verb can do itself.
     const bare = await finished(runRt(["herd", "status", "--json"], home));

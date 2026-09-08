@@ -41,6 +41,8 @@ describe("rt herd list", () => {
 
   test("a row carries the id, status, room and job count", () => {
     expect(renderHerdRow(row())).toBe("hd-1  active  room herd-hd-1  2 jobs");
+    expect(renderHerdRow(row({ jobs: 1 }))).toBe("hd-1  active  room herd-hd-1  1 job");
+    expect(renderHerdRow(row({ jobs: 0 }))).toBe("hd-1  active  room herd-hd-1  0 jobs");
   });
 
   test("exactly one herd is the fallback; zero or two are not", () => {

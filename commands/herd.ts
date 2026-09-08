@@ -138,7 +138,7 @@ export function soleHerdId(herds: Array<{ id: string }>): string | null {
 }
 
 export function renderHerdRow(h: HerdListRow): string {
-  return `${h.id}  ${h.status}  room ${h.room}  ${h.jobs} jobs`;
+  return `${h.id}  ${h.status}  room ${h.room}  ${h.jobs} ${h.jobs === 1 ? "job" : "jobs"}`;
 }
 
 async function soleHerd(usage: string): Promise<string> {
@@ -303,7 +303,9 @@ export async function list(args: string[]): Promise<void> {
 
 export async function resume(args: string[]): Promise<void> {
   const json = has(args, "--json");
-  const herd = positional(args) ?? process.env.HERD_ID ?? await soleHerd("usage: rt herd resume <id>");
+  // HERD_ID deliberately not consulted: every worker pane carries it, and a
+  // worker resuming would re-point the shepherd's subscription at itself.
+  const herd = positional(args) ?? await soleHerd("usage: rt herd resume <id>");
   const session = flagValue(args, "--session") ?? process.env.CLAUDE_CODE_SESSION_ID;
   if (!session) fail("run inside a Claude Code session (or pass --session <id>)");
   const data = unwrap(await herdResume({ herd, session }), "resume");

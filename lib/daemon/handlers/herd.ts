@@ -33,6 +33,9 @@ export interface HerdDeps {
   herdrRunnerFor: (socket: string | null) => HerdrRunner;
   lifecycle: { connected(socket: string | null): boolean; watch(socket: string): void };
   hidden: { socketPath(): string; ensure(): Promise<string>; up(): Promise<boolean>; stop(): Promise<void> };
+  /** How long a spawn waits for herdr to register the agent before giving up on
+      the trust check; overridable so a test need not burn the real budget. */
+  registerBudgetMs?: number;
   jobsRoot: string;
   log: Logger;
 }
@@ -42,9 +45,16 @@ export const SYSTEM_HANDLE = "herdr";
 export const MILESTONE_OPTIONS = ["Approve", "Revise", "Spawn a reviewer"] as const;
 
 const HERD_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
-// Mirrors pane:spawn's own settle budget, which is what the trust prompt sits behind.
-const SETTLE_BUDGET_MS = 50_000;
-const SETTLE_UNTIL = ["idle", "blocked"];
+// pane:spawn's own registration and trust budgets (lib/daemon/handlers/pane.ts).
+// Duplicated rather than imported: importing the handler for two numbers would
+// pull its whole dependency graph into the herd module.
+const REGISTER_BUDGET_MS = 10_000;
+const REGISTER_POLL_MS = 250;
+const TRUST_BUDGET_MS = 15_000;
+// `done` belongs here and not in pane:spawn's list: agent:start puts the brief
+// on claude's command line, so a trusted directory can finish a whole turn
+// while this waits.
+const SETTLE_UNTIL = ["idle", "blocked", "done"];
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
 
 /** `shepherd-2` is a collision suffix chat mints, not a name to ask for again. */
@@ -130,11 +140,30 @@ export function createHerdHandlers(deps: HerdDeps) {
   async function acceptTrustDialog(socket: string | null, pane: string, context: Record<string, unknown>): Promise<void> {
     const sock = socket ? { sockPath: socket } : {};
     try {
-      const settled = await deps.herdr("agent.wait", { target: pane, until: SETTLE_UNTIL, timeout_ms: SETTLE_BUDGET_MS }, { ...sock, timeoutMs: waitTimeout(SETTLE_BUDGET_MS) });
-      if (!settled.ok) {
-        log.warn({ ...context, pane, err: settled.message }, "herd: agent never settled; trust dialog not checked");
+      // herdr registers the agent a few hundred ms after the shell starts
+      // claude, and `agent.wait` errors immediately on an unregistered target
+      // rather than waiting for one, so the wait has to be polled up to.
+      const deadline = Date.now() + (deps.registerBudgetMs ?? REGISTER_BUDGET_MS);
+      let registered = false;
+      while (Date.now() < deadline) {
+        if ((await deps.herdr("agent.get", { target: pane }, sock)).ok) { registered = true; break; }
+        await Bun.sleep(REGISTER_POLL_MS);
+      }
+      if (!registered) {
+        log.warn({ ...context, pane }, "herd: agent never registered; trust dialog not checked");
         return;
       }
+      const settled = await deps.herdr<{ agent: { agent_status: string } }>("agent.wait", { target: pane, until: SETTLE_UNTIL, timeout_ms: TRUST_BUDGET_MS }, { ...sock, timeoutMs: waitTimeout(TRUST_BUDGET_MS) });
+      // A pane still working past the budget is a worker already past the
+      // dialog: the brief rides claude's command line, so there is nothing to
+      // dismiss and nothing to report.
+      if (!settled.ok) {
+        log.debug({ ...context, pane, reason: settled.message }, "herd: agent still working; no trust dialog");
+        return;
+      }
+      // Only a blocked agent can be sitting on the prompt. An idle one whose
+      // brief merely contains the word "trust" must never be sent an Enter.
+      if (settled.result.agent.agent_status !== "blocked") return;
       const screen = await deps.herdr<{ read: { text: string } }>("pane.read", { pane_id: pane, source: "visible" }, sock);
       if (!screen.ok) {
         log.warn({ ...context, pane, err: screen.message }, "herd: pane read failed; trust dialog not checked");
@@ -277,14 +306,17 @@ export function createHerdHandlers(deps: HerdDeps) {
       if (!started.ok) return started;
       const rec = started.data;
       store.upsertJob({ herd: herdId, name, worktree, branch, tree, handle: name, status: "spawning", pane: rec.paneId ?? null, agentSession: rec.sessionId, agentId: rec.id });
-      if (rec.paneId) await acceptTrustDialog(herd.herdrSocket, rec.paneId, { herd: herdId, job: name });
 
+      // Chat identity first: the trust wait can spend its whole budget, and a
+      // worker with no handle can neither report nor be reached meanwhile.
       const signIn = await deps.chat["chat:sign-in"]({ sessionId: rec.sessionId, baseHandle: name, pane: rec.paneId, cwd: worktree, noRoom: true });
       if (!signIn.ok) log.warn({ herd: herdId, job: name, error: signIn.error }, "herd: worker chat sign-in failed; reports will not deliver until it signs in");
       const handle = signIn.ok ? signIn.data.handle : name;
       const joined = await deps.chat["chat:join"]({ room: herd.room, handle, pane: rec.paneId, cwd: worktree });
       if (!joined.ok) log.warn({ herd: herdId, job: name, error: joined.error }, "herd: worker room join failed");
       if (handle !== name) store.upsertJob({ herd: herdId, name, worktree, branch, tree, handle, status: "spawning" });
+
+      if (rec.paneId) await acceptTrustDialog(herd.herdrSocket, rec.paneId, { herd: herdId, job: name });
 
       return { ok: true, data: { herd: herdId, job: name, pane: rec.paneId ?? "", worktree, branch, tree, agentId: rec.id, sessionId: rec.sessionId, handle } };
     },

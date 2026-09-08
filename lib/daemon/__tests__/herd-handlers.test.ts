@@ -22,9 +22,12 @@ export function harness(over: Partial<HerdDeps> = {}) {
   const bus = createEventsBus({ dbPath: join(dir, "events.db"), log });
   const gate = createGateHandlers(gateStore, bus, () => {}, { log });
   const chatCalls: Array<{ verb: string; payload: any }> = [];
+  // One ordered log across both fakes, for the cases where what matters is
+  // which call came first (chat identity before the trust wait).
+  const order: string[] = [];
   const chat = {
-    "chat:sign-in": async (p: any) => { chatCalls.push({ verb: "sign-in", payload: p }); return { ok: true as const, data: { handle: p.baseHandle ?? "shepherd", baseHandle: p.baseHandle ?? "shepherd", sessionId: p.sessionId, room: p.room ?? null } }; },
-    "chat:join": async (p: any) => { chatCalls.push({ verb: "join", payload: p }); return { ok: true as const, data: { handle: p.handle, memberCount: 1, unread: 0 } }; },
+    "chat:sign-in": async (p: any) => { chatCalls.push({ verb: "sign-in", payload: p }); order.push("chat:sign-in"); return { ok: true as const, data: { handle: p.baseHandle ?? "shepherd", baseHandle: p.baseHandle ?? "shepherd", sessionId: p.sessionId, room: p.room ?? null } }; },
+    "chat:join": async (p: any) => { chatCalls.push({ verb: "join", payload: p }); order.push("chat:join"); return { ok: true as const, data: { handle: p.handle, memberCount: 1, unread: 0 } }; },
     "chat:post": async (p: any) => { chatCalls.push({ verb: "post", payload: p }); return { ok: true as const, data: { id: chatCalls.length, recipients: p.mentions ?? [], others: 0 } }; },
     "chat:archive": async (p: any) => { chatCalls.push({ verb: "archive", payload: p }); return { ok: true as const, data: { room: p.room, archivedAt: 1 } }; },
     // A minted herd id carries the wall clock, so the herd's own room is read
@@ -50,18 +53,27 @@ export function harness(over: Partial<HerdDeps> = {}) {
   };
   const herdrCalls: string[][] = [];
   // Socket-side herdr: `session.snapshot` for status, plus the trust-dialog
-  // trio. `paneText` is what `pane.read` hands back, so a test can put the
-  // trust prompt on the screen or leave ordinary output there.
+  // sequence. `trust` is the knob set: how many `agent.get` calls fail before
+  // the agent registers, what `agent.wait` settles at, and what `pane.read`
+  // hands back.
   const socketCalls: Array<{ method: string; params: any; sock: any }> = [];
   const screen = { text: "$ claude\nworking...\n" };
+  const trust = { registerFailures: 0, waitOk: true, waitStatus: "blocked" };
   const deps: HerdDeps = {
     store, gateStore, gate, chat, agent, worktree,
     runWorktree: () => null,
     presenceHandleForSession: () => null,
     herdr: (async (method: string, params: any, o: any) => {
       socketCalls.push({ method, params, sock: o?.sockPath ?? null });
+      order.push(`herdr:${method}`);
       if (method === "session.snapshot") return { ok: true, result: { snapshot: { panes: [{ pane_id: "w9:p1", agent_status: "working" }] } } };
-      if (method === "agent.wait") return { ok: true, result: { agent: { agent_status: "blocked" } } };
+      if (method === "agent.get") {
+        if (trust.registerFailures > 0) { trust.registerFailures -= 1; return { ok: false, code: "not_found", message: "no agent" }; }
+        return { ok: true, result: { agent: { agent_status: "working" } } };
+      }
+      if (method === "agent.wait") {
+        return trust.waitOk ? { ok: true, result: { agent: { agent_status: trust.waitStatus } } } : { ok: false, code: "timeout", message: "still working" };
+      }
       if (method === "pane.read") return { ok: true, result: { read: screen } };
       if (method === "pane.send_keys") return { ok: true, result: {} };
       return { ok: false, code: "invalid_request", message: method };
@@ -84,7 +96,7 @@ export function harness(over: Partial<HerdDeps> = {}) {
     ...over,
   };
   const h = createHerdHandlers(deps);
-  return { h, store, gateStore, gate, chatCalls, agentCalls, worktreeCalls, herdrCalls, socketCalls, screen, dir };
+  return { h, store, gateStore, gate, chatCalls, agentCalls, worktreeCalls, herdrCalls, socketCalls, order, screen, trust, dir };
 }
 
 const START = { name: "demo", repo: "gh:m4ttstack/rt", session: "sess-shep" };
@@ -402,14 +414,45 @@ describe("herd:spawn", () => {
     expect(store.getJob(herd, "review-cv-1")!.disposable).toBe(true);
   });
 
-  test("a blocked pane showing the trust prompt is accepted with enter", async () => {
-    const { h, socketCalls, screen, herd } = await started();
+  test("the trust accept waits out herdr's registration lag, then accepts with enter", async () => {
+    const { h, socketCalls, order, screen, trust, herd } = await started();
     screen.text = "Do you trust the files in this folder?\n1. Yes, proceed\n";
+    trust.registerFailures = 2;
     const res = await h["herd:spawn"]({ herd, job: "cv-1", brief: "b", dir: "/t" });
     expect(res.ok).toBe(true);
-    expect(socketCalls.find((c) => c.method === "agent.wait")!.params).toMatchObject({ target: "w9:p1", until: ["idle", "blocked"] });
-    const keys = socketCalls.find((c) => c.method === "pane.send_keys");
-    expect(keys!.params).toEqual({ pane_id: "w9:p1", keys: ["enter"] });
+    expect(socketCalls.filter((c) => c.method === "agent.get")).toHaveLength(3);
+    expect(socketCalls.find((c) => c.method === "agent.wait")!.params).toMatchObject({ target: "w9:p1", until: ["idle", "blocked", "done"], timeout_ms: 15_000 });
+    expect(socketCalls.find((c) => c.method === "pane.send_keys")!.params).toEqual({ pane_id: "w9:p1", keys: ["enter"] });
+    // The worker must be reachable in chat whatever the trust wait costs.
+    expect(order.indexOf("chat:sign-in")).toBeLessThan(order.indexOf("herdr:agent.get"));
+  });
+
+  test("an idle agent whose brief merely says trust is sent nothing", async () => {
+    const { h, socketCalls, screen, trust, herd } = await started();
+    screen.text = "reading the brief: trust the fixture owner\n";
+    trust.waitStatus = "idle";
+    expect((await h["herd:spawn"]({ herd, job: "cv-1", brief: "b", dir: "/t" })).ok).toBe(true);
+    expect(socketCalls.some((c) => c.method === "pane.read")).toBe(false);
+    expect(socketCalls.some((c) => c.method === "pane.send_keys")).toBe(false);
+  });
+
+  test("a pane still working when the trust budget expires is sent nothing", async () => {
+    const { h, socketCalls, screen, trust, herd } = await started();
+    screen.text = "Do you trust the files in this folder?";
+    trust.waitOk = false;
+    expect((await h["herd:spawn"]({ herd, job: "cv-1", brief: "b", dir: "/t" })).ok).toBe(true);
+    expect(socketCalls.some((c) => c.method === "pane.send_keys")).toBe(false);
+  });
+
+  test("an agent that never registers is given up on without a send", async () => {
+    const hx = harness({ registerBudgetMs: 400 });
+    hx.screen.text = "Do you trust the files in this folder?";
+    hx.trust.registerFailures = Number.MAX_SAFE_INTEGER;
+    const s = await hx.h["herd:start"](START);
+    if (!s.ok) throw new Error(s.error);
+    expect((await hx.h["herd:spawn"]({ herd: s.data.herd, job: "cv-1", brief: "b", dir: "/t" })).ok).toBe(true);
+    expect(hx.socketCalls.some((c) => c.method === "agent.wait")).toBe(false);
+    expect(hx.socketCalls.some((c) => c.method === "pane.send_keys")).toBe(false);
   });
 
   test("a pane showing ordinary output is left alone", async () => {
