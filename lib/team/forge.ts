@@ -34,7 +34,7 @@ function splitOwnerRepo(path: string): { owner: string; repo: string } {
 }
 
 /** `glab api` targets gitlab.com by default; a self-hosted instance needs its host named explicitly. */
-function glabEnv(host: string): Record<string, string> | undefined {
+export function glabEnv(host: string): Record<string, string> | undefined {
   return host === "gitlab.com" ? undefined : { GITLAB_HOST: host };
 }
 

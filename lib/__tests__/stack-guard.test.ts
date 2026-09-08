@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { checkStackMembership, type StackGuardRunners } from "../stack-guard.ts";
+import { checkStackMembership, createStackGuardRunners, type StackGuardRunners } from "../stack-guard.ts";
+import { fakeProbes, missing, ok, type ExecScript } from "../setup/__tests__/fakes.ts";
 
 function gitqStore(stacks: { stackName: string; root: string; nodes: { branch: string; parent: string }[] }[]): string {
   return JSON.stringify({ stacks, worktrees: [] });
@@ -155,5 +156,79 @@ describe("checkStackMembership", () => {
     });
 
     expect(verdict).toEqual({ verdict: "clear" });
+  });
+});
+
+describe("createStackGuardRunners", () => {
+  const GITHUB = "git@github.com:acme/widgets.git";
+  const GITLAB = "https://gitlab.acme.internal/acme/widgets.git";
+
+  function scripted(remote: string, forge: ExecScript): ExecScript {
+    return (argv, opts) => {
+      if (argv[0] === "git" && argv[1] === "remote") return ok(remote + "\n");
+      return forge(argv, opts);
+    };
+  }
+
+  test("gitqStacks runs gitq stacks --json in cwd and hands back stdout", async () => {
+    const p = fakeProbes({ exec: () => ok('{"stacks":[]}') });
+    const out = await createStackGuardRunners(p).gitqStacks("/wt");
+    expect(out).toBe('{"stacks":[]}');
+    expect(p.calls.exec).toEqual([["gitq", "stacks", "--json", "-C", "/wt"]]);
+  });
+
+  test("gitqStacks is null when gitq is missing", async () => {
+    const p = fakeProbes({ exec: () => missing("gitq") });
+    expect(await createStackGuardRunners(p).gitqStacks("/wt")).toBeNull();
+  });
+
+  test("forgeOpenMrs on GitHub lists open PRs via gh and maps head/base", async () => {
+    const p = fakeProbes({
+      exec: scripted(GITHUB, () => ok(JSON.stringify([
+        { number: 5, headRefName: "child", baseRefName: "parent", url: "https://github.com/acme/widgets/pull/5" },
+      ]))),
+    });
+    const res = await createStackGuardRunners(p).forgeOpenMrs("/wt");
+    expect(res).toEqual({ ok: true, mrs: [{ iid: 5, source: "child", target: "parent", url: "https://github.com/acme/widgets/pull/5" }] });
+    expect(p.calls.exec[1]).toEqual(["gh", "pr", "list", "--state", "open", "--limit", "100", "--json", "number,headRefName,baseRefName,url"]);
+  });
+
+  test("forgeOpenMrs on self-hosted GitLab lists via glab with GITLAB_HOST and maps source/target", async () => {
+    let seenEnv: Record<string, string> | undefined;
+    const p = fakeProbes({
+      exec: scripted(GITLAB, (argv, opts) => {
+        seenEnv = opts?.env;
+        return ok(JSON.stringify([
+          { iid: 9, source_branch: "child", target_branch: "parent", web_url: "https://gitlab.acme.internal/acme/widgets/-/merge_requests/9" },
+        ]));
+      }),
+    });
+    const res = await createStackGuardRunners(p).forgeOpenMrs("/wt");
+    expect(res).toEqual({ ok: true, mrs: [{ iid: 9, source: "child", target: "parent", url: "https://gitlab.acme.internal/acme/widgets/-/merge_requests/9" }] });
+    expect(p.calls.exec[1]).toEqual(["glab", "mr", "list", "--output", "json", "--per-page", "100"]);
+    expect(seenEnv).toEqual({ GITLAB_HOST: "gitlab.acme.internal" });
+  });
+
+  test("forgeOpenMrs reports the CLI failure instead of guessing", async () => {
+    const p = fakeProbes({ exec: scripted(GITHUB, () => ({ code: 4, stdout: "", stderr: "gh: not logged in" })) });
+    const res = await createStackGuardRunners(p).forgeOpenMrs("/wt");
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toContain("not logged in");
+  });
+
+  test("forgeOpenMrs fails when origin is not a recognised forge", async () => {
+    const p = fakeProbes({ exec: scripted("ssh://git.example.org/x/y.git", () => ok("[]")) });
+    const res = await createStackGuardRunners(p).forgeOpenMrs("/wt");
+    expect(res.ok).toBe(false);
+    expect(p.calls.exec).toHaveLength(1);
+  });
+
+  test("forgeOpenMrs lists once per remote across worktrees", async () => {
+    const p = fakeProbes({ exec: scripted(GITHUB, () => ok("[]")) });
+    const r = createStackGuardRunners(p);
+    await r.forgeOpenMrs("/wt-a");
+    await r.forgeOpenMrs("/wt-b");
+    expect(p.calls.exec.filter((a) => a[0] === "gh")).toHaveLength(1);
   });
 });

@@ -6,6 +6,11 @@
  * open MR targets it).
  */
 
+import type { Probes } from "./setup/probes.ts";
+import { forgeFromRemote } from "./setup/team-settings.ts";
+import { forgeArgv, glabEnv } from "./team/forge.ts";
+import { bundledToolExec } from "./deps/resolve.ts";
+
 export interface StackMembership {
   name: string;
   root: string;
@@ -128,4 +133,63 @@ export async function checkStackMembership(opts: {
     };
   }
   return { verdict: "clear" };
+}
+
+type ForgeListing = { ok: true; mrs: ForgeMr[] } | { ok: false; error: string };
+
+function failure(prefix: string, r: { code: number; stdout: string; stderr: string }): ForgeListing {
+  const detail = (r.stderr.trim() || r.stdout.trim() || `exit ${r.code}`).split("\n")[0];
+  return { ok: false, error: `${prefix}: ${detail}` };
+}
+
+function parseListing<T>(stdout: string, map: (row: T) => ForgeMr): ForgeListing {
+  try {
+    const rows = JSON.parse(stdout) as T[];
+    return { ok: true, mrs: Array.isArray(rows) ? rows.map(map) : [] };
+  } catch {
+    return { ok: false, error: "forge listing was not JSON" };
+  }
+}
+
+async function listOpenMrs(p: Probes, remote: string): Promise<ForgeListing> {
+  const forge = forgeFromRemote(remote);
+  if (!forge) return { ok: false, error: `origin ${remote} is not a GitHub or GitLab remote` };
+  if (forge.provider === "github") {
+    const r = await p.exec([...forgeArgv(p, "gh"), "pr", "list", "--state", "open", "--limit", "100", "--json", "number,headRefName,baseRefName,url"]);
+    if (r.code !== 0) return failure("gh pr list failed", r);
+    return parseListing<{ number: number; headRefName: string; baseRefName: string; url: string }>(r.stdout, (row) => ({
+      iid: row.number, source: row.headRefName, target: row.baseRefName, url: row.url,
+    }));
+  }
+  const r = await p.exec([...forgeArgv(p, "glab"), "mr", "list", "--output", "json", "--per-page", "100"], { env: glabEnv(forge.host) });
+  if (r.code !== 0) return failure("glab mr list failed", r);
+  return parseListing<{ iid: number; source_branch: string; target_branch: string; web_url: string }>(r.stdout, (row) => ({
+    iid: row.iid, source: row.source_branch, target: row.target_branch, url: row.web_url,
+  }));
+}
+
+/**
+ * Real runners over the machine's gitq and forge CLIs. The forge listing is
+ * per remote, not per worktree, so one instance serves a whole `rt sync all`
+ * sweep with a single gh/glab call.
+ */
+export function createStackGuardRunners(p: Probes): StackGuardRunners {
+  const listings = new Map<string, Promise<ForgeListing>>();
+  return {
+    async gitqStacks(cwd) {
+      const r = await p.exec([...(bundledToolExec(p, "gitq") ?? ["gitq"]), "stacks", "--json", "-C", cwd]);
+      return r.code === 0 ? r.stdout : null;
+    },
+    async forgeOpenMrs(cwd) {
+      const remote = await p.exec(["git", "remote", "get-url", "origin"], { cwd });
+      if (remote.code !== 0) return failure("no origin remote", remote);
+      const url = remote.stdout.trim();
+      let pending = listings.get(url);
+      if (!pending) {
+        pending = listOpenMrs(p, url);
+        listings.set(url, pending);
+      }
+      return pending;
+    },
+  };
 }
