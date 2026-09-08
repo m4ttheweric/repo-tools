@@ -80,6 +80,12 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             options: []
         )
 
+        let openSurface = UNNotificationAction(
+            identifier: "OPEN_SURFACE",
+            title: "Open",
+            options: .foreground
+        )
+
         let categories: [UNNotificationCategory] = [
             UNNotificationCategory(
                 identifier: "keyboard_conflict",
@@ -144,6 +150,11 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             UNNotificationCategory(
                 identifier: Self.readyHeldCategory,
                 actions: [copyApproveCommand],
+                intentIdentifiers: []
+            ),
+            UNNotificationCategory(
+                identifier: "gate",
+                actions: [openSurface],
                 intentIdentifiers: []
             ),
         ]
@@ -371,6 +382,13 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         case "OPEN_MR":
             if let urlStr = url, let urlObj = URL(string: urlStr) {
                 NSWorkspace.shared.open(urlObj)
+            }
+
+        case "OPEN_SURFACE":
+            if let urlStr = url, let urlObj = URL(string: urlStr) {
+                NSWorkspace.shared.open(urlObj)
+            } else if let paneId = userInfo["paneId"] as? String, !paneId.isEmpty {
+                _ = HerdrBridge.shared.focusPaneById(paneId)
             }
 
         case UNNotificationDefaultActionIdentifier:
