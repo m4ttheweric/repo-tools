@@ -6,7 +6,7 @@
  * those pieces already has its own suite.
  */
 import { describe, test, expect } from "bun:test";
-import { startNotifyBridge, type EventBridgeRule } from "../notify-bridge.ts";
+import { startNotifyBridge, parseEventBridgeRules, type EventBridgeRule } from "../notify-bridge.ts";
 import type { NotificationEvent } from "../state/notifier-store.ts";
 
 /** A fake onBroadcast that captures the subscriber so the test can fire broadcasts by hand. */
@@ -288,6 +288,99 @@ describe("startNotifyBridge", () => {
 
     expect(enqueued).toHaveLength(0);
   });
+
+  test("payload with only origin.paneId enqueues with the origin pane and calls paneFocused with it", async () => {
+    const bus = fakeBus();
+    const enqueued: NotificationEvent[] = [];
+    const paneFocusedCalls: string[] = [];
+
+    startNotifyBridge({
+      onBroadcast: bus.onBroadcast,
+      rules: () => [GATE_RULE],
+      enqueue: (e) => { enqueued.push(e); },
+      paneFocused: async (paneId) => { paneFocusedCalls.push(paneId); return false; },
+    });
+
+    await bus.emit("event", {
+      id: 11,
+      topic: "board/gate/opened/g11",
+      payload: { iid: 7, mrUrl: "x", origin: { paneId: "w1:p9" } },
+      emittedAt: Date.now(),
+    });
+
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.paneId).toBe("w1:p9");
+    expect(paneFocusedCalls).toEqual(["w1:p9"]);
+  });
+
+  test("payload.paneId wins over payload.origin.paneId when both are present", async () => {
+    const bus = fakeBus();
+    const enqueued: NotificationEvent[] = [];
+    const paneFocusedCalls: string[] = [];
+
+    startNotifyBridge({
+      onBroadcast: bus.onBroadcast,
+      rules: () => [GATE_RULE],
+      enqueue: (e) => { enqueued.push(e); },
+      paneFocused: async (paneId) => { paneFocusedCalls.push(paneId); return false; },
+    });
+
+    await bus.emit("event", {
+      id: 12,
+      topic: "board/gate/opened/g12",
+      payload: { iid: 7, mrUrl: "x", paneId: "w1:p1", origin: { paneId: "w1:p9" } },
+      emittedAt: Date.now(),
+    });
+
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.paneId).toBe("w1:p1");
+    expect(paneFocusedCalls).toEqual(["w1:p1"]);
+  });
+
+  test("a rule with url interpolates it and enqueues event.url", async () => {
+    const bus = fakeBus();
+    const enqueued: NotificationEvent[] = [];
+
+    startNotifyBridge({
+      onBroadcast: bus.onBroadcast,
+      rules: () => [{ ...GATE_RULE, url: "https://board.local/?gate={id}" }],
+      enqueue: (e) => { enqueued.push(e); },
+      paneFocused: async () => false,
+    });
+
+    await bus.emit("event", {
+      id: 13,
+      topic: "board/gate/opened/g13",
+      payload: { iid: 7, mrUrl: "x", id: "g7" },
+      emittedAt: Date.now(),
+    });
+
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.url).toBe("https://board.local/?gate=g7");
+  });
+
+  test("a rule without url enqueues an event with no url key", async () => {
+    const bus = fakeBus();
+    const enqueued: NotificationEvent[] = [];
+
+    startNotifyBridge({
+      onBroadcast: bus.onBroadcast,
+      rules: () => [GATE_RULE],
+      enqueue: (e) => { enqueued.push(e); },
+      paneFocused: async () => false,
+    });
+
+    await bus.emit("event", {
+      id: 14,
+      topic: "board/gate/opened/g14",
+      payload: { iid: 7, mrUrl: "x" },
+      emittedAt: Date.now(),
+    });
+
+    expect(enqueued).toHaveLength(1);
+    const e = enqueued[0]!;
+    expect("url" in e).toBe(false);
+  });
 });
 
 describe("subjectPrefix rule filter", () => {
@@ -311,5 +404,64 @@ describe("subjectPrefix rule filter", () => {
     startNotifyBridge({ onBroadcast: bus.onBroadcast, rules: () => [RUN_RULE], enqueue: (e) => enqueued.push(e), paneFocused: async () => false });
     await bus.emit("event", { id: 3, topic: "gate/opened/g3", payload: {}, emittedAt: 0 });
     expect(enqueued.length).toBe(0);
+  });
+});
+
+describe("parseEventBridgeRules", () => {
+  function noopWarn(): void {}
+
+  test("keeps a rule with a string url", () => {
+    const warnings: unknown[] = [];
+    const raw = [{ pattern: "gate/opened/*", category: "gate", title: "t", message: "m", url: "https://board.local/?gate={id}" }];
+    const rules = parseEventBridgeRules(raw, (o) => { warnings.push(o); });
+    expect(rules).toHaveLength(1);
+    expect(rules[0]!.url).toBe("https://board.local/?gate={id}");
+    expect(warnings).toHaveLength(0);
+  });
+
+  test("drops a rule with a numeric url and warns", () => {
+    const warnings: unknown[] = [];
+    const raw = [{ pattern: "gate/opened/*", category: "gate", title: "t", message: "m", url: 42 }];
+    const rules = parseEventBridgeRules(raw, (o) => { warnings.push(o); });
+    expect(rules).toHaveLength(0);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  test("keeps subjectPrefix behavior: drops a rule with numeric subjectPrefix and warns", () => {
+    const warnings: unknown[] = [];
+    const raw = [{ pattern: "gate/opened/*", category: "gate", title: "t", message: "m", subjectPrefix: 7 }];
+    const rules = parseEventBridgeRules(raw, (o) => { warnings.push(o); });
+    expect(rules).toHaveLength(0);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  test("keeps a rule with a valid string subjectPrefix", () => {
+    const rules = parseEventBridgeRules(
+      [{ pattern: "gate/opened/*", category: "gate", title: "t", message: "m", subjectPrefix: "mr:" }],
+      noopWarn,
+    );
+    expect(rules).toHaveLength(1);
+    expect(rules[0]!.subjectPrefix).toBe("mr:");
+  });
+
+  test("skips an entry missing a required field and warns", () => {
+    const warnings: unknown[] = [];
+    const raw = [{ pattern: "gate/opened/*", category: "gate", title: "t" }];
+    const rules = parseEventBridgeRules(raw, (o) => { warnings.push(o); });
+    expect(rules).toHaveLength(0);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  test("returns [] with a warn for a non-array input", () => {
+    const warnings: unknown[] = [];
+    const rules = parseEventBridgeRules("not-an-array", (o) => { warnings.push(o); });
+    expect(rules).toEqual([]);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  test("returns [] without a warn for undefined input", () => {
+    const warnings: unknown[] = [];
+    const rules = parseEventBridgeRules(undefined, (o) => { warnings.push(o); });
+    expect(rules).toEqual([]);
   });
 });

@@ -70,7 +70,7 @@ import { startPollers } from "./daemon/pollers.ts";
 import { startHomeSnapshot } from "./daemon/home-snapshot.ts";
 import { startTeamSnapshots } from "./daemon/team-snapshots.ts";
 import { startAgentStatusPoller } from "./daemon/agent-status-poller.ts";
-import { startNotifyBridge, type EventBridgeRule } from "./notify-bridge.ts";
+import { startNotifyBridge, parseEventBridgeRules, type EventBridgeRule } from "./notify-bridge.ts";
 import { herdrRequest } from "./herdr/client.ts";
 import type { HerdrSnapshot } from "./daemon/handlers/pane.ts";
 import {
@@ -784,33 +784,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
               notifyBridgeLog.warn({ err }, "rt.notify.eventBridges: getSetting threw");
               return [];
             }
-            if (raw === undefined) return [];
-            if (!Array.isArray(raw)) {
-              notifyBridgeLog.warn({ raw }, "rt.notify.eventBridges must be an array; ignoring");
-              return [];
-            }
-            const rules: EventBridgeRule[] = [];
-            for (const entry of raw) {
-              const e = entry as Partial<EventBridgeRule> | null;
-              if (
-                e && typeof e === "object" &&
-                typeof e.pattern === "string" && typeof e.category === "string" &&
-                typeof e.title === "string" && typeof e.message === "string"
-              ) {
-                const rawSubjectPrefix = (e as { subjectPrefix?: unknown }).subjectPrefix;
-                if (rawSubjectPrefix !== undefined && typeof rawSubjectPrefix !== "string") {
-                  notifyBridgeLog.warn({ entry }, "rt.notify.eventBridges: skipping rule with non-string subjectPrefix");
-                  continue;
-                }
-                rules.push({
-                  pattern: e.pattern, category: e.category, title: e.title, message: e.message,
-                  ...(rawSubjectPrefix !== undefined ? { subjectPrefix: rawSubjectPrefix } : {}),
-                });
-              } else {
-                notifyBridgeLog.warn({ entry }, "rt.notify.eventBridges: skipping invalid rule entry");
-              }
-            }
-            return rules;
+            return parseEventBridgeRules(raw, (o, msg) => { notifyBridgeLog.warn(o, msg); });
           },
           enqueue: enqueueNotification,
           paneFocused: async (paneId: string): Promise<boolean> => {
