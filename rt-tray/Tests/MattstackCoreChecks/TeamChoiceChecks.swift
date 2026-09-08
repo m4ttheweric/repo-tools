@@ -1,7 +1,39 @@
 import Foundation
 import MattstackCore
 
+final class FakePasteboard: PasteboardReading, @unchecked Sendable {
+    private let value: String?
+    private(set) var reads = 0
+    init(_ value: String?) { self.value = value }
+    func inviteText() -> String? { reads += 1; return value }
+}
+
 let teamChoiceChecks: [Check] = [
+    Check("Paste invite fills the field from a copied deep link") { c in
+        let pb = FakePasteboard("mattstack://join/01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC")
+        let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: pb) }
+        await MainActor.run { m.pasteInvite() }
+        c.expect(await MainActor.run { !m.inviteCode.isEmpty })
+        c.expectEqual(pb.reads, 1)
+    },
+    Check("nothing reads the pasteboard without a click") { c in
+        let pb = FakePasteboard("mattstack://join/01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC")
+        let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: pb) }
+        await MainActor.run { m.choice = .join }
+        _ = await m.validateAndPrepare()
+        c.expectEqual(pb.reads, 0)
+    },
+    Check("a denied alert reads as nil and leaves whatever was typed alone") { c in
+        let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: FakePasteboard(nil)) }
+        await MainActor.run { m.inviteCode = "typed-so-far"; m.pasteInvite() }
+        c.expectEqual(await MainActor.run { m.inviteCode }, "typed-so-far")
+    },
+    Check("a clipboard holding something else leaves the field alone") { c in
+        let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: FakePasteboard("https://example.com/")) }
+        await MainActor.run { m.pasteInvite() }
+        c.expectEqual(await MainActor.run { m.inviteCode }, "")
+    },
+
     Check("Slug.make") { c in
         c.expectEqual(Slug.make("Acme Claims!"), "acme-claims")
         c.expectEqual(Slug.make("  My  Team -- 2 "), "my-team-2")
@@ -10,7 +42,7 @@ let teamChoiceChecks: [Check] = [
     Check("create: slug preview, gh owner picker from github status, canContinue needs name + remote") { c in
         let rt = ScriptedRt()
         rt.answers["setup github status"] = (0, #"{"contract":1,"status":"ready","handle":"m4ttheweric","owners":["m4ttheweric","acme"]}"#)
-        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        let m = await MainActor.run { TeamChoiceModel(rt: rt, pasteboard: FakePasteboard(nil)) }
         await m.loadGitHubStatus()
         await MainActor.run {
             c.expectEqual(m.ghHandle, "m4ttheweric")
@@ -32,7 +64,7 @@ let teamChoiceChecks: [Check] = [
         let rt = ScriptedRt()
         rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
         rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-claims","name":"Acme Claims"},"remote":"ok"}"#)
-        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        let m = await MainActor.run { TeamChoiceModel(rt: rt, pasteboard: FakePasteboard(nil)) }
         await MainActor.run { m.choice = .create; m.teamName = "Acme Claims"; m.useGhRepo = false; m.remoteURL = "https://example.com/t.git" }
         let err = await m.validateAndPrepare()
         c.expect(err == nil, "got \(err ?? "")")
@@ -42,7 +74,7 @@ let teamChoiceChecks: [Check] = [
         let gh = ScriptedRt()
         gh.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
         gh.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-claims","name":"Acme Claims"},"remote":"ok"}"#)
-        let m2 = await MainActor.run { TeamChoiceModel(rt: gh) }
+        let m2 = await MainActor.run { TeamChoiceModel(rt: gh, pasteboard: FakePasteboard(nil)) }
         await MainActor.run { m2.choice = .create; m2.teamName = "Acme Claims"; m2.useGhRepo = true; m2.ghOwner = "acme"; m2.othersWillJoin = false }
         c.expect(await m2.validateAndPrepare() == nil)
         try c.require(gh.calls.count >= 2, "expected home init --dry-run then team create, got \(gh.calls.map(\.args))")
@@ -51,7 +83,7 @@ let teamChoiceChecks: [Check] = [
     Check("create: loadGitHubStatus only queries rt once — a second call after Back doesn't clobber the user's edits") { c in
         let rt = ScriptedRt()
         rt.answers["setup github status"] = (0, #"{"contract":1,"status":"ready","handle":"m4ttheweric","owners":["m4ttheweric","acme"]}"#)
-        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        let m = await MainActor.run { TeamChoiceModel(rt: rt, pasteboard: FakePasteboard(nil)) }
         await m.loadGitHubStatus()
         await MainActor.run {
             c.expectEqual(m.useGhRepo, true)
@@ -69,7 +101,7 @@ let teamChoiceChecks: [Check] = [
         let rt = ScriptedRt()
         rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
         rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-claims","name":"Acme Claims"},"remote":"ok"}"#)
-        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        let m = await MainActor.run { TeamChoiceModel(rt: rt, pasteboard: FakePasteboard(nil)) }
         await MainActor.run { m.choice = .create; m.teamName = "Acme Claims"; m.useGhRepo = false; m.remoteURL = "https://example.com/t.git" }
         c.expect(await m.validateAndPrepare() == nil)
         c.expect(await m.validateAndPrepare() == nil, "repeat call with unchanged inputs must still report success")
@@ -82,7 +114,7 @@ let teamChoiceChecks: [Check] = [
         let rt = ScriptedRt()
         rt.answers["team join --dry-run"] = (0, #"{"contract":1,"team":{"slug":"acme","name":"Acme","owner":"matt"},"access":"ok","peering":"idle","message":"Joining Acme (owner matt)"}"#)
         rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
-        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        let m = await MainActor.run { TeamChoiceModel(rt: rt, pasteboard: FakePasteboard(nil)) }
         await MainActor.run { m.choice = .join; m.inviteCode = "ABCD-EFGH" }
         let err = await m.validateAndPrepare()
         c.expect(err == nil)
@@ -93,13 +125,13 @@ let teamChoiceChecks: [Check] = [
         await MainActor.run { c.expectEqual(m.joinSummary, "Joining Acme (owner matt)") }
         let denied = ScriptedRt()
         denied.answers["team join --dry-run"] = (0, #"{"contract":1,"team":{"slug":"acme","name":"Acme","owner":"matt"},"access":"denied","peering":"idle","message":"You don't have access yet: ask matt to grant you access to Acme."}"#)
-        let m2 = await MainActor.run { TeamChoiceModel(rt: denied) }
+        let m2 = await MainActor.run { TeamChoiceModel(rt: denied, pasteboard: FakePasteboard(nil)) }
         await MainActor.run { m2.choice = .join; m2.inviteCode = "X" }
         let e2 = await m2.validateAndPrepare()
         c.expectEqual(e2, "You don't have access yet: ask matt to grant you access to Acme.", "access != ok comes back as an exit-0 result, not a user error")
         let unknown = ScriptedRt()
         unknown.answers["team join --dry-run"] = (2, #"{"contract":1,"error":{"code":"invite-unknown","message":""}}"#)
-        let m3 = await MainActor.run { TeamChoiceModel(rt: unknown) }
+        let m3 = await MainActor.run { TeamChoiceModel(rt: unknown, pasteboard: FakePasteboard(nil)) }
         await MainActor.run { m3.choice = .join; m3.inviteCode = "X" }
         c.expectEqual(await m3.validateAndPrepare(), "Invite not recognized or expired: ask the team owner for a new one.")
         c.expectEqual(TeamChoiceModel.joinFailureCopy(RtUserError(code: "expired", message: ""), owner: "matt", team: nil),
@@ -108,7 +140,7 @@ let teamChoiceChecks: [Check] = [
                       "This code is for a different forge account than you're signed into.")
     },
     Check("join: invite field accepts pasted codes with whitespace/newlines; ~77 chars; no per-char validation") { c in
-        let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt()) }
+        let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: FakePasteboard(nil)) }
         await MainActor.run {
             m.choice = .join
             m.inviteCode = " ABCD-EFGH-\nIJKL "
@@ -123,7 +155,7 @@ let teamChoiceChecks: [Check] = [
         let rt = ScriptedRt()
         rt.answers["restore"] = (0, #"{"contract":1,"ok":true,"repo":"m4ttheweric/mattstack-home"}"#)
         rt.answers["setup intent restore"] = (0, #"{"contract":1,"ok":true,"intent":"restore","repo":"m4ttheweric/mattstack-home"}"#)
-        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        let m = await MainActor.run { TeamChoiceModel(rt: rt, pasteboard: FakePasteboard(nil)) }
         await MainActor.run { m.choice = .restore; m.restoreRepo = "m4ttheweric/mattstack-home"; c.expectEqual(m.canContinue, false); m.restoreAgeKey = "AGE-SECRET-KEY-1XYZ"; c.expectEqual(m.canContinue, true) }
         let err = await m.validateAndPrepare()
         c.expect(err == nil)
@@ -137,7 +169,7 @@ let teamChoiceChecks: [Check] = [
         let rt = ScriptedRt()
         rt.answers["restore"] = (0, #"{"contract":1,"ok":true,"repo":"m4ttheweric/mattstack-home"}"#)
         rt.answers["setup intent restore"] = (0, #"{"contract":1,"ok":true,"intent":"restore","repo":"m4ttheweric/mattstack-home"}"#)
-        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        let m = await MainActor.run { TeamChoiceModel(rt: rt, pasteboard: FakePasteboard(nil)) }
         await MainActor.run { m.choice = .restore; m.restoreRepo = "m4ttheweric/mattstack-home"; m.restoreAgeKey = "AGE-SECRET-KEY-1XYZ" }
         c.expect(await m.validateAndPrepare() == nil)
         let afterFirst = rt.calls.count
@@ -154,7 +186,7 @@ let teamChoiceChecks: [Check] = [
         }
     },
     Check("normalizedInviteCode accepts bare codes, deep links, and URLs; leaves other inputs for the CLI") { c in
-        let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt()) }
+        let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: FakePasteboard(nil)) }
         await MainActor.run {
             m.inviteCode = "mattstack://join/01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC"
             c.expectEqual(m.normalizedInviteCode, "0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABC")

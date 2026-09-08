@@ -32,6 +32,7 @@ enum AXID {
     static let teamCreateOwner = "setup.team.create.owner"
     static let teamCreateRemote = "setup.team.create.remote"
     static let teamJoinCode = "setup.team.join.code"
+    static let teamPasteInvite = "setup.team.paste.invite"
     static let teamRestoreRepo = "setup.team.restore.repo"
     static let teamRestoreKey = "setup.team.restore.key"
 

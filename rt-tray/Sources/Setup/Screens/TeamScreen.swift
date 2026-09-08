@@ -77,6 +77,12 @@ struct TeamScreen: View {
                     .frame(minHeight: 54)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
                     .accessibilityIdentifier(AXID.teamJoinCode)
+                HStack {
+                    Button("Paste invite") { model.pasteInvite() }
+                        .accessibilityIdentifier(AXID.teamPasteInvite)
+                    Text("macOS may ask permission to read your clipboard.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Text("Paste the whole code (about \(TeamChoiceModel.inviteCodeLength) characters), or paste the mattstack://join link you were sent.")
                     .font(.caption).foregroundStyle(.secondary)
             }

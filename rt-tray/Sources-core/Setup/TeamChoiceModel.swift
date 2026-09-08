@@ -31,6 +31,7 @@ public final class TeamChoiceModel: ObservableObject {
     @Published public private(set) var isChecking = false
 
     private let rt: RtRunning
+    private let pasteboard: PasteboardReading
     // rt.run is non-cancellable, so this is the only guard against a second
     // Back→Continue re-fetch (the view is recreated but the model persists)
     // clobbering fields the user has since edited by hand.
@@ -46,12 +47,20 @@ public final class TeamChoiceModel: ObservableObject {
     // re-pasting one re-runs the whole restore.
     private var restoredRepo: String?
 
-    public init(rt: RtRunning) { self.rt = rt }
+    public init(rt: RtRunning, pasteboard: PasteboardReading) {
+        self.rt = rt
+        self.pasteboard = pasteboard
+    }
 
     public var slugPreview: String { Slug.make(teamName) }
     public var ghRepoPreview: String { "\(ghOwner ?? ghHandle ?? "you")/mattstack-team-\(slugPreview)" }
     public var normalizedInviteCode: String {
         JoinLink.code(fromText: inviteCode) ?? inviteCode.filter { !$0.isWhitespace && !$0.isNewline }
+    }
+
+    public func pasteInvite() {
+        guard let text = pasteboard.inviteText(), let code = JoinLink.code(fromText: text) else { return }
+        inviteCode = code
     }
 
     public var canContinue: Bool {
