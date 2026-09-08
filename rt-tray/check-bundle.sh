@@ -413,6 +413,19 @@ check_helpers() { # app
             assert_eq "$exe proxy-helper codesign identifier" "Identifier=com.mattstack.helper.mattstack-proxy-install" "$(codesign -dv "$pxy" 2>&1 | grep '^Identifier=' || true)"
             "$pxy" --version 2>/dev/null | grep -q '^mattstack-proxy-install .* protocol 1$' && pass "$exe proxy-helper answers --version" || fail "$exe proxy-helper --version failed"
             [ -d "$app/Contents/Helpers/portless-dist" ] && pass "$exe ships portless-dist" || fail "$exe missing Helpers/portless-dist"
+            # The helper refuses to copy a payload whose bytes miss its pins, so
+            # a pin taken before signing ships a helper that rejects its own
+            # bundle and fails every install. The pin is a string literal in the
+            # binary, so the shipped node's digest has to appear in it verbatim.
+            local node_bin="$app/Contents/Helpers/node/bin/node" node_sha
+            if [ -f "$node_bin" ]; then
+                node_sha=$(shasum -a 256 "$node_bin" | cut -d' ' -f1)
+                grep -q "$node_sha" "$pxy" \
+                    && pass "$exe proxy-helper pins the shipped node ($node_sha)" \
+                    || fail "$exe proxy-helper pins some other node: shipped $node_sha is not in its pins (gen-pins ran before Helpers/node was signed?)"
+            else
+                fail "$exe missing Helpers/node/bin/node for the proxy-helper pin check"
+            fi
         else
             fail "$exe missing Helpers/mattstack-proxy-install"
         fi

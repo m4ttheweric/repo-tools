@@ -5,21 +5,33 @@ set -euo pipefail
 export LC_ALL=C
 
 # Writes Sources/ProxyInstall/Pins.generated.swift from rt-tray/deps.lock plus
-# the fetched portless tree. Nothing in the package supplies a fallback, so this
-# has to run before ANY swift build or swift test of the helper.
+# the payload the helper will copy. Nothing in the package supplies a fallback,
+# so this has to run before ANY swift build or swift test of the helper.
 #
-# usage: gen-pins.sh <app-version>
-#   development (before swift build / swift test, after scripts/fetch-deps.sh arm64):
-#     bash rt-tray/proxy-helper/scripts/gen-pins.sh 0.0.0-dev
+# The payload paths are arguments, never derived, and there is no default. In a
+# real build they are the bundle's SIGNED Helpers copies: codesign rewrites a
+# Mach-O in place, so pins taken from the fetched dep describe bytes that never
+# ship, and the helper then refuses its own payload at install time. A default
+# would put that failure one forgotten argument away.
+#
+# usage: gen-pins.sh <app-version> <portless-dist-dir> <node-binary>
+#   build (rt-tray/build.sh, after the helper signing pass):
+#     gen-pins.sh 2.8.0 <app>/Contents/Helpers/portless-dist <app>/Contents/Helpers/node/bin/node
+#   development, only to make `swift build` / `swift test` compile (their
+#   fixtures never read Pins.current), after scripts/fetch-deps.sh arm64:
+#     gen-pins.sh 0.0.0-dev rt-tray/deps/arm64/portless rt-tray/deps/arm64/node/bin/node
 
 usage() {
-    echo "usage: gen-pins.sh <app-version>" >&2
-    echo "  dev: bash rt-tray/proxy-helper/scripts/gen-pins.sh 0.0.0-dev (after scripts/fetch-deps.sh arm64)" >&2
+    echo "usage: gen-pins.sh <app-version> <portless-dist-dir> <node-binary>" >&2
+    echo "  dev: gen-pins.sh 0.0.0-dev rt-tray/deps/arm64/portless rt-tray/deps/arm64/node/bin/node" >&2
+    echo "  build: the paths are the bundle's SIGNED Contents/Helpers copies, not the fetched deps" >&2
     exit 64
 }
 
 APP_VERSION="${1:-}"
-[ -n "$APP_VERSION" ] || usage
+TREE="${2:-}"
+NODE_BIN="${3:-}"
+[ -n "$APP_VERSION" ] && [ -n "$TREE" ] && [ -n "$NODE_BIN" ] || usage
 
 HELPER_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TRAY_DIR="$(cd "$HELPER_DIR/.." && pwd)"
@@ -60,10 +72,7 @@ IFS=$'\t' read -r P_NAME P_VERSION P_SHA <<< "$ROW"
     echo "  x gen-pins: incomplete $LOCK_NAME row: '$ROW'" >&2; exit 1
 }
 
-# fetch-deps.sh unpacks helpers to deps/<arch>/<lock name>; portless-dist is only
-# the name it takes inside the bundle, so the fetched tree is deps/arm64/portless.
-TREE="$TRAY_DIR/deps/arm64/$P_NAME"
-[ -d "$TREE" ] || { echo "  x gen-pins: $TREE not fetched — run scripts/fetch-deps.sh arm64" >&2; exit 1; }
+[ -d "$TREE" ] || { echo "  x gen-pins: no portless tree at $TREE" >&2; exit 1; }
 
 # Shape-checks the digest so an unreadable file fails the build rather than
 # pinning an empty or partial hash.
@@ -129,12 +138,11 @@ TREE_SHA="$(tree_hash "$TREE")"
 
 # Only the interpreter is installed into the root-owned tree, so only it is
 # pinned; the rest of the node distribution never leaves the bundle.
-NODE_BIN="$TRAY_DIR/deps/arm64/node/bin/node"
 if [ -L "$NODE_BIN" ]; then
     echo "  x gen-pins: $NODE_BIN is a symlink; the pin cannot describe it" >&2; exit 1
 fi
 if [ ! -f "$NODE_BIN" ]; then
-    echo "  x gen-pins: $NODE_BIN not fetched or not a regular file — run scripts/fetch-deps.sh arm64" >&2; exit 1
+    echo "  x gen-pins: $NODE_BIN is not a regular file" >&2; exit 1
 fi
 NODE_SHA="$(file_hash "$NODE_BIN")"
 

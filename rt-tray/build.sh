@@ -305,19 +305,11 @@ if [ "$IS_DEV" != true ]; then
     fi
 fi
 
-# ─── Build + embed the privileged proxy helper ────────────────────────────────
-# Mirrors rt-ui exactly, including the prod-only gate: the dev bundle ships
-# without it and check-bundle's assertions are mattstack-gated to match.
-if [ "$IS_DEV" != true ]; then
-    # Nothing in the package supplies fallback pins, so codegen has to precede
-    # the compile: a helper that built without it would install unverified bytes.
-    bash "$REPO_DIR/rt-tray/proxy-helper/scripts/gen-pins.sh" "$RT_VERSION"
-    ( cd "$REPO_DIR/rt-tray/proxy-helper" && swift build -c release --disable-sandbox )
-    PROXY_HELPER_BIN="$REPO_DIR/rt-tray/proxy-helper/.build/release/ProxyInstall"
-    cp "$PROXY_HELPER_BIN" "$CONTENTS/Helpers/mattstack-proxy-install"; chmod +x "$CONTENTS/Helpers/mattstack-proxy-install"
-    xattr -cr "$CONTENTS/Helpers/mattstack-proxy-install" 2>/dev/null || true
-    HELPER_ENTITLEMENTS+=("$CONTENTS/Helpers/mattstack-proxy-install	none")
-fi
+# The privileged proxy helper would belong here, beside rt-ui. It is built
+# after the helper signing pass instead (see "Build + embed the privileged
+# proxy helper" below): its pins describe the payload it copies into a
+# root-owned tree, and codesign rewrites a Mach-O in place, so the bytes worth
+# pinning are the ones that survive signing.
 
 # ─── Extension ───────────────────────────────────────────────────────────────
 if [ -n "${RT_VSIX:-}" ]; then
@@ -475,6 +467,32 @@ for entry in "${HELPER_ENTITLEMENTS[@]+"${HELPER_ENTITLEMENTS[@]}"}"; do
     sign_helper_tree "$path" "$ent"
     echo "  ✓ Signed Helpers/$(basename "$path") ($ent, $SIGNED_FILE_COUNT files)"
 done
+
+# ─── Build + embed the privileged proxy helper ────────────────────────────────
+# Deliberately after the loop above and not beside rt-ui. The helper refuses to
+# copy a payload whose bytes do not match its compiled-in pins, and the payload
+# it copies is the SIGNED Helpers/node and Helpers/portless-dist: codesign
+# rewrites a Mach-O in place, so a pin taken from the fetched dep can never
+# match what ships. Pinning here means node is signed exactly once, by the loop
+# above, before gen-pins reads it; the outer seal below writes CodeResources
+# and leaves nested binaries alone. check-bundle.sh re-checks the node pin
+# against the shipped binary so a future reorder cannot quietly undo this.
+#
+# The prod-only gate mirrors rt-ui's: the dev bundle ships without the helper
+# and check-bundle's assertions are mattstack-gated to match.
+if [ "$IS_DEV" != true ]; then
+    bash "$REPO_DIR/rt-tray/proxy-helper/scripts/gen-pins.sh" "$RT_VERSION" \
+        "$CONTENTS/Helpers/portless-dist" "$CONTENTS/Helpers/node/bin/node"
+    ( cd "$REPO_DIR/rt-tray/proxy-helper" && swift build -c release --disable-sandbox )
+    cp "$REPO_DIR/rt-tray/proxy-helper/.build/release/ProxyInstall" "$CONTENTS/Helpers/mattstack-proxy-install"
+    chmod +x "$CONTENTS/Helpers/mattstack-proxy-install"
+    xattr -cr "$CONTENTS/Helpers/mattstack-proxy-install" 2>/dev/null || true
+    # Signed here rather than through HELPER_ENTITLEMENTS: the loop has already
+    # run, and re-running it over Helpers/node is exactly what this ordering
+    # exists to avoid.
+    sign -i "com.mattstack.helper.mattstack-proxy-install" "$CONTENTS/Helpers/mattstack-proxy-install"
+    echo "  ✓ Signed Helpers/mattstack-proxy-install (none, 1 files)"
+fi
 
 if [ -f "$CONTENTS/MacOS/rt" ]; then
     sign -i rt --entitlements "$ENTITLEMENTS_JIT" "$CONTENTS/MacOS/rt"
