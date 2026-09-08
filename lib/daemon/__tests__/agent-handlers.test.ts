@@ -22,6 +22,7 @@ function okRunner(calls: string[][]): HerdrRunner {
 
 function fresh(over: {
   runner?: HerdrRunner;
+  runnerFactory?: (socket: string) => HerdrRunner;
   spawn?: (argv: string[], cwd: string) => HeadlessChild;
   emit?: (t: string, p?: unknown) => void;
   insertAgentFn?: (...args: unknown[]) => void;
@@ -33,6 +34,7 @@ function fresh(over: {
     db,
     emitEvent: over.emit ?? (() => 0),
     herdrRunner: over.runner,
+    herdrRunnerForSocket: over.runnerFactory,
     spawnHeadless: over.spawn,
     insertAgentFn: over.insertAgentFn as typeof import("../../state/index.ts").insertAgent | undefined,
   }), { db });
@@ -271,6 +273,35 @@ test("agent:resume threads the reserved handle back into --name", async () => {
   expect(resumed.ok).toBe(true);
   const paneRun = calls.find((c) => c[0] === "pane" && c[1] === "run");
   expect(paneRun?.[3]).toContain(`'--name' '${started.data.handle}'`);
+});
+
+test("agent:start passes env into the pane command", async () => {
+  const calls: string[][] = [];
+  const h = fresh({ runner: okRunner(calls) });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", env: { HERD_ID: "demo-1" } });
+  expect(res.ok).toBe(true);
+  const paneRun = calls.find((c) => c[0] === "pane" && c[1] === "run");
+  expect(paneRun?.[3]).toContain("HERD_ID='demo-1' claude");
+});
+
+test("agent:start with herdrSocket builds a runner on that socket", async () => {
+  const seenSockets: string[] = [];
+  const h = fresh({
+    runnerFactory: (socket) => { seenSockets.push(socket); return okRunner([]); },
+  });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", herdrSocket: "/tmp/hidden.sock" });
+  expect(res.ok).toBe(true);
+  expect(seenSockets).toEqual(["/tmp/hidden.sock"]);
+});
+
+test("agent:start with handle uses it as --name and reserves no pool handle", async () => {
+  const calls: string[][] = [];
+  const h = fresh({ runner: okRunner(calls) });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", handle: "cv-1" });
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.handle).toBe("cv-1");
+  const paneRun = calls.find((c) => c[0] === "pane" && c[1] === "run");
+  expect(paneRun?.[3]).toContain("'--name' 'cv-1'");
 });
 
 test("agent:list filters by repo", async () => {

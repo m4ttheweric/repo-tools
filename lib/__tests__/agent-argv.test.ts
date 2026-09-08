@@ -105,6 +105,25 @@ describe("buildPaneCommand", () => {
     });
     expect(cmd).toBe(`cd '/r' && claude '--name' 'kai' '--settings' '{"crossSessionInbound":"accept"}' '--session-id' '${UUID}'`);
   });
+
+  test("buildPaneCommand prefixes single-quoted env assignments before the claude head", () => {
+    const cmd = buildPaneCommand("/w/x", {
+      session: { kind: "start", sessionId: "11111111-1111-1111-1111-111111111111" },
+      headless: false,
+      env: { HERD_ID: "demo-1", HERD_JOB: "cv-1", HERD_ROOM: "herd-demo-1" },
+    });
+    expect(cmd).toContain("cd '/w/x' && HERD_ID='demo-1' HERD_JOB='cv-1' HERD_ROOM='herd-demo-1' claude ");
+  });
+
+  test("buildPaneCommand with an account puts env before cswap", () => {
+    const cmd = buildPaneCommand("/w/x", {
+      session: { kind: "start", sessionId: "11111111-1111-1111-1111-111111111111" },
+      headless: false,
+      account: "2",
+      env: { HERD_ID: "demo-1" },
+    });
+    expect(cmd).toContain("&& HERD_ID='demo-1' cswap run '2' --");
+  });
 });
 
 test("shellSingleQuote escapes embedded quotes", () => {
