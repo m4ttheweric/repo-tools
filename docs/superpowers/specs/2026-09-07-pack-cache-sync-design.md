@@ -60,6 +60,24 @@ That uninstall phrasing matches `isAlreadyGone` (`uninstall.ts:210`) through its
 `not found` alternative, so the rollback reuses that matcher rather than adding
 one. The two editor-specific alternatives in that regex are inert here.
 
+**Measured against the real pack**, not the fixture: `claimview@assured` from
+`~/.mattstack/teams/claimview` (1.1 MB, 106 files across `skills/`,
+`attachments/`, `pack/`, `scripts/`), installed into a throwaway
+`CLAUDE_CONFIG_DIR` so the live install was untouched:
+
+| Command | Elapsed |
+| --- | --- |
+| `claude plugin marketplace add <clone>` | 0.47 s |
+| `claude plugin install claimview@assured` | 0.86 s |
+| `claude plugin disable claimview@assured` | 0.40 s |
+| `claude plugin uninstall claimview@assured` | 0.41 s |
+
+A directory-source install is a local copy, so it scales with pack size rather
+than with the network, and the largest real pack lands in under a second. The
+30 s settlement timeout below is derived from that number: roughly 35x the
+measured worst case, which absorbs a much larger pack or a loaded machine while
+still leaving the budget arithmetic intact.
+
 Three consequences drive the design. The converge verb is `update`, never
 `install`, because only `update` preserves the disabled state. The served version
 must be read from the clone on disk, because the CLI will not report it. And
@@ -133,15 +151,18 @@ for the life of the daemon, silently.
   recorded as `failed` for that pack. It is never recorded as success, and never
   as "not installed".
 - **Per-converge:** a whole-run budget of `CONVERGE_BUDGET_MS` (120_000). When it
-  is exhausted, the remaining packs are recorded as `skipped` and the run
-  returns. The next pull retries them.
+  is exhausted, the remaining packs are recorded as `skipped` with reason
+  `converge budget exhausted` and the run returns. The next pull retries them.
 - **A settlement is atomic with respect to the budget.** The budget is checked
   before a settlement begins and never between its steps, so the run can never
   abort after `install` with nothing left for `disable` or the `uninstall`
   fallback... which would leave exactly the installed-and-enabled third state the
   invariant forbids. A settlement that does not fit in the remaining budget is
-  skipped whole: nothing is installed, the pack stays absent, its row says
-  `missing`, and the next pull retries it.
+  skipped whole, with the distinct reason `settlement did not fit the remaining
+  budget`: nothing is installed, the pack stays absent, its row says `missing`,
+  and the next pull retries it. The two skip reasons stay distinguishable because
+  they call for different reads... one says the converge ran out of time overall,
+  the other that this pack alone could not be settled safely.
 
 **The arithmetic, since the invariant and the client ceiling must both hold.**
 A settlement is at most three execs, so its execs take a shorter timeout than the
@@ -247,7 +268,11 @@ team does not get to grant itself execution. Rather than remember a failed
 ```
 install <id>
   exit 0                              -> proceed to disable
-  exit != 0, isAlready                -> proceed to disable (it was already there)
+  exit != 0, isAlready                -> pre-existing: record current, leave
+                                         enablement alone. STOP.
+  exit 124 (timed out)                -> AMBIGUOUS: uninstall <id>, then record
+                                         failed (failed-rollback if that fails).
+                                         Never disable.
   exit != 0, otherwise                -> failed. STOP: no disable, no uninstall.
 
 disable <id>
@@ -263,8 +288,27 @@ disable <id>
 `disable`.** Per the Evidence table, `disable` on a pack that is not installed
 exits 1 with `is already disabled`, which the branch above classifies as done. So
 a fall-through from a failed install would record that pack as installed and
-settled when nothing was installed at all. Install is therefore terminal on
-failure: recorded `failed`, and the sequence stops there.
+settled when nothing was installed at all.
+
+**A clean failure is terminal; a timeout is not, because it is ambiguous by
+construction.** `execWithTimeout` sends SIGTERM and then SIGKILL, so an install
+killed after it wrote `installed_plugins.json` and the `enabledPlugins` entry but
+before exiting leaves the pack installed and enabled: the forbidden third state,
+reached without any command reporting success. Exit 124 therefore attempts an
+`uninstall` before recording `failed`. That is safe in both directions, because
+`isAlreadyGone` absorbs the case where nothing was written after all, and it
+still never reaches `disable`. It also fits: install plus uninstall is two 30 s
+calls inside the 90 s a settlement reserves.
+
+**An `isAlready` install is a pre-existing pack, and rt leaves it alone.** That
+branch is reached only when the listing showed the pack absent and `update` said
+not-found, so the pack appeared underneath this run. The rollback's safety
+argument ("this run installed it moments ago") does not hold there, and rt's rule
+is that it disables only what it installed. The pack is recorded `current` with
+its enablement untouched. The practical consequence is that a pack enabled on a
+machine before this change stays enabled, which is correct: it is
+indistinguishable from a deliberate enable, and stomping it is the thing this
+design forbids.
 
 The invariant is therefore structural rather than bookkept: **after any run a
 team pack is installed-and-disabled, or not installed. There is no third state**,
