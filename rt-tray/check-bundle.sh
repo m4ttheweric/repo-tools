@@ -339,7 +339,7 @@ check_helpers() { # app
         # here are two separate acts. Helpers that are directories rather than
         # single executables are asserted individually below.
         case "$name" in
-            node|fast-browser) ;;
+            node|fast-browser|portless) ;;
             *)
                 if [ -f "$p" ] && [ -x "$p" ]; then
                     "$p" --version >/dev/null 2>&1 \

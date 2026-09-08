@@ -42,4 +42,14 @@ describe("live deps.lock buildable set", () => {
       expect(lock.tools.find((t) => t.name === name)?.repo, name).toBeUndefined();
     }
   });
+
+  test("portless is pinned and the helper row is first-party (absent)", () => {
+    const portless = lock.tools.find((t) => t.name === "portless");
+    expect(portless?.status).toBe("bundled");
+    expect(portless?.url).toMatch(/^https:\/\/registry\.npmjs\.org\/portless\/-\/portless-\d+\.\d+\.\d+\.tgz$/);
+    expect(portless?.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(portless?.bundlePath).toBe("Contents/Helpers/portless-dist");
+    expect(portless?.exec).toEqual(["Contents/Helpers/node/bin/node", "Contents/Helpers/portless-dist/dist/cli.js"]);
+    expect(lock.tools.find((t) => t.name === "mattstack-proxy-install")).toBeUndefined();
+  });
 });

@@ -12,11 +12,10 @@ describe("rt-tray/deps.lock", () => {
     expect(lock.schema).toBe(1);
     expect(lock.arch).toBe("arm64");
   });
-  test("every suite app is bundled; only the proxy helper stays pending; sparkle is a build tool", () => {
+  test("every suite app is bundled; sparkle is a build tool", () => {
     const by = Object.fromEntries(lock.tools.map((t) => [t.name, t]));
-    for (const n of ["jq", "gh", "glab", "bun", "node", "fast-browser", "gitq", "age-keygen", "sops", "deck", "board", "console", "chat", "cloudflared"])
+    for (const n of ["jq", "gh", "glab", "bun", "node", "fast-browser", "gitq", "age-keygen", "sops", "deck", "board", "console", "chat", "cloudflared", "portless"])
       expect(by[n]?.status).toBe("bundled");
-    for (const n of ["mattstack-proxy-install"]) expect(by[n]?.status).toBe("pending");
     expect(by["sparkle"]?.kind).toBe("buildtool");
   });
   test("default-exposed set is exactly fast-browser, gitq, deck (rt is exposed by the binary link, not a helper)", () => {
