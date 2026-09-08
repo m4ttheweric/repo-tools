@@ -263,6 +263,35 @@ describe("renderStackRefusal", () => {
     expect(out).toContain("gitq sync --stack s1");
   });
 
+  test("human mode names the tool exactly once for a real gitq refusal", async () => {
+    const store = gitqStore([{ stackName: "s1", root: "master", nodes: [{ branch: "feat", parent: "master" }] }]);
+    const verdict = await checkStackMembership({
+      cwd: "/repo",
+      branch: "feat",
+      defaultBranch: "master",
+      runners: runners({ gitqStacks: async () => store }),
+    });
+    if (verdict.verdict !== "refuse") throw new Error("expected refusal");
+    const out = renderStackRefusal(verdict.refusal, "human");
+    expect(out.split("gitq sync --stack s1")).toHaveLength(2);
+    expect(out).toContain("Run: gitq sync --stack s1");
+  });
+
+  test("human mode names the tool exactly once for a forge refusal", async () => {
+    const verdict = await checkStackMembership({
+      cwd: "/repo",
+      branch: "feat-child",
+      defaultBranch: "master",
+      runners: runners({
+        forgeOpenMrs: async () => ({ ok: true, mrs: [{ iid: 1, source: "feat-child", target: "feat-parent", url: "u" }] }),
+      }),
+    });
+    if (verdict.verdict !== "refuse") throw new Error("expected refusal");
+    const out = renderStackRefusal(verdict.refusal, "human");
+    expect(out.split("gitq track")).toHaveLength(2);
+    expect(out).toContain("Run: gitq track");
+  });
+
   test("the refusal exit code is distinct from the paused-conflict bundle's 3", () => {
     expect(STACK_REFUSAL_EXIT).toBe(4);
   });

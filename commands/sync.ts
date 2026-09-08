@@ -194,8 +194,9 @@ export async function syncBranch(
   const stack = await checkStackMembership({ cwd, branch, defaultBranch: defaultBranchName, runners: stackRunners });
   syncLog.phase("stack-guard", { verdict: stack.verdict, ...(stack.verdict === "clear" ? {} : { kind: stack.refusal.kind, source: stack.refusal.source }) });
   if (stack.verdict === "refuse" || (stack.verdict === "unverified" && opts.strictStackCheck)) {
-    syncLog.worktreeEnd(branch, stack.refusal.hint);
-    return { branch, worktree: cwd, resetResult: null, rebaseResult: null, pushed: false, error: stack.refusal.hint, refusal: stack.refusal };
+    const line = renderStackRefusal(stack.refusal, "human");
+    syncLog.worktreeEnd(branch, line);
+    return { branch, worktree: cwd, resetResult: null, rebaseResult: null, pushed: false, error: line, refusal: stack.refusal };
   }
   if (stack.verdict === "unverified" && !opts.quiet) {
     steps.log(`${stack.refusal.hint} — proceeding; rerun with --json to fail closed`, "warn");

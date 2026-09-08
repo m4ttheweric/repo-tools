@@ -40,7 +40,7 @@ export const STACK_REFUSAL_EXIT = 4;
 
 export function renderStackRefusal(refusal: StackRefusal, mode: "json" | "human"): string {
   if (mode === "json") return JSON.stringify(refusal, null, 2);
-  return refusal.tool ? `${refusal.hint} (${refusal.tool})` : refusal.hint;
+  return refusal.tool ? `${refusal.hint}. Run: ${refusal.tool}` : refusal.hint;
 }
 
 export type StackVerdict =
@@ -102,7 +102,7 @@ export async function checkStackMembership(opts: {
         stack: membership,
         mrs: null,
         tool,
-        hint: `${opts.branch} is a member of stack ${membership.name} (parent ${membership.parent}); rebasing it alone onto ${opts.defaultBranch} would break the stack. Run: ${tool}`,
+        hint: `${opts.branch} is a member of stack ${membership.name} (parent ${membership.parent}); rebasing it alone onto ${opts.defaultBranch} would break the stack`,
       },
     };
   }
@@ -136,7 +136,7 @@ export async function checkStackMembership(opts: {
         stack: null,
         mrs: [...own, ...dependents],
         tool: "gitq track",
-        hint: `${opts.branch} is part of an untracked stack: ${detail}. Track it with gitq track, then run gitq sync`,
+        hint: `${opts.branch} is part of an untracked stack (${detail}); track it, then sync the stack`,
       },
     };
   }
