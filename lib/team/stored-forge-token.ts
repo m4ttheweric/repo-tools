@@ -4,8 +4,6 @@
  * offer a private team repo; this is what rt hands them instead.
  */
 
-import { createRealAgeKeySeam } from "../home/age-key.ts";
-import { createRealSecretsExecSeam, readSecret } from "../secrets/store.ts";
 import type { Probes } from "../setup/probes.ts";
 import { forgeTokenLookupReal, tokenOrNull } from "./forge-token.ts";
 

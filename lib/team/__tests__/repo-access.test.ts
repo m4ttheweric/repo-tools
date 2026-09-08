@@ -39,6 +39,14 @@ describe("probeTeamRepoAccess", () => {
     expect(v.kind).toBe("no-account");
   });
 
+  test("no credential on a host rt does not recognize is indeterminate, names the host, and never asks for an account rt cannot connect", async () => {
+    const exec = git(() => ({ code: 128, stdout: "", stderr: "fatal: could not read Username for 'https://git.acme.internal'" }));
+    const v = await probeTeamRepoAccess(fakeProbes({ exec }), "https://git.acme.internal/team/repo.git", ABSENT);
+    expect(v.kind).toBe("indeterminate");
+    expect(v.detail).toContain("git.acme.internal");
+    expect(v.detail).toContain("credential helper");
+  });
+
   test("no credential offered while rt DID hold a token is indeterminate, never no-account", async () => {
     const exec = git(() => ({ code: 128, stdout: "", stderr: "fatal: could not read Username for 'https://github.com'" }));
     const v = await probeTeamRepoAccess(fakeProbes({ exec }), REMOTE, TOKEN);
@@ -75,5 +83,17 @@ describe("probeTeamRepoAccess", () => {
     await probeTeamRepoAccess(fakeProbes({ exec }), REMOTE, TOKEN);
     expect(seen[0]!.join(" ")).not.toContain("gho_x");
     expect(envs[0]!.RT_GIT_TOKEN).toBe("gho_x");
+  });
+
+  test("the probe runs with prompts off and no protocol the remote itself names", async () => {
+    let env: Record<string, string> = {};
+    const exec: ExecScript = (argv, opts) => {
+      if (argv[0] === "xcode-select") return ok();
+      env = (opts?.env ?? {}) as Record<string, string>;
+      return ok();
+    };
+    await probeTeamRepoAccess(fakeProbes({ exec }), REMOTE, ABSENT);
+    expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(env.GIT_PROTOCOL_FROM_USER).toBe("0");
   });
 });

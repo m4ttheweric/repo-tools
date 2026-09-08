@@ -1,11 +1,13 @@
 /**
  * The one read of what a joiner's credentials can see. `no-account` requires
- * both halves of the evidence: git had nothing to offer AND rt holds no token
- * of its own. Either alone is only a could-not-determine.
+ * every half of the evidence: git had nothing to offer, rt holds no token of
+ * its own, AND the remote is on a forge rt can actually connect an account to.
+ * Anything short of all three is only a could-not-determine.
  */
 
 import { gitUsable } from "../setup/home-git.ts";
 import type { Probes } from "../setup/probes.ts";
+import { forgeFromRemote, hostFromRemote } from "../setup/team-settings.ts";
 import { gitWithToken } from "./git-credential.ts";
 import { tokenOrNull, type ForgeTokenLookup } from "./forge-token.ts";
 import { withoutUrls } from "./redact.ts";
@@ -18,7 +20,9 @@ export function forgeLabel(provider: "github" | "gitlab" | undefined): string {
 }
 
 const LS_REMOTE_TIMEOUT_MS = 15000;
-const GIT_ENV = { GIT_TERMINAL_PROMPT: "0" };
+// The remote can come from an invite pointer, so the same hardening joinRedeem's
+// clone uses applies here: no prompt, and no protocol the remote itself names.
+const GIT_ENV = { GIT_TERMINAL_PROMPT: "0", GIT_PROTOCOL_FROM_USER: "0" };
 const AUTH_REFUSAL_PATTERN = /Authentication failed|403|Permission denied/;
 const NO_CREDENTIAL_PATTERN = /could not read Username/;
 
@@ -35,7 +39,16 @@ export async function probeTeamRepoAccess(p: Probes, remote: string, lookup: For
   if (res.code === 2) return { kind: "ok", detail: "empty repo (will be initialized)" };
   if (res.code === 128) {
     if (NO_CREDENTIAL_PATTERN.test(res.stderr)) {
-      if (lookup.kind === "absent") return { kind: "no-account", detail: "no forge account connected yet" };
+      if (lookup.kind === "absent") {
+        // "no account connected" is a claim about a forge rt has an account
+        // concept for. On any other host there is nothing for rt to connect,
+        // so the same silence is only a could-not-determine.
+        if (!forgeFromRemote(remote)) {
+          const host = hostFromRemote(remote) ?? "that host";
+          return { kind: "indeterminate", detail: `couldn't determine access: git had no credential for ${host}, which rt doesn't recognize as GitHub or GitLab; add one to git's own credential helper` };
+        }
+        return { kind: "no-account", detail: "no forge account connected yet" };
+      }
       const why = lookup.kind === "unreadable" ? `rt could not read its own token store: ${lookup.reason}` : "rt offered its token and git still had none to send";
       return { kind: "indeterminate", detail: `couldn't determine access: ${why}` };
     }

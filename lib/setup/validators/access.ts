@@ -43,7 +43,7 @@ async function teamRepoRow(p: Probes, team: TeamSnapshot, intent: SetupIntent | 
 
   const provider = forgeFromRemote(remote)?.provider ?? "github";
   const verdict = await probeTeamRepoAccess(p, remote, await forgeTokenLookupFromPresence(remote, secrets));
-  const grantedBy = intent?.join?.pointer.owner ?? team.integrations.forge?.host ?? "the repo's owner";
+  const grantedBy = intent?.join?.pointer.owner ?? "the repo's owner";
   return row({ ...base, ...rowFromVerdict(verdict, { grantedBy, provider }) });
 }
 
@@ -84,7 +84,14 @@ async function repoRow(p: Probes, identity: string): Promise<Row> {
   };
   const remote = `https://${identity}.git`;
   const provider = forgeFromRemote(remote)?.provider ?? "github";
-  const verdict = await probeTeamRepoAccess(p, remote, { kind: "absent" });
+  const probed = await probeTeamRepoAccess(p, remote, { kind: "absent" });
+  // A tracked repo is never probed with rt's token, so git having no
+  // credential says nothing about whether the user connected an account:
+  // offering a Connect action here would change nothing on the next probe.
+  const verdict: RepoAccessVerdict =
+    probed.kind === "no-account"
+      ? { kind: "indeterminate", detail: "couldn't determine access: this row probes without rt's token, so git had nothing to send" }
+      : probed;
   return row({ ...base, ...rowFromVerdict(verdict, { grantedBy: "that repo's admin", provider }) });
 }
 

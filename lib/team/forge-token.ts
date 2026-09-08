@@ -41,11 +41,13 @@ export function tokenOrNull(lookup: ForgeTokenLookup): string | null {
   return lookup.kind === "token" ? lookup.token : null;
 }
 
+/** The plan's own presence read (`realSecretPresence`) already folds stored-then-staged into one answer, so a second staged read here would double-count, not fill a gap. */
 export async function forgeTokenLookupFromPresence(remote: string, secrets: SecretPresence | undefined): Promise<ForgeTokenLookup> {
   if (!secrets) return { kind: "absent" };
   return forgeTokenLookup(remote, { readStored: (d, k) => secrets.has(d, k), readStaged: () => null });
 }
 
+/** The standalone read, for callers with no plan in hand: both stages are theirs to do. */
 export async function forgeTokenLookupReal(p: Probes, remote: string): Promise<ForgeTokenLookup> {
   return forgeTokenLookup(remote, {
     readStored: (d, k) => readSecret(d, k, { ageKeySeam: createRealAgeKeySeam(), execSeam: createRealSecretsExecSeam() }),

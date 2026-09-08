@@ -205,6 +205,16 @@ describe("accessRows — access.team-repo", () => {
     expect(r.detail).not.toContain("rt will");
   });
 
+  test("create mode has no invite pointer: the refusal names a person, never the forge host", async () => {
+    const team = baseTeam({ remote: REMOTE, integrations: { forge: { host: "gitlab.example.com", provider: "gitlab" } } });
+    const intent: SetupIntent = { v: 1, at: "2026-08-21T00:00:00.000Z", mode: "create", team: { slug: "acme", name: "Acme", remote: REMOTE, others: false } };
+    const exec = gitAnswers(() => ({ code: 128, stdout: "", stderr: "remote: Permission denied" }));
+    const r = await pickRow(accessRows(fakeProbes({ exec }), team, intent, {}, { has: async () => "glpat_x" }), "access.team-repo");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toContain("the repo's owner");
+    expect(r.detail).not.toContain("gitlab.example.com");
+  });
+
   test("rt held a token and git still had none: still an error, not a bogus no-account", async () => {
     const team = baseTeam({ remote: REMOTE });
     const exec = gitAnswers(() => ({ code: 128, stdout: "", stderr: "fatal: could not read Username for 'https://gitlab.example.com'" }));
@@ -297,6 +307,24 @@ describe("accessRows — access.repo.<slug>", () => {
     const exec: ExecScript = gitAnswers(() => ({ code: 128, stdout: "", stderr: "fatal: Authentication failed" }));
     const r = await pickRow(accessRows(fakeProbes({ exec }), team, null), "access.repo.github.com-acme-repo");
     expect(r.status).toBe("needs-you");
+  });
+
+  test("no credential for a tracked repo is a could-not-determine, never a Connect", async () => {
+    const team = baseTeam({ trackingIdentities: ["github.com/acme/repo"] });
+    const exec = gitAnswers(() => ({ code: 128, stdout: "", stderr: "fatal: could not read Username for 'https://github.com'" }));
+    const r = await pickRow(accessRows(fakeProbes({ exec }), team, null), "access.repo.github.com-acme-repo");
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("couldn't determine");
+    expect(r.detail).not.toContain("Connect");
+    expect(r.action).toEqual(RECHECK_ACTION);
+  });
+
+  test("the same answer on access.team-repo still asks the user to connect an account", async () => {
+    const team = baseTeam({ remote: REMOTE, trackingIdentities: ["github.com/acme/repo"] });
+    const exec = gitAnswers(() => ({ code: 128, stdout: "", stderr: "fatal: could not read Username for 'https://gitlab.example.com'" }));
+    const r = await pickRow(accessRows(fakeProbes({ exec }), team, null, {}, { has: async () => null }), "access.team-repo");
+    expect(r.status).toBe("needs-you");
+    expect(r.action?.type).toBe("connect");
   });
 
   test("a tracked repo's row names that repo's admin, not the team owner", async () => {
