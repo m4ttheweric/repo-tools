@@ -17,11 +17,12 @@
  *   rt herd stop --hidden
  */
 import { readFileSync } from "fs";
+import { resolve } from "path";
 import {
   herdStart, herdSpawn, herdAsk, herdMilestone, herdAnswer, herdReport, herdGates,
   herdStatus, herdResume, herdClose, herdAttend, herdWrapUp, herdStopHidden,
 } from "../packages/rt-client/src/index.ts";
-import type { Commands, RtResponse } from "../packages/rt-client/src/index.ts";
+import type { Commands, HerdStatusData, RtResponse } from "../packages/rt-client/src/index.ts";
 import { resolveRepoArg, currentRepoIdentity } from "../lib/repo-arg.ts";
 
 function fail(msg: string): never {
@@ -71,9 +72,17 @@ function emit(json: boolean, data: unknown, line: string): void {
   console.log(json ? JSON.stringify(data, null, 2) : line);
 }
 
-export function workerEnv(env: Record<string, string | undefined>): { herd: string; job: string; session: string; pane?: string } {
-  const herd = env.HERD_ID, job = env.HERD_JOB, session = env.CLAUDE_CODE_SESSION_ID;
+/** The job's identity alone. Verbs that do not open a gate need this and no
+    more: a session id they never send must not be a reason to refuse. */
+export function jobEnv(env: Record<string, string | undefined>): { herd: string; job: string } {
+  const herd = env.HERD_ID, job = env.HERD_JOB;
   if (!herd || !job) throw new Error("HERD_ID and HERD_JOB are not set; this verb runs inside a herd worker pane");
+  return { herd, job };
+}
+
+export function workerEnv(env: Record<string, string | undefined>): { herd: string; job: string; session: string; pane?: string } {
+  const { herd, job } = jobEnv(env);
+  const session = env.CLAUDE_CODE_SESSION_ID;
   if (!session) throw new Error("CLAUDE_CODE_SESSION_ID is not set; this verb runs inside a Claude Code session");
   return { herd, job, session, ...(env.HERDR_PANE_ID && { pane: env.HERDR_PANE_ID }) };
 }
@@ -174,8 +183,23 @@ export async function milestone(args: string[]): Promise<void> {
     fail((e as Error).message);
   }
   const summary = flagValue(args, "--summary");
-  const data = unwrap(await herdMilestone({ ...w, artifact, ...(summary && { summary }) }), "milestone");
+  // The shepherd reads this path from its own cwd, which is never the worker's.
+  const data = unwrap(await herdMilestone({ ...w, artifact: resolve(artifact), ...(summary && { summary }) }), "milestone");
   emit(json, data, `holding at gate ${data.gate}`);
+}
+
+/**
+ * Every non-answered status has to read as "no answer exists", because the
+ * worker's next move on seeing one is to keep waiting, not to proceed. An
+ * `answered` row whose `answer` is null is the same case: rendering it as an
+ * answer of `{}` would invite the worker to invent one.
+ */
+export function renderAnswer(gate: string, data: Commands["herd:answer"]["data"]): string {
+  if (data.status === "open") return `gate ${gate} is still open`;
+  if (data.status === "closed") return `gate ${gate} closed (${data.closedReason ?? "no reason"}); do not invent an answer`;
+  if (data.status === "parked") return `gate ${gate} is parked; do not invent an answer, wait for it to be answered`;
+  if (!data.answer) return `gate ${gate} is marked answered but carries no answer; do not invent one, ask the shepherd`;
+  return `gate ${gate} answered by ${data.answer.by}:\n${JSON.stringify(data.answer.answers, null, 2)}`;
 }
 
 export async function answer(args: string[]): Promise<void> {
@@ -183,32 +207,28 @@ export async function answer(args: string[]): Promise<void> {
   const gate = positional(args);
   if (!gate) fail("usage: rt herd answer <gate>");
   const data = unwrap(await herdAnswer({ gate }), "answer");
-  if (json) {
-    emit(true, data, "");
-    return;
-  }
-  if (data.status === "open") {
-    console.log(`gate ${gate} is still open`);
-    return;
-  }
-  if (data.status === "closed") {
-    console.log(`gate ${gate} closed (${data.closedReason ?? "no reason"}); do not invent an answer`);
-    return;
-  }
-  console.log(`gate ${gate} answered by ${data.answer?.by ?? "?"}:`);
-  console.log(JSON.stringify(data.answer?.answers ?? {}, null, 2));
+  emit(json, data, renderAnswer(gate, data));
 }
 
 export async function report(args: string[]): Promise<void> {
   const json = has(args, "--json");
-  let w: ReturnType<typeof workerEnv>;
+  let w: ReturnType<typeof jobEnv>;
   try {
-    w = workerEnv(process.env);
+    w = jobEnv(process.env);
   } catch (e) {
     fail((e as Error).message);
   }
   const file = flagValue(args, "--file");
-  const body = file ? readFileSync(file, "utf8") : await Bun.stdin.text();
+  let body: string;
+  if (file) {
+    try {
+      body = readFileSync(file, "utf8");
+    } catch (e) {
+      fail((e as Error).message);
+    }
+  } else {
+    body = await Bun.stdin.text();
+  }
   if (!body.trim()) fail("empty report body (pass --file <path> or pipe the body on stdin)");
   const data = unwrap(await herdReport({ herd: w.herd, job: w.job, body }), "report");
   emit(json, data, `reported (message #${data.message})`);
@@ -230,21 +250,26 @@ export async function gates(args: string[]): Promise<void> {
   for (const g of data.gates) console.log(`${g.id}  ${g.kind}  ${g.subject}  ${g.questions.map((q) => q.label).join(" | ")}`);
 }
 
+/** A missing subscription and an answered-but-undelivered gate are the two
+    states the shepherd must act on, so both name their own remedy inline. */
+export function renderStatus(data: HerdStatusData): string {
+  const sub = data.subscription ? `subscription ${data.subscription.id}${data.subscription.dead ? " DEAD" : ""}` : "subscription MISSING (run rt herd resume)";
+  const lines = [
+    `${data.herd.id}  room ${data.herd.room}  unread ${data.unread}  lifecycle ${data.lifecycleConnected ? "connected" : "OFF"}${data.hiddenUp === null ? "" : `  hidden ${data.hiddenUp ? "up" : "DOWN"}`}  ${sub}`,
+  ];
+  for (const j of data.jobs) {
+    const notWoken = j.lastGateStatus === "answered" && j.lastGateDelivery === "dead-pane" ? `  gate ${j.lastGate} answered, worker not woken: rt chat dm ${j.handle}` : "";
+    lines.push(`  ${j.name.padEnd(24)} ${j.status.padEnd(13)} pane ${j.pane ?? "-"}  ${j.paneStatus ?? "-"}${j.openGate ? `  gate ${j.openGate}` : ""}${notWoken}`);
+  }
+  return lines.join("\n");
+}
+
 export async function status(args: string[]): Promise<void> {
   const json = has(args, "--json");
   const herd = flagValue(args, "--herd") ?? process.env.HERD_ID;
   if (!herd) fail("usage: rt herd status --herd <id>");
   const data = unwrap(await herdStatus({ herd }), "status");
-  if (json) {
-    emit(true, data, "");
-    return;
-  }
-  const sub = data.subscription ? `subscription ${data.subscription.id}${data.subscription.dead ? " DEAD" : ""}` : "subscription MISSING (run rt herd resume)";
-  console.log(`${data.herd.id}  room ${data.herd.room}  unread ${data.unread}  lifecycle ${data.lifecycleConnected ? "connected" : "OFF"}${data.hiddenUp === null ? "" : `  hidden ${data.hiddenUp ? "up" : "DOWN"}`}  ${sub}`);
-  for (const j of data.jobs) {
-    const notWoken = j.lastGateStatus === "answered" && j.lastGateDelivery === "dead-pane" ? `  gate ${j.lastGate} answered, worker not woken: rt chat dm ${j.handle}` : "";
-    console.log(`  ${j.name.padEnd(24)} ${j.status.padEnd(13)} pane ${j.pane ?? "-"}  ${j.paneStatus ?? "-"}${j.openGate ? `  gate ${j.openGate}` : ""}${notWoken}`);
-  }
+  emit(json, data, renderStatus(data));
 }
 
 export async function resume(args: string[]): Promise<void> {
