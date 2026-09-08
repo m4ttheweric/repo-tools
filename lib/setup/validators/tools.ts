@@ -22,6 +22,7 @@ import { BASE_PLUGINS } from "../base-plugins.ts";
 import { row, type Action, type Row } from "../contract.ts";
 import { integrationDef } from "../integrations.ts";
 import { callableBySkills, claudeJsonPath, linearServerNames, nameTaken, readClaudeConfig } from "../linear-mcp.ts";
+import { parsePluginList } from "../pack-cache.ts";
 import type { ExecResult, Probes } from "../probes.ts";
 import type { PackRequirements, ToolRequirement } from "../requirements.ts";
 import { atLeast } from "../semver.ts";
@@ -455,46 +456,6 @@ async function teamToolRow(p: Probes, req: ToolRequirement, hasBrew: boolean): P
 }
 
 // ─── pack.<pack> ────────────────────────────────────────────────────────────
-
-/** One entry of `claude plugin list --json`; only the fields this module reads. The real listing carries more (version, scope, installPath, installedAt, lastUpdated, mcpServers) that nothing here needs. */
-interface PluginListEntry {
-  id: string;
-  enabled: boolean;
-}
-
-/** True only for an element this module can safely read `.id` off; `enabled` is normalized by the caller rather than checked here, since a missing or non-boolean one is not a shape violation. */
-function isPluginListElement(value: unknown): value is { id: string; enabled?: unknown } {
-  return isPlainObject(value) && typeof value.id === "string";
-}
-
-/**
- * `claude plugin list` (no flag) prints a chevron glyph before each name,
- * never the bare id, so a human-format scrape can never match `BASE_PLUGINS`.
- * The parsed `id` field is the only reliable match surface.
- *
- * The parse boundary: any element missing a string `id` rejects the whole
- * payload as null (same as unparsable JSON), rather than dropping just that
- * element — a schema violation anywhere means the payload's shape can't be
- * trusted, so the honest answer is "could not be read", not a silently
- * incomplete list. A missing or non-boolean `enabled` is not such a
- * violation: it already drives the disabled-vs-ready split, so it is
- * normalized to `false` here rather than rejecting the payload over it.
- */
-function parsePluginList(stdout: string): PluginListEntry[] | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed)) return null;
-  const entries: PluginListEntry[] = [];
-  for (const item of parsed) {
-    if (!isPluginListElement(item)) return null;
-    entries.push({ id: item.id, enabled: item.enabled === true });
-  }
-  return entries;
-}
 
 const INSTALL_PLUGINS_ACTION: Action = { type: "run", label: "Install plugins", verb: ["setup", "pack"] };
 const ENABLE_PLUGINS_ACTION: Action = { type: "run", label: "Enable plugins", verb: ["setup", "pack"] };
