@@ -5,7 +5,9 @@ import Foundation
 // termination path must run through finish().
 enum Report {
     static func trailer(_ code: Int32) -> String { "MATTSTACK_EXIT=\(code)" }
-    static func step(_ line: String) { print(line); FileHandle.standardOutput.synchronizeFile() }
+    // synchronizeFile() throws NSFileHandleOperationException when stdout is
+    // a pipe (the escalator's shape); fflush is the pipe-safe equivalent.
+    static func step(_ line: String) { print(line); fflush(stdout) }
     static func finish(_ code: Int32) -> Never {
         print(trailer(code))
         exit(code)
