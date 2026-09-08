@@ -886,6 +886,54 @@ describe("teamSyncRow", () => {
     expect(r?.status).toBe("ready");
     expect(r?.detail).toContain("last pull skipped: dirty src/");
   });
+
+  test("a pull-only clone that is up to date is ready, and says why it never pushes", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        { slug: "acme", lastPullAt: 900_000, lastPushError: null, lastPullError: null, conflicted: null, lastPullSkipped: null, pullOnly: true } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("ready");
+    expect(r?.detail).toContain("pull-only");
+  });
+
+  test("a pull-only clone is never judged on push failures (it has no push to fail)", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        { slug: "acme", lastPullAt: 900_000, lastPushError: "some stale push error", conflicted: null, pullOnly: true, lastPullSkipped: null } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("ready");
+    expect(r?.detail).not.toContain("push failing");
+  });
+
+  test("a pull-only clone that cannot fast-forward is needs-you, and is never reset", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        {
+          slug: "acme",
+          lastPullAt: 900_000,
+          lastPushError: null,
+          lastPullError: null,
+          conflicted: null,
+          pullOnly: true,
+          lastPullSkipped: "local changes would be overwritten by merge",
+        } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("acme");
+    expect(r?.detail).toContain("fast-forward");
+  });
 });
 
 describe("rtHealthRows: team.sync wiring", () => {

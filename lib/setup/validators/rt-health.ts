@@ -510,6 +510,18 @@ export async function teamSyncRow(
       problems.push(`${slug}: rebase conflict: ${e.conflicted.detail}; rebase and rt team publish by hand`);
       continue;
     }
+    // A pull-only clone (joined, not created) never pushes, so it has no push to fail; judging
+    // it on lastPushError below would blame it for a mode it was never in. `=== true` rather than
+    // truthy: a fixture or a pre-Task-6 entry missing the field must read as a pushing clone, not
+    // silently skip every check that follows. The one failure mode a pull-only clone can have of
+    // its own is a fast-forward it refused; rt never resets that for the user (see the comment on
+    // `lastPullSkipped` in home-snapshot.ts), it only names the clone so the user can.
+    if (e.pullOnly === true) {
+      if (e.lastPullSkipped) {
+        problems.push(`${slug}: pull-only clone cannot fast-forward (${e.lastPullSkipped}); reset it to origin or ask the team's owner`);
+      }
+      continue;
+    }
     // Both fields come off the same redactCredentials(stderr) shape in the
     // engine, so "" is reachable for either; tested against null/undefined,
     // never a truthiness check `""` would fail past.
@@ -539,7 +551,9 @@ export async function teamSyncRow(
   // failure, but it is why a member's store edits are not moving; say so
   // without changing the status.
   const skips = slugs.map((slug) => entries.find((x) => x.slug === slug)?.lastPullSkipped).filter((d): d is string => !!d);
-  const detail = `${slugs.length} clone${slugs.length === 1 ? "" : "s"} in sync${skips.length ? `; last pull skipped: ${skips.join("; ")}` : ""}`;
+  const pullOnlySlugs = slugs.filter((slug) => entries.find((x) => x.slug === slug)?.pullOnly === true);
+  const pullOnlyNote = pullOnlySlugs.length ? `; pull-only, never pushes: ${pullOnlySlugs.join(", ")}` : "";
+  const detail = `${slugs.length} clone${slugs.length === 1 ? "" : "s"} in sync${pullOnlyNote}${skips.length ? `; last pull skipped: ${skips.join("; ")}` : ""}`;
   return row({ ...base, status: "ready", detail });
 }
 

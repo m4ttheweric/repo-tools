@@ -476,13 +476,15 @@ interface TeamSyncFields {
   lastPushAt: string | null;
   lastPullSkipped: string | null;
   conflicted: { at: string; detail: string } | null;
+  /** Carried straight off the snapshot entry so a member can see why their clone never pushes, without a second daemon round trip. `false` for a daemon that predates the field or is unreachable, the same "absent means false" rule as the machine-local record it mirrors. */
+  pullOnly: boolean;
   /** True only when the daemon answered `team:snapshot-status` and named this slug; never leaked into the JSON envelope, only used to pick the human line's "ok"/"unknown". */
   reachable: boolean;
 }
 
-const NO_SYNC: TeamSyncFields = { lastPull: null, lastPushAt: null, lastPullSkipped: null, conflicted: null, reachable: false };
+const NO_SYNC: TeamSyncFields = { lastPull: null, lastPushAt: null, lastPullSkipped: null, conflicted: null, pullOnly: false, reachable: false };
 
-/** `deps.daemon?.("team:snapshot-status", {})` round trip, reduced to the four fields `teamStatus` shows for `slug`. Any failure (daemon down, malformed response, slug absent from the list) collapses to `NO_SYNC` rather than throwing; sync state is a nicety on top of the local status, never a reason to fail the whole command. */
+/** `deps.daemon?.("team:snapshot-status", {})` round trip, reduced to the five fields `teamStatus` shows for `slug`. Any failure (daemon down, malformed response, slug absent from the list) collapses to `NO_SYNC` rather than throwing; sync state is a nicety on top of the local status, never a reason to fail the whole command. */
 async function readTeamSyncFields(deps: TeamDeps, slug: string): Promise<TeamSyncFields> {
   try {
     const call = deps.daemon ?? daemonQuery;
@@ -495,6 +497,7 @@ async function readTeamSyncFields(deps: TeamDeps, slug: string): Promise<TeamSyn
       lastPushAt: entry.lastPushAt > 0 ? new Date(entry.lastPushAt).toISOString() : null,
       lastPullSkipped: entry.lastPullSkipped,
       conflicted: entry.conflicted ? { at: new Date(entry.conflicted.at).toISOString(), detail: entry.conflicted.detail } : null,
+      pullOnly: entry.pullOnly === true,
       reachable: true,
     };
   } catch {
@@ -532,8 +535,9 @@ export async function teamStatus(args: string[], _ctx: CommandContext = {}, deps
     }
     const syncState = sync.conflicted !== null ? "conflict" : reachable ? "ok" : "unknown";
     const skippedNote = sync.lastPullSkipped ? ` (last pull skipped: ${sync.lastPullSkipped})` : "";
+    const pullOnlyNote = sync.pullOnly ? ", pull-only: this clone fetches and fast-forwards only, it never pushes" : "";
     deps.print(
-      `rt team status: ${name} (${slug}) - remote ${result.remote ?? "(none)"}, last push ${lastPush ?? "never"}, ${members.length} member(s), sync: ${syncState}${skippedNote}`,
+      `rt team status: ${name} (${slug}) - remote ${result.remote ?? "(none)"}, last push ${lastPush ?? "never"}, ${members.length} member(s), sync: ${syncState}${skippedNote}${pullOnlyNote}`,
     );
   } catch (err) {
     if (err instanceof UserActionableError) exitUserError(err, json, "team status", deps.print);
