@@ -508,7 +508,7 @@ git commit -m "forge token: one stored-then-staged lookup that keeps absent and 
 
 **Interfaces:**
 - Consumes: `ForgeTokenLookup` from Task 3.
-- Produces: `RepoAccessVerdict` (`ok` | `no-clt` | `no-account` | `denied` | `unreachable` | `indeterminate`, each `{ kind, detail }`) and `probeTeamRepoAccess(p: Probes, remote: string, lookup: ForgeTokenLookup): Promise<RepoAccessVerdict>` from `lib/team/repo-access.ts`. Tasks 5 and 6 both consume it and must not classify git output themselves.
+- Produces: `RepoAccessVerdict` (`ok` | `no-clt` | `no-account` | `denied` | `unreachable` | `indeterminate`, each `{ kind, detail }`), `probeTeamRepoAccess(p: Probes, remote: string, lookup: ForgeTokenLookup): Promise<RepoAccessVerdict>` and `forgeLabel(provider)` from `lib/team/repo-access.ts`. Tasks 5 and 6 both consume it and must not classify git output themselves.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -620,6 +620,11 @@ import { withoutUrls } from "./redact.ts";
 
 export type RepoAccessVerdict = { kind: "ok" | "no-clt" | "no-account" | "denied" | "unreachable" | "indeterminate"; detail: string };
 
+/** The user-facing name of a forge, from the provider rather than the host, so an unrecognized host never renders as the wrong one. Both the row copy and the join copy read it from here. */
+export function forgeLabel(provider: "github" | "gitlab" | undefined): string {
+  return provider === "gitlab" ? "GitLab" : "GitHub";
+}
+
 const LS_REMOTE_TIMEOUT_MS = 15000;
 const GIT_ENV = { GIT_TERMINAL_PROMPT: "0" };
 const AUTH_REFUSAL_PATTERN = /Authentication failed|403|Permission denied/;
@@ -673,7 +678,7 @@ git commit -m "repo access: one probe with no-account and denied kept apart"
 - Test: `lib/setup/__tests__/validators-access.test.ts`
 
 **Interfaces:**
-- Consumes: `probeTeamRepoAccess` (Task 4), `forgeTokenLookupFromPresence` (Task 3), `integrationDef` from `lib/setup/integrations.ts`.
+- Consumes: `probeTeamRepoAccess` and `forgeLabel` (Task 4), `forgeTokenLookupFromPresence` (Task 3), `integrationDef` from `lib/setup/integrations.ts`.
 - Produces: nothing new outside the module.
 
 - [ ] **Step 1: Write the failing tests**
@@ -709,6 +714,19 @@ test("rt held a token and git still had none: still an error, not a bogus no-acc
 });
 ```
 
+And one for the optional per-repo row, which has its own `grantedBy` and no team owner to name:
+
+```ts
+test("a tracked repo's row names that repo's admin, not the team owner", async () => {
+  const team = baseTeam({ remote: REMOTE, trackingIdentities: ["github.com/acme/repo"] });
+  const exec = gitAnswers(() => ({ code: 128, stdout: "", stderr: "remote: Permission denied" }));
+  const r = await pickRow(accessRows(fakeProbes({ exec }), team, joinIntent("matt"), {}, { has: async () => "glpat_x" }), "access.repo.github.com-acme-repo");
+  expect(r.required).toBe(false);
+  expect(r.detail).toContain("that repo's admin");
+  expect(r.detail).not.toContain("matt");
+});
+```
+
 `joinIntent(owner)` builds a `SetupIntent` with `mode: "join"` and a pointer whose `remote` is `REMOTE` and whose `owner` is the argument; follow the intent shape the file already uses elsewhere.
 
 - [ ] **Step 2: Run them and watch them fail**
@@ -718,12 +736,12 @@ Expected: FAIL, the first two see `status: "error"` with the old wording.
 
 - [ ] **Step 3: Rewrite the rows**
 
-Delete `lsRemoteOutcome`, `LsRemoteOutcome`, `LS_REMOTE_TIMEOUT_MS`, `GIT_ENV`, `AUTH_REFUSAL_PATTERN`, `NO_CREDENTIAL_PATTERN` and the `gitWithToken`/`withoutUrls` imports from `lib/setup/validators/access.ts`, then:
+Delete `lsRemoteOutcome`, `LsRemoteOutcome`, `LS_REMOTE_TIMEOUT_MS`, `GIT_ENV`, `AUTH_REFUSAL_PATTERN`, `NO_CREDENTIAL_PATTERN` and the now-unused `gitWithToken`, `withoutUrls` and `gitUsable` imports (`access.ts:11`, `:15`, `:16`) from `lib/setup/validators/access.ts`. `forgeTokenKey` goes with the local `forgeTokenFor` deleted in Task 3. Then:
 
 ```ts
 /** Who the caller should ask. The team's owner for the team repo; a repo's own admin for a tracked repo, which has no owner rt knows. */
 function rowFromVerdict(v: RepoAccessVerdict, ctx: { grantedBy: string; provider: "github" | "gitlab" }): Pick<Row, "status" | "detail" | "action"> {
-  const forge = ctx.provider === "github" ? "GitHub" : "GitLab";
+  const forge = forgeLabel(ctx.provider);
   switch (v.kind) {
     case "ok":
       return { status: "ready", detail: v.detail, action: null };
@@ -750,9 +768,32 @@ function rowFromVerdict(v: RepoAccessVerdict, ctx: { grantedBy: string; provider
 
 `repoRow` probes unauthenticated exactly as it does today, so pass `{ kind: "absent" }` and let its own `grantedBy` be `"that repo's admin"`. Its `required: false` and its title, `why` and `optionalNote` do not change.
 
+`repoRow` holds an identity string, not a remote, so derive the provider the
+same way it builds the URL it probes:
+
+```ts
+  const remote = `https://${identity}.git`;
+  const provider = forgeFromRemote(remote)?.provider ?? "github";
+```
+
+An identity on no known forge falls back to `github` for the label only; the
+Connect action it offers is the one `account.github` offers, which is the
+honest suggestion for an unknown host on an optional row.
+
 Keep the CLT check in one place: the probe owns it now, so `teamRepoRow`'s own `gitUsable` call goes away.
 
 - [ ] **Step 4: Run the tests**
+
+One pre-existing test inverts and must be rewritten in this step, not worked
+around: `lib/setup/__tests__/validators-access.test.ts:83` ("exit 128 with
+'could not read Username' ... error, NOT a permissions verdict (finding 6)")
+passes `accessRows(..., team, null)` with no `secrets`, which now yields
+`absent` and therefore `no-account`, `needs-you` and a Connect action. Finding 6
+is superseded only for the no-token case: its real point, that a missing
+credential is never read as a refusal, still holds and is now carried by
+Step 1's `indeterminate` test for the token-held case. Rewrite :83 to assert
+`needs-you` plus the Connect action, and say in its name that no credential is
+still not a refusal.
 
 Run: `bun test lib/setup/__tests__/validators-access.test.ts`
 Expected: PASS, including the pre-existing row-order test at line 320.
@@ -773,7 +814,7 @@ git commit -m "access rows: read the shared probe, and say connect your account 
 - Test: `lib/team/__tests__/join.test.ts`
 
 **Interfaces:**
-- Consumes: `probeTeamRepoAccess` (Task 4), `forgeTokenLookupReal` (Task 3).
+- Consumes: `probeTeamRepoAccess` and `forgeLabel` (Task 4), `forgeTokenLookupReal` (Task 3).
 - Produces: `JoinResult` with `access: "ok" | "deferred" | "no-account" | "denied" | "unreachable" | "undetermined"` and `intent: "written" | "not-written"`. Tasks 7 and 8 decode both.
 
 - [ ] **Step 1: Write the failing tests**
@@ -808,10 +849,25 @@ test("an unreachable relay writes nothing and still blocks", async () => {
 test("the probe is offered rt's token, so a private repo is a verdict rather than a deferral", async () => {
   const envs: Record<string, string>[] = [];
   const exec = gitAnswers((argv, opts) => { envs.push((opts?.env ?? {}) as Record<string, string>); return ok(); });
-  await joinDryRun(fakeProbes({ exec, forgeToken: async () => "gho_x" }), relayWith(pointer), CODE);
+  // forgeTokenLookupReal reads the real sops store, which a test must not
+  // touch, then the stage, which is plain probe-backed files. Stage it.
+  const p = fakeProbes({
+    exec,
+    home: "/home/joiner",
+    files: { "/home/joiner/.mattstack/rt/setup-staging/rt.json": JSON.stringify({ githubToken: "gho_x" }) },
+  });
+  await joinDryRun(p, relayWith(pointer), CODE);
   expect(envs.some((e) => e.RT_GIT_TOKEN === "gho_x")).toBe(true);
 });
 ```
+
+`FakeProbesOpts` (`lib/setup/__tests__/fakes.ts:13`) has no token option, and
+`forgeTokenLookupReal` hardcodes the real age-key and exec seams by design, so
+the stage is the injectable path. Do **not** add a token seam to `joinDryRun`:
+the spec describes no such seam, and the staged read is the same path a real
+joiner takes pre-Install. Use a `pointer.remote` on `github.com` so the staged
+key matches, or stage `gitlabToken` to match whatever remote the file's fixture
+pointer uses.
 
 Follow the file's existing relay fakes and pointer builders; `CODE` is the dashed fixture constant.
 
@@ -843,7 +899,9 @@ export async function joinDryRun(p: Probes, relay: RelayClient, code: string): P
 /** The row is the later check this copy promises, so unreachable and undetermined read as re-checked-later here and as an error there. */
 function accessFromVerdict(v: RepoAccessVerdict, pointer: InvitePointer): { access: JoinResult["access"]; message: string } {
   const joining = `Joining ${pointer.name} (owner ${pointer.owner})`;
-  const forge = pointer.forge === "github.com" ? "GitHub" : "GitLab";
+  // pointer.forge is a host, so deriving the label from it renders "GitLab"
+  // for anything unrecognized. Both surfaces read it off the remote instead.
+  const forge = forgeLabel(forgeFromRemote(pointer.remote)?.provider);
   const repo = stripUserinfo(pointer.remote);
   switch (v.kind) {
     case "ok":
@@ -861,6 +919,8 @@ function accessFromVerdict(v: RepoAccessVerdict, pointer: InvitePointer): { acce
   }
 }
 ```
+
+Delete `NO_CREDENTIAL_PATTERN` (`lib/team/join.ts:53`) and the deferral comment above the old probe: its only use is the `joinDryRun` body this step replaces, and the probe owns that classification now. Task 11 greps for exactly this.
 
 Widen `JoinResult` and add `intent`. `unreachableResult`/`deniedResult` keep serving `joinRedeem`; give them `intent: "written"` where they are already used post-redeem, or narrow their return type if that reads cleaner. `classifyGitFailure`/`gitAccessResult` lose their dry-run caller; delete whichever of them nothing else uses, and leave the rest alone.
 
@@ -911,7 +971,7 @@ Check("JoinLink.code(fromText:) matches the shared fixture") { c in
 }
 ```
 
-Check the `#filePath` depth against the real tree before running: the file sits at `rt-tray/Tests/MattstackCoreChecks/`, so it is three `deletingLastPathComponent()` calls to the repo root after the filename, not four. Fix the count if the check cannot find the file.
+The four `deletingLastPathComponent()` calls are right for a file at `rt-tray/Tests/MattstackCoreChecks/LaunchChecks.swift`: filename, then `MattstackCoreChecks`, `Tests`, `rt-tray`. If the check cannot find the file, print the resolved URL rather than guessing at the depth.
 
 In `TeamChoiceChecks.swift`:
 
@@ -925,7 +985,7 @@ Check("the join field takes a pasted link, and leaves anything else for the CLI 
 }
 ```
 
-`FakePasteboard` arrives in Task 9. Until then, construct the model the way the file does today and add the pasteboard argument in that task; do not invent a second initializer.
+`FakePasteboard` and `init(rt:pasteboard:)` arrive in Task 8. Until then, construct the model exactly the way the file does today (`TeamChoiceModel(rt:)`), and let Task 8's sweep add the argument; do not invent a second initializer.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -1006,14 +1066,148 @@ git commit -m "app: accept a pasted join link, carry intent and link on the cont
 
 ---
 
-### Task 8: Team Continue warns, never blocks
+### Task 8: Paste invite, behind a click, behind a seam
+
+macOS 15 and later raise a blocking permission alert on a programmatic pasteboard read, so nothing reads the clipboard until the joiner asks for it. `MattstackCore` cannot link AppKit, so the read arrives through a protocol.
+
+**Files:**
+- Create: `rt-tray/Sources-core/Setup/PasteboardReading.swift`
+- Create: `rt-tray/Sources/Setup/SystemPasteboard.swift`
+- Modify: `rt-tray/Sources-core/Setup/TeamChoiceModel.swift:49` (initializer), `rt-tray/Sources/Setup/Screens/TeamScreen.swift`, `rt-tray/Sources/Setup/SetupWindowController.swift:37`, `rt-tray/Sources/AccessibilityIDs.swift:6` (`AXID`, internal to the executable target)
+- Modify: every `TeamChoiceModel(rt:)` site in `rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift` (eleven as this plan was written, plus whatever Task 7 added)
+- Test: `rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift`
+
+**Interfaces:**
+- Produces: `PasteboardReading` with `func inviteText() -> String?`, `TeamChoiceModel.init(rt:pasteboard:)`, `TeamChoiceModel.pasteInvite()`.
+
+- [ ] **Step 1: Write the failing checks**
+
+```swift
+final class FakePasteboard: PasteboardReading, @unchecked Sendable {
+    private let value: String?
+    private(set) var reads = 0
+    init(_ value: String?) { self.value = value }
+    func inviteText() -> String? { reads += 1; return value }
+}
+
+Check("Paste invite fills the field from a copied deep link") { c in
+    let pb = FakePasteboard("mattstack://join/01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC")
+    let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: pb) }
+    await MainActor.run { m.pasteInvite() }
+    c.expect(await MainActor.run { !m.inviteCode.isEmpty })
+    c.expectEqual(pb.reads, 1)
+}
+
+Check("nothing reads the pasteboard without a click") { c in
+    let pb = FakePasteboard("mattstack://join/01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC")
+    let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: pb) }
+    await MainActor.run { m.choice = .join }
+    _ = await m.prepare()
+    c.expectEqual(pb.reads, 0)
+}
+
+Check("a denied alert reads as nil and leaves whatever was typed alone") { c in
+    let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: FakePasteboard(nil)) }
+    await MainActor.run { m.inviteCode = "typed-so-far"; m.pasteInvite() }
+    c.expectEqual(await MainActor.run { m.inviteCode }, "typed-so-far")
+}
+
+Check("a clipboard holding something else leaves the field alone") { c in
+    let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: FakePasteboard("https://example.com/")) }
+    await MainActor.run { m.pasteInvite() }
+    c.expectEqual(await MainActor.run { m.inviteCode }, "")
+}
+```
+
+- [ ] **Step 2: Run them and watch them fail**
+
+Run: `swift test --package-path rt-tray`
+Expected: FAIL, no `PasteboardReading`.
+
+- [ ] **Step 3: Implement the seam and the action**
+
+`rt-tray/Sources-core/Setup/PasteboardReading.swift` (no AppKit; `MattstackCore` does not link it, and a check that reads the real pasteboard would be nondeterministic):
+
+```swift
+public protocol PasteboardReading: Sendable {
+    func inviteText() -> String?
+}
+```
+
+`rt-tray/Sources/Setup/SystemPasteboard.swift`, in the target that does link AppKit:
+
+```swift
+import AppKit
+import MattstackCore
+
+/// macOS 15+ raises a permission alert on this read, so it happens only from
+/// the Paste invite button. A denial is indistinguishable from an empty
+/// clipboard here, and both mean "leave the field alone".
+public struct SystemPasteboard: PasteboardReading {
+    public init() {}
+    public func inviteText() -> String? { NSPasteboard.general.string(forType: .string) }
+}
+```
+
+In `TeamChoiceModel`:
+
+```swift
+    private let pasteboard: PasteboardReading
+
+    public init(rt: RtRunning, pasteboard: PasteboardReading) {
+        self.rt = rt
+        self.pasteboard = pasteboard
+    }
+
+    public func pasteInvite() {
+        guard let text = pasteboard.inviteText(), let code = JoinLink.code(fromText: text) else { return }
+        inviteCode = code
+    }
+```
+
+The argument is required on purpose: a defaulted no-op reader would turn a forgotten injection into a Paste button that silently does nothing.
+
+- [ ] **Step 4: Sweep the construction sites**
+
+Twelve as this plan was written: `SetupWindowController.swift:37` passes `SystemPasteboard()`; the eleven in `TeamChoiceChecks.swift` (lines 13, 35, 45, 54, 72, 85, 96, 102, 111, 126, 140 on today's file) pass `FakePasteboard(nil)` unless the check is about pasting. Task 7 adds a site of its own, so those line numbers have already shifted: drive the sweep off `grep -rn "TeamChoiceModel(" rt-tray` and convert every hit rather than the list.
+
+- [ ] **Step 5: Add the button**
+
+In `TeamScreen`, beside the code field:
+
+```swift
+                HStack {
+                    Button("Paste invite") { model.pasteInvite() }
+                        .accessibilityIdentifier(AXID.teamPasteInvite)
+                    Text("macOS may ask permission to read your clipboard.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+```
+
+Add `teamPasteInvite` to `AXID` (`rt-tray/Sources/AccessibilityIDs.swift:6`).
+
+- [ ] **Step 6: Run the checks**
+
+Run: `swift test --package-path rt-tray`
+Expected: PASS, including the "nothing reads the pasteboard without a click" check.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add rt-tray/Sources-core/Setup/PasteboardReading.swift rt-tray/Sources/Setup/SystemPasteboard.swift rt-tray/Sources-core/Setup/TeamChoiceModel.swift rt-tray/Sources/Setup/Screens/TeamScreen.swift rt-tray/Sources/Setup/SetupWindowController.swift rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift
+git commit -m "join screen: paste invite reads the clipboard only on a click, through a seam"
+```
+
+---
+
+### Task 9: Team Continue warns, never blocks
 
 **Files:**
 - Modify: `rt-tray/Sources-core/Setup/TeamChoiceModel.swift:104-110`
 - Test: `rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift`
 
 **Interfaces:**
-- Consumes: `TeamJoinResult.intent` and the widened `access` (Task 7).
+- Consumes: `TeamJoinResult.intent` and the widened `access` (Task 7), `FakePasteboard` and `init(rt:pasteboard:)` (Task 8).
 - Produces: `TeamChoiceModel.joinWarning: String?`, rendered by `TeamScreen`.
 
 - [ ] **Step 1: Write the failing checks**
@@ -1084,146 +1278,11 @@ git commit -m "team continue: warn on a repo verdict, block only when no intent 
 
 ---
 
-### Task 9: Paste invite, behind a click, behind a seam
-
-macOS 15 and later raise a blocking permission alert on a programmatic pasteboard read, so nothing reads the clipboard until the joiner asks for it. `MattstackCore` cannot link AppKit, so the read arrives through a protocol.
-
-**Files:**
-- Create: `rt-tray/Sources-core/Setup/PasteboardReading.swift`
-- Create: `rt-tray/Sources/Setup/SystemPasteboard.swift`
-- Modify: `rt-tray/Sources-core/Setup/TeamChoiceModel.swift:49` (initializer), `rt-tray/Sources/Setup/Screens/TeamScreen.swift`, `rt-tray/Sources/Setup/SetupWindowController.swift:37`, `rt-tray/Sources-core/Setup/AXID.swift` (or wherever `AXID` lives)
-- Modify: all eleven `TeamChoiceModel(rt:)` sites in `rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift`
-- Test: `rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift`
-
-**Interfaces:**
-- Produces: `PasteboardReading` with `func inviteText() -> String?`, `TeamChoiceModel.init(rt:pasteboard:)`, `TeamChoiceModel.pasteInvite()`.
-
-- [ ] **Step 1: Write the failing checks**
-
-```swift
-final class FakePasteboard: PasteboardReading, @unchecked Sendable {
-    private let value: String?
-    private(set) var reads = 0
-    init(_ value: String?) { self.value = value }
-    func inviteText() -> String? { reads += 1; return value }
-}
-
-Check("Paste invite fills the field from a copied deep link") { c in
-    let pb = FakePasteboard("mattstack://join/01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC")
-    let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: pb) }
-    await MainActor.run { m.pasteInvite() }
-    c.expect(await MainActor.run { !m.inviteCode.isEmpty })
-    c.expectEqual(pb.reads, 1)
-}
-
-Check("nothing reads the pasteboard without a click") { c in
-    let pb = FakePasteboard("mattstack://join/01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC")
-    let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: pb) }
-    await MainActor.run { m.choice = .join }
-    _ = await m.prepare()
-    c.expectEqual(pb.reads, 0)
-}
-
-Check("a denied alert reads as nil and leaves the field alone, with no error") { c in
-    let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: FakePasteboard(nil)) }
-    await MainActor.run { m.inviteCode = "typed-so-far"; m.pasteInvite() }
-    c.expectEqual(await MainActor.run { m.inviteCode }, "typed-so-far")
-    c.expectEqual(await MainActor.run { m.error }, nil)
-}
-
-Check("a clipboard holding something else leaves the field alone") { c in
-    let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt(), pasteboard: FakePasteboard("https://example.com/")) }
-    await MainActor.run { m.pasteInvite() }
-    c.expectEqual(await MainActor.run { m.inviteCode }, "")
-}
-```
-
-- [ ] **Step 2: Run them and watch them fail**
-
-Run: `swift test --package-path rt-tray`
-Expected: FAIL, no `PasteboardReading`.
-
-- [ ] **Step 3: Implement the seam and the action**
-
-`rt-tray/Sources-core/Setup/PasteboardReading.swift` (no AppKit; `MattstackCore` does not link it, and a check that reads the real pasteboard would be nondeterministic):
-
-```swift
-public protocol PasteboardReading: Sendable {
-    func inviteText() -> String?
-}
-```
-
-`rt-tray/Sources/Setup/SystemPasteboard.swift`, in the target that does link AppKit:
-
-```swift
-import AppKit
-import MattstackCore
-
-/// macOS 15+ raises a permission alert on this read, so it happens only from
-/// the Paste invite button. A denial is indistinguishable from an empty
-/// clipboard here, and both mean "leave the field alone".
-public struct SystemPasteboard: PasteboardReading {
-    public init() {}
-    public func inviteText() -> String? { NSPasteboard.general.string(forType: .string) }
-}
-```
-
-In `TeamChoiceModel`:
-
-```swift
-    private let pasteboard: PasteboardReading
-
-    public init(rt: RtRunning, pasteboard: PasteboardReading) {
-        self.rt = rt
-        self.pasteboard = pasteboard
-    }
-
-    public func pasteInvite() {
-        guard let text = pasteboard.inviteText(), let code = JoinLink.code(fromText: text) else { return }
-        inviteCode = code
-    }
-```
-
-The argument is required on purpose: a defaulted no-op reader would turn a forgotten injection into a Paste button that silently does nothing.
-
-- [ ] **Step 4: Sweep the construction sites**
-
-Twelve in all: `SetupWindowController.swift:37` passes `SystemPasteboard()`; the eleven in `TeamChoiceChecks.swift` (lines 13, 35, 45, 54, 72, 85, 96, 102, 111, 126, 140) pass `FakePasteboard(nil)` unless the check is about pasting. Run `grep -rn "TeamChoiceModel(" rt-tray` and confirm none remain unconverted.
-
-- [ ] **Step 5: Add the button**
-
-In `TeamScreen`, beside the code field:
-
-```swift
-                HStack {
-                    Button("Paste invite") { model.pasteInvite() }
-                        .accessibilityIdentifier(AXID.teamPasteInvite)
-                    Text("macOS may ask permission to read your clipboard.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-```
-
-Add `teamPasteInvite` to `AXID`.
-
-- [ ] **Step 6: Run the checks**
-
-Run: `swift test --package-path rt-tray`
-Expected: PASS, including the "nothing reads the pasteboard without a click" check.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add rt-tray/Sources-core/Setup/PasteboardReading.swift rt-tray/Sources/Setup/SystemPasteboard.swift rt-tray/Sources-core/Setup/TeamChoiceModel.swift rt-tray/Sources/Setup/Screens/TeamScreen.swift rt-tray/Sources/Setup/SetupWindowController.swift rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift
-git commit -m "join screen: paste invite reads the clipboard only on a click, through a seam"
-```
-
----
-
 ### Task 10: The owner sends a link
 
 **Files:**
 - Modify: `rt-tray/Sources/Settings/TeamPane.swift:34-44`
-- Modify: `AXID` (add `settingsTeamCopyLink`, `settingsTeamShareInvite`)
+- Modify: `rt-tray/Sources/AccessibilityIDs.swift:6` (add `settingsTeamCopyLink`, `settingsTeamShareInvite`)
 - Test: `rt-tray/Tests/MattstackCoreChecks/SettingsChecks.swift:26`
 
 **Interfaces:**
@@ -1237,7 +1296,7 @@ git commit -m "join screen: paste invite reads the clipboard only on a click, th
 Check("the minted invite carries the link the owner sends") { c in
     let rt = ScriptedRt()
     rt.answers["team invite --handle bob"] = (0, #"{"contract":1,"code":"ABCD","link":"https://mattstack.dev/join#ABCD","expiresAt":"2026-08-28T00:00:00Z","pasteBlock":"Install mattstack…","forgeAccess":"granted","manualSteps":[]}"#)
-    let m = await MainActor.run { TeamSettingsModel(rt: rt) }
+    let m = await MainActor.run { makeTeamSettings(rt).0 }
     await m.mintInvite(handle: "bob")
     c.expectEqual(await MainActor.run { m.invite?.link }, "https://mattstack.dev/join#ABCD")
 }
@@ -1246,7 +1305,7 @@ Check("the minted invite carries the link the owner sends") { c in
 - [ ] **Step 2: Run it and watch it fail**
 
 Run: `swift test --package-path rt-tray`
-Expected: FAIL, `link` is not a member (unless Task 7 already landed it, in which case it fails on the stub's missing field).
+Expected: FAIL. Task 7 already added `InviteResult.link`, so this fails on the assertion: the scripted answer in that check carries no `link` until you add it here.
 
 - [ ] **Step 3: Add the buttons**
 
@@ -1277,6 +1336,8 @@ In `TeamPane.swift`, inside the `if let inv = model.invite` block, above the exi
 
 Guard the whole block on `inv.link` being present rather than copying an empty string, as the spec requires.
 
+`AXID` is internal to the `rt-tray` executable target, so no `MattstackCoreChecks` check can name these ids. They exist for the UI harness that drives the real app; the check above asserts the model, not the button.
+
 - [ ] **Step 4: Run the checks**
 
 Run: `swift test --package-path rt-tray`
@@ -1285,7 +1346,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add rt-tray/Sources/Settings/TeamPane.swift rt-tray/Sources-core/Setup/AXID.swift rt-tray/Tests/MattstackCoreChecks/SettingsChecks.swift
+git add rt-tray/Sources/Settings/TeamPane.swift rt-tray/Sources/AccessibilityIDs.swift rt-tray/Tests/MattstackCoreChecks/SettingsChecks.swift
 git commit -m "team pane: copy invite link and a share sheet beside the paste block"
 ```
 
@@ -1322,8 +1383,10 @@ Expected: PASS. Do not run `rt-tray/build.sh`.
 
 - [ ] **Step 6: Confirm no second classifier came back**
 
-Run: `grep -rn "could not read Username" --include="*.ts" lib commands`
-Expected: one hit, in `lib/team/repo-access.ts`.
+Run: `grep -rn "could not read Username" --include="*.ts" lib commands | grep -v __tests__`
+Expected: exactly one hit, `lib/team/repo-access.ts`. Test fixtures name the
+string a dozen times, which is why the grep excludes them; two non-test hits
+means Task 5 or Task 6 left its old pattern behind.
 
 - [ ] **Step 7: Commit any fixes**
 
@@ -1337,6 +1400,6 @@ git commit -m "verification: full gate green"
 ## Notes for the executor
 
 - **The clipboard alert behavior on macOS 15/26 is unconfirmed on a real machine.** The button copy assumes an alert may appear. If a real-machine check shows otherwise, the copy changes; the seam and the click-only rule do not.
-- **`repoRow` deliberately still probes unauthenticated.** Passing it a token would change what optional rows report for every tracked repo, which is not this ticket's work.
+- **`repoRow` deliberately still probes unauthenticated**, but its mapping does change: "could not read Username" on a tracked repo moves from `error` to `needs-you` with a Connect action, because that is the same honest statement there. Passing it a token is what stays out of scope.
 - **Do not touch the forge grant path.** `rtMayManageMembership`, `createdByRt`, `grantRead`/`revokeRead` belong to MAT-409 and another worktree.
 - **`mattstack.dev` prod serves a holding page**, so the minted link 404s in prod until the full site is redeployed. That is a deploy step outside this repo, not a defect in this work.
