@@ -37,7 +37,7 @@ struct TeamPane: View {
                             HStack {
                                 Button("Copy invite link") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(link, forType: .string) }
                                     .accessibilityIdentifier(AXID.settingsTeamCopyLink)
-                                Button("Share...") { share(link) }
+                                Button("Share…") { share(link) }
                                     .accessibilityIdentifier(AXID.settingsTeamShareInvite)
                             }
                             Text(link).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
@@ -59,6 +59,8 @@ struct TeamPane: View {
         .task { await model.load() }
     }
 
+    /// The picker is how the link reaches Messages, Mail or AirDrop without rt
+    /// ever handling a recipient.
     private func share(_ link: String) {
         guard let view = NSApp.keyWindow?.contentView else { return }
         NSSharingServicePicker(items: [link]).show(relativeTo: .zero, of: view, preferredEdge: .minY)
