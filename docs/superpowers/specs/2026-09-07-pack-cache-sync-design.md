@@ -52,6 +52,13 @@ pack:
 | `claude plugin disable <id>` on an enabled pack | exit 0 |
 | `claude plugin disable <id>` on an already-disabled pack | exit 1, stderr `is already disabled` |
 | `claude plugin disable <id>` on a pack that is not installed | exit 1, same `is already disabled` line |
+| `claude plugin uninstall <id>` on an installed pack | exit 0, `Successfully uninstalled`; the pack's `enabledPlugins` entry is removed too, so a rollback leaves no trace |
+| `claude plugin uninstall <id>` on an already-absent pack | exit 1, stderr `Plugin "<id>" not found in installed plugins` |
+| `claude plugin uninstall <id>` on a plugin that never existed | exit 1, same `not found in installed plugins` line |
+
+That uninstall phrasing matches `isAlreadyGone` (`uninstall.ts:210`) through its
+`not found` alternative, so the rollback reuses that matcher rather than adding
+one. The two editor-specific alternatives in that regex are inert here.
 
 Three consequences drive the design. The converge verb is `update`, never
 `install`, because only `update` preserves the disabled state. The served version
@@ -128,6 +135,35 @@ for the life of the daemon, silently.
 - **Per-converge:** a whole-run budget of `CONVERGE_BUDGET_MS` (120_000). When it
   is exhausted, the remaining packs are recorded as `skipped` and the run
   returns. The next pull retries them.
+- **A settlement is atomic with respect to the budget.** The budget is checked
+  before a settlement begins and never between its steps, so the run can never
+  abort after `install` with nothing left for `disable` or the `uninstall`
+  fallback... which would leave exactly the installed-and-enabled third state the
+  invariant forbids. A settlement that does not fit in the remaining budget is
+  skipped whole: nothing is installed, the pack stays absent, its row says
+  `missing`, and the next pull retries it.
+
+**The arithmetic, since the invariant and the client ceiling must both hold.**
+A settlement is at most three execs, so its execs take a shorter timeout than the
+rest of the converge:
+
+```
+SETTLE_EXEC_TIMEOUT_MS  30_000   (install, disable, uninstall)
+SETTLEMENT_MAX_MS       90_000   = 3 x 30_000, the worst-case settlement
+CONVERGE_BUDGET_MS     120_000   >= SETTLEMENT_MAX_MS, so one always fits
+PACK_EXEC_TIMEOUT_MS    60_000   (the listing and update, which need no rollback)
+
+a settlement starts only while remaining budget >= SETTLEMENT_MAX_MS
+worst-case round trip = FETCH_TIMEOUT_MS 30_000 + CONVERGE_BUDGET_MS 120_000
+                      = 150_000 <= PULL_TIMEOUT_MS 180_000   (30s headroom)
+```
+
+At 60s per exec a single settlement could reach 180s and breach both the budget
+and the client ceiling, which is why the settlement's calls are capped at 30s
+rather than sharing `PACK_EXEC_TIMEOUT_MS`. The consequence is that a converge
+spending most of its budget on slow updates may defer settlements to the next
+pull, which is the intended trade: deferring is safe, aborting mid-settlement is
+not.
 
 Together these cap the hook's contribution to `pullNow`, so `schedulePull` always
 re-arms. The hook's own `catch` guarantees a throwing converge cannot turn a
@@ -210,6 +246,10 @@ team does not get to grant itself execution. Rather than remember a failed
 
 ```
 install <id>
+  exit 0                              -> proceed to disable
+  exit != 0, isAlready                -> proceed to disable (it was already there)
+  exit != 0, otherwise                -> failed. STOP: no disable, no uninstall.
+
 disable <id>
   exit 0                              -> done: installed and disabled
   exit 1, "already disabled"          -> done: the goal state already holds
@@ -219,15 +259,34 @@ disable <id>
         uninstall also fails          -> failed, logged at warn
 ```
 
+**Install needs its own exhaustive branch, and a failed install must never reach
+`disable`.** Per the Evidence table, `disable` on a pack that is not installed
+exits 1 with `is already disabled`, which the branch above classifies as done. So
+a fall-through from a failed install would record that pack as installed and
+settled when nothing was installed at all. Install is therefore terminal on
+failure: recorded `failed`, and the sequence stops there.
+
 The invariant is therefore structural rather than bookkept: **after any run a
 team pack is installed-and-disabled, or not installed. There is no third state**,
 so nothing needs to be persisted, reconciled across processes, or retired later.
 
 The rollback is clean rather than destructive: this same run installed the pack
 moments earlier, so undoing it restores the machine to exactly its pre-run state.
-It reuses the `claude plugin uninstall` path `uninstall.ts:245` already uses, and
-tolerates an already-gone pack through the existing `isAlreadyGone`
-(`uninstall.ts:210`).
+It reuses the `claude plugin uninstall` exec that `uninstall.ts:256` already runs
+(`:245` is that function's `readSetupState`), and tolerates an already-gone pack
+through the existing `isAlreadyGone` (`uninstall.ts:210`).
+
+**What `SetupState.plugins` records.** `plugins.install` appends every computed
+plugin unconditionally today (`plugins.ts:193`), which would record a rolled-back
+pack as installed. It records only the packs that ended the run installed, so a
+rolled-back pack is absent from it and `rt setup uninstall` is not asked to
+remove something that is not there.
+
+The converge does not write `SetupState` at all, keeping that file single-writer.
+A pack the daemon installed first is therefore not listed there, so
+`rt setup uninstall` will not remove it until the next `rt setup apply` records
+it... which that run does, since it recomputes and records every pack it settles.
+The gap closes on the next apply rather than persisting.
 
 A rolled-back pack surfaces through the honest `missing` row that already exists,
 and the next converging pull retries install-then-disable by construction, with
@@ -240,10 +299,17 @@ something enabled that rt promised would not be is not.
 
 **Accepted tradeoff, stated plainly:** if the `uninstall` also fails, the pack is
 left installed and enabled, recorded `failed` and logged at `warn`, and nothing
-retries it automatically. A member can clear it with `claude plugin disable`. This
-is a double failure of two independent commands, and the cost of leaving it
-unhandled is one honest failure record instead of the cross-process retry
-machinery it would otherwise take. That is the deliberate trade.
+retries it automatically. A member can clear it with `claude plugin disable`.
+
+And the durable surface does not carry that fact. Without persisted state, an
+installed-and-enabled pack is indistinguishable from one the member enabled
+deliberately, so `rt setup status` renders it `ready ... installed and enabled`,
+not as a failure. The failure lives only in that converge's result and its `warn`
+line in the daemon log. So the honest description of the cost is: a double
+failure of two independent commands leaves a pack enabled that rt promised not to
+enable, visible in the log at the time and nowhere afterwards. Making it visible
+later is exactly the persisted-state machinery this design deleted, and buying it
+back for a double-failure case is the trade being declined.
 
 ### Reading what the team serves
 
@@ -382,7 +448,12 @@ Cases that must be covered because the design turns on them:
 - a claude build with no `disable` subcommand rolls back rather than leaving a
   pack enabled;
 - an `update` failure that is not "not found" never reaches `install`;
+- a failed `install` records `failed` and never reaches `disable`, so it cannot
+  be recorded as installed by way of "already disabled";
+- a rolled-back pack is absent from `SetupState.plugins`;
 - a per-exec timeout records `failed` and never `not installed`;
+- a settlement that does not fit the remaining budget is skipped whole, leaving
+  the pack absent rather than installed and enabled;
 - the budget cap returns and lets the pull loop re-arm;
 - a push-path pull fires no converge.
 
@@ -390,9 +461,13 @@ Cases that must be covered because the design turns on them:
 against a fixture directory marketplace in an isolated HOME and asserts the
 behaviors the design rests on: install enables, disable then update preserves
 disabled, update moves the version from a directory source, update on an
-uninstalled plugin exits non-zero with "not found", and disable on an
-already-disabled pack exits 1 with "already disabled". This is the test that
-fails loudly if claude's behavior changes. It follows the house pattern for a
+uninstalled plugin exits non-zero with "not found", disable on an
+already-disabled pack exits 1 with "already disabled", uninstall on an installed
+pack exits 0 and clears its `enabledPlugins` entry, and uninstall on an absent
+pack exits 1 with phrasing `isAlreadyGone` still matches. The rollback verb is
+covered here precisely because it is the one command whose failure would leave
+the invariant broken. This is the test that fails loudly if claude's behavior
+changes. It follows the house pattern for a
 test needing a real external dependency (`sdm-browser-login.test.ts`): env-gated
 and named, never silently skipped on a missing binary.
 
