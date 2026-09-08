@@ -131,6 +131,12 @@ Two bounds, both required:
 - **Per-converge:** a whole-run budget of `CONVERGE_BUDGET_MS` (120_000).
   When it is exhausted, the remaining packs are recorded as `skipped` with
   `converge budget exhausted` and the run returns. The next pull retries them.
+- **The pending-disable retry preamble draws from that same budget**, capped at
+  `PENDING_PREAMBLE_BUDGET_MS` (60_000, half of it). Several stranded ids each
+  burning a 60s timeout would otherwise starve the converge they precede, or
+  push the run past the client ceiling below. Ids not reached before the cap are
+  left untouched for the next converge; they are not recorded as failures,
+  because nothing was attempted.
 
 Together these cap the hook's contribution to `pullNow` at a known bound, so
 `schedulePull` always re-arms. The hook's own `catch` additionally guarantees a
@@ -173,7 +179,15 @@ export interface ConvergeResult {
   skipped: { id: string; reason: string }[];
   failed: { id: string; detail: string }[];
 }
-export async function convergePackCache(p: Probes, slug: string, log: Logger): Promise<ConvergeResult>
+/** `store` reads and writes the daemon's `pending-disable` kv key; the CLI passes
+ *  a SetupState-backed one. Both implementations also expose a read-only view of
+ *  the other store, which is what makes read-both / write-own possible. */
+export interface PendingDisableStore {
+  read(): string[];
+  readForeign(): string[];
+  write(ids: string[]): void;
+}
+export async function convergePackCache(p: Probes, slug: string, store: PendingDisableStore, log: Logger): Promise<ConvergeResult>
 ```
 
 `convergePackCache` walks the same `claudeConfigDirs(p, [])` list and passes the
@@ -256,19 +270,40 @@ a different reason: `updateSetupState` is a lock-free read-modify-write
 would silently lose one writer's entries, and a lost entry is a pack left
 enabled.
 
-So each writer keeps only what it installed and never writes the other's store:
+So the rule is **read both, write own**. Each writer records only what it
+installed, and never writes the other's store, but both *retry* from both:
 
-- `plugins.install` records into `SetupState.pendingDisable` and retries at the
-  start of every run (which is exactly when `rt setup apply` and `rt setup pack`
-  execute).
-- the daemon converge records into its existing per-clone kv
-  (`team-snapshot:<slug>`, sqlite-backed and therefore atomic) and retries every
-  converge.
+- `plugins.install` records into `SetupState.pendingDisable`.
+- the daemon converge records into its existing per-clone kv namespace
+  (`team-snapshot:<slug>`, sqlite-backed and therefore atomic) under **its own
+  key, `pending-disable`**, never `HOME_SNAPSHOT_KEY`.
+- **both** read the union of the two at the start of a run and retry every id in
+  it.
 
-These cannot disagree about anything that matters. Each drives the same terminal
-state, and either can verify it independently, so whichever gets there first
-turns the other's retry into a call that reports "already disabled" and clears.
-No lock is needed because neither writer ever needs the other's entries.
+Read-both is what heals the primary case. A joiner's first install runs through
+`plugins.install`, so a failed disable there lands in `SetupState`; if the
+converge only ever read its own kv, nothing would heal it until a human happened
+to re-run setup, which may never happen. The converge therefore retries CLI-owned
+ids too, and simply does not write that store.
+
+Clearing across stores needs no cross-writes, because the clearing rule is a
+fact about the world rather than a message between writers. Once the converge
+has disabled a CLI-owned pack, the id left in `SetupState` is stale, and the next
+`plugins.install` clears it under the same listing rule in the table above: the
+listing shows the pack present with `enabled: false`, so the id is dropped
+without a `disable` call. The status row applies that identical listing check, so
+a stale id never renders `needs-you` for a pack that is in fact already disabled.
+
+No lock is needed anywhere: writes stay single-owner, and reads are advisory.
+
+**The dedicated key is not a detail.** `persistState` writes the whole
+`HOME_SNAPSHOT_KEY` (`"state"`) row wholesale on every cycle
+(`home-snapshot.ts:318`), so a pending list folded into that row would be
+silently wiped on the next snapshot, and a wiped list is indistinguishable from
+a healed disable... the pack would stay enabled with nothing left to say so.
+`home-snapshot.ts:325` already carries this warning verbatim for the push
+record, which took its own key for exactly this reason; `pending-disable`
+follows that precedent rather than rediscovering it.
 
 `SetupState` gains `pendingDisable: string[]` as a required field with an
 `EMPTY_STATE` default, not an optional one. `readSetupState` spreads
@@ -282,8 +317,10 @@ omitting it there would append duplicates on every run, without bound.
 `disable` and the retry that clears it, the pack is installed and enabled, which
 is indistinguishable from a pack the member enabled deliberately. rt's intent for
 that pack is "not enabled", so a member who chooses to enable it inside that
-window will see it turned off once, at the next converge. The window is bounded
-by one pull interval, and it is visible rather than silent: a pending id renders
+window will see it turned off once, at the next converge. The window is
+typically bounded by one pull interval, though an id on the any-other-non-zero
+branch persists until a retry succeeds, and it is visible rather than silent
+throughout: a pending id renders
 its pack as `needs-you` in `rt setup status` (see the row table), detail
 `rt could not disable this pack; retrying`. Enabling after that row clears is
 never overridden.
@@ -462,8 +499,13 @@ converge retries it to success; an "already disabled" stderr clears the id
 rather than retrying forever; an unknown-subcommand `disable` clears the id as
 terminal; a listing showing the pack already disabled clears it with no
 `disable` call; repeated failures never grow the stored array (the dedupe case);
-the daemon's store and `SetupState.pendingDisable` are written independently and
-neither run clobbers the other's entries; a pack the member enabled after a
+a failed disable recorded by `plugins.install` is retried and cleared by the
+daemon converge, which never writes `SetupState`, and the stale CLI-side id then
+self-clears on the next `plugins.install` under the listing rule; a pending id
+whose pack the listing shows already disabled renders no `needs-you` row; the
+pending list survives a snapshot cycle (the dedicated kv key, not the wholesale-
+overwritten state row); the retry preamble stops at its cap and leaves the rest
+untouched; a pack the member enabled after a
 successful disable is never re-disabled; the budget cap returns and lets the pull
 loop re-arm; and a push-path pull fires no converge.
 
@@ -499,8 +541,9 @@ That work stays in MAT-402's lane.
   `claude plugin update`.
 - A converge whose `claude plugin list --json` could not be read writes nothing.
 - A pack whose `disable` failed is disabled by a later converge without any
-  command typed, and a pack the member enabled deliberately (after that pack's
-  pending row cleared) is not.
+  command typed, **including a joiner's first install**, whose failure is
+  recorded by `plugins.install` and healed by the daemon. A pack the member
+  enabled deliberately (after that pack's pending row cleared) is not.
 - No pending id survives the condition it describes: an uninstalled pack, an
   already-disabled pack and a claude build without the subcommand each clear it,
   so the retry list cannot grow without bound.
