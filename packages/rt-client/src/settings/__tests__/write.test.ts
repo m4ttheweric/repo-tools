@@ -399,8 +399,8 @@ describe("settings/write: joined-team guard", () => {
 
   // The guard runs after resolveStorePath's existence check (write.ts:216-219),
   // so every seed must create the team SETTINGS STORE too, not just the
-  // machine-local record — a seed of the record alone would refuse with
-  // "team store does not exist" before the guard is ever reached.
+  // machine-local record (a seed of the record alone would refuse with
+  // "team store does not exist" before the guard is ever reached).
   function seedTeamStore(team: string): void {
     const path = teamSettingsPath(team);
     mkdirSync(dirname(path), { recursive: true });

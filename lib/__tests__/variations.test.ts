@@ -188,7 +188,7 @@ describe("variations", () => {
       rmSync(home, { recursive: true, force: true });
     });
 
-    // lib/variations.ts:96 already wraps the write in try/catch — this proves
+    // lib/variations.ts:96 already wraps the write in try/catch: this proves
     // the existing degrade path, it does not add new behavior.
     test("degrades to a structured failure, never a crash", () => {
       const result = saveVariation(IDENTITY, "/repo", "/repo/pkg/a", "build", {
