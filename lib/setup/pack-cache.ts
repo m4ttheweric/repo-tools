@@ -129,7 +129,8 @@ export type SettleOutcome =
   /** `stage` and `code` let plugins.install keep its exact contract wording for a clean install failure. Only these two stages can fail terminally: a failed `disable` becomes a rollback, never a failure of its own. */
   | { kind: "failed"; id: string; detail: string; stage: "install" | "rollback"; code: number };
 
-function isAlready(res: ExecResult): boolean {
+/** Anchored to known "already done" phrasing in stderr only: an unanchored match over stdout+stderr would let a genuinely failing call (whose output merely mentions the word "already" in passing) read as success. */
+export function isAlready(res: ExecResult): boolean {
   return /already (installed|added|exists)/i.test(res.stderr);
 }
 
@@ -157,7 +158,9 @@ export async function settlePack(runner: ClaudeRunner, id: string, opts: { teamA
 
   if (install.code !== 0) {
     // A pack that already exists appeared underneath this run, so rt did not
-    // install it and does not get to change its enablement.
+    // install it and does not get to change its enablement. Today's claude
+    // never reaches here: install on an installed plugin exits 0 and re-enables
+    // it, so nothing above may rely on this branch to protect a present pack.
     if (isAlready(install)) return { kind: "current", id };
     // SIGKILL can land after the install wrote its records, so a timeout cannot
     // be read as "nothing happened"; undo it before reporting failure.
@@ -197,7 +200,7 @@ function emptyResult(): ConvergeResult {
   return { updated: [], installed: [], rolledBack: [], current: [], skipped: [], failed: [] };
 }
 
-function isNotFound(res: ExecResult): boolean {
+export function isNotFound(res: ExecResult): boolean {
   return /not found|not installed/i.test(res.stderr);
 }
 
@@ -271,7 +274,11 @@ export async function convergePackCache(
         result.updated.push({ id: pack.id, to: pack.servedVersion });
         continue;
       }
-      if (!isNotFound(updated)) {
+      // A listing entry is proof the pack is present, which outranks any
+      // absence wording `update` produced: `install` on a present pack exits 0
+      // and re-enables it, so a spurious match here would revert a member's
+      // deliberate enable. Only a pack the listing never carried may settle.
+      if (entry || !isNotFound(updated)) {
         result.failed.push({ id: pack.id, detail: updated.stderr.trim() || `update exited ${updated.code}` });
         continue;
       }

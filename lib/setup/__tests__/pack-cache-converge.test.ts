@@ -144,6 +144,29 @@ describe("convergePackCache", () => {
     expect(execs.some((a) => a[2] === "update")).toBe(false);
   });
 
+  test("a listed pack whose update claims absence is recorded failed, and its enablement is untouched", async () => {
+    const id = "acme-skills@acme-market";
+    // Models the real claude: install enables what it installs.
+    const enabled: Record<string, boolean> = { [id]: true };
+    const { p, execs } = probesWith(
+      { ...served([{ name: "acme-skills", source: "./packs/acme-skills" }]), ...pluginJson("acme-skills", "0.5.28") },
+      (argv) => {
+        const [, , verb, target] = argv;
+        if (verb === "list") return listing([{ id, version: "0.5.18", enabled: enabled[id] }]);
+        if (verb === "install") { enabled[target!] = true; return { code: 0, stdout: "", stderr: "" }; }
+        if (verb === "disable") { enabled[target!] = false; return { code: 0, stdout: "", stderr: "" }; }
+        return { code: 1, stdout: "", stderr: 'Plugin "acme-skills" is not installed' };
+      },
+    );
+
+    const result = await convergePackCache(p, "acme", quietLog);
+
+    expect(result.failed).toEqual([{ id, detail: 'Plugin "acme-skills" is not installed' }]);
+    expect(result.installed).toEqual([]);
+    expect(execs.some((a) => a[2] === "install")).toBe(false);
+    expect(enabled[id]).toBe(true);
+  });
+
   test("an update failure that is not not-found never reaches install", async () => {
     const { p, execs } = probesWith(
       { ...served([{ name: "acme-skills", source: "./packs/acme-skills" }]), ...pluginJson("acme-skills", "0.5.28") },
