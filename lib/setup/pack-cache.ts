@@ -6,8 +6,11 @@
  */
 
 import { join } from "path";
+import { resolveTool } from "../deps/resolve.ts";
 import { stripJsonc } from "../jsonc.ts";
 import type { ExecResult, Probes } from "./probes.ts";
+import { claudeConfigDirs } from "./tools-install.ts";
+import type { Logger } from "pino";
 
 export interface ServedPack {
   id: string;
@@ -175,4 +178,138 @@ export async function settlePack(runner: ClaudeRunner, id: string, opts: { teamA
   const why = disable.stderr.trim() || `disable exited ${disable.code}`;
   if (undo.code === 0 || isAlreadyGone(undo)) return { kind: "rolledBack", id, detail: why };
   return { kind: "failed", id, detail: `${why}; rollback failed: ${undo.stderr.trim()}`, stage: "rollback", code: undo.code };
+}
+
+export interface ConvergeResult {
+  updated: { id: string; to: string | null }[];
+  installed: string[];
+  /** Installed, then disable failed, so the install was undone. */
+  rolledBack: { id: string; detail: string }[];
+  current: string[];
+  skipped: { id: string; reason: string }[];
+  failed: { id: string; detail: string }[];
+}
+
+function emptyResult(): ConvergeResult {
+  return { updated: [], installed: [], rolledBack: [], current: [], skipped: [], failed: [] };
+}
+
+function isNotFound(res: ExecResult): boolean {
+  return /not found/i.test(res.stderr);
+}
+
+/**
+ * Brings the Claude plugin cache in line with what the team clone serves.
+ * Never installs a pack whose served version it cannot read: that version is
+ * the only evidence the pack is a local directory copy, which is what the
+ * settlement's timeouts were measured against.
+ */
+export async function convergePackCache(
+  p: Probes,
+  slug: string,
+  log: Logger,
+  opts: { now?: () => number } = {},
+): Promise<ConvergeResult> {
+  const now = opts.now ?? Date.now;
+  const result = emptyResult();
+
+  const claude = resolveTool(p, "claude");
+  if (!claude.exec) {
+    result.skipped.push({ id: "*", reason: "claude not found" });
+    return result;
+  }
+
+  const servedPacks = readServedPacks(p, slug);
+  if (servedPacks.error) {
+    result.failed.push({ id: "*", detail: servedPacks.error });
+    return result;
+  }
+  if (servedPacks.packs.length === 0) return result;
+
+  const deadline = now() + CONVERGE_BUDGET_MS;
+
+  for (const dir of claudeConfigDirs(p, [])) {
+    const before = { updated: result.updated.length, installed: result.installed.length, rolledBack: result.rolledBack.length };
+    const env = { CLAUDE_CONFIG_DIR: dir };
+    const runner: ClaudeRunner = {
+      run: (args, timeoutMs) => p.exec([...claude.exec!, ...args], { env, timeoutMs }),
+    };
+
+    const listed = await runner.run(["plugin", "list", "--json"], PACK_EXEC_TIMEOUT_MS);
+    const installed = listed.code === 0 ? parsePluginList(listed.stdout) : null;
+    if (!installed) {
+      const detail = listed.code === 0 ? "claude plugin list --json could not be read" : `claude plugin list exited ${listed.code}`;
+      for (const pack of servedPacks.packs) result.failed.push({ id: pack.id, detail });
+      continue;
+    }
+    const byId = new Map(installed.map((entry) => [entry.id, entry]));
+
+    for (const pack of servedPacks.packs) {
+      if (pack.servedVersion === null) {
+        result.skipped.push({ id: pack.id, reason: "version unknown" });
+        continue;
+      }
+      const entry = byId.get(pack.id);
+      if (entry && entry.version === null) {
+        result.skipped.push({ id: pack.id, reason: "version unknown" });
+        continue;
+      }
+      if (entry && entry.version === pack.servedVersion) {
+        result.current.push(pack.id);
+        continue;
+      }
+      if (now() >= deadline) {
+        result.skipped.push({ id: pack.id, reason: "converge budget exhausted" });
+        continue;
+      }
+
+      const updated = await runner.run(["plugin", "update", pack.id, "-y"], PACK_EXEC_TIMEOUT_MS);
+      if (updated.code === 0) {
+        result.updated.push({ id: pack.id, to: pack.servedVersion });
+        continue;
+      }
+      if (!isNotFound(updated)) {
+        result.failed.push({ id: pack.id, detail: updated.stderr.trim() || `update exited ${updated.code}` });
+        continue;
+      }
+
+      // The settlement is atomic against the budget: start it only with room
+      // for all three of its calls, so it can never stop after the install.
+      if (deadline - now() < SETTLEMENT_MAX_MS) {
+        result.skipped.push({ id: pack.id, reason: "settlement did not fit the remaining budget" });
+        continue;
+      }
+
+      const outcome = await settlePack(runner, pack.id, { teamAuthored: true });
+      if (outcome.kind === "installed") result.installed.push(outcome.id);
+      else if (outcome.kind === "current") result.current.push(outcome.id);
+      else if (outcome.kind === "rolledBack") result.rolledBack.push({ id: outcome.id, detail: outcome.detail });
+      else result.failed.push({ id: outcome.id, detail: outcome.detail });
+    }
+
+    // Per dir, with that dir's own deltas: the config dir is the point of this
+    // line. The daemon's env is launchd's, not the shell's, so which dir it
+    // acted on is the only way to compare it with the dir the CLI manages.
+    // Silent when nothing moved: a converging pull that changed nothing is not an event.
+    const moved = result.updated.length - before.updated + result.installed.length - before.installed + result.rolledBack.length - before.rolledBack;
+    if (moved > 0) {
+      log.info(
+        {
+          slug,
+          configDir: dir,
+          updated: result.updated.length - before.updated,
+          installed: result.installed.length - before.installed,
+          rolledBack: result.rolledBack.length - before.rolledBack,
+        },
+        "pack cache converged",
+      );
+    }
+  }
+
+  // Outside the per-dir loop: the result accumulates, so warning inside it would
+  // re-warn earlier dirs' entries on every iteration.
+  for (const entry of result.rolledBack) log.warn({ slug, id: entry.id, detail: entry.detail }, "pack install rolled back");
+  for (const entry of result.failed) log.warn({ slug, id: entry.id, detail: entry.detail }, "pack converge failed");
+
+  return result;
 }
