@@ -7,7 +7,7 @@
 import type { Logger } from "pino";
 import type { EventsBus } from "./events-bus.ts";
 import type { GatesStore } from "./gates-store.ts";
-import type { HerdStore, HerdJobRow } from "./herd-store.ts";
+import { herdSubject, type HerdStore, type HerdJobRow } from "./herd-store.ts";
 import { subscribeHerdrEvents as defaultSubscribe, type HerdrEvent, type HerdrSubscription } from "../herdr/subscribe.ts";
 import { safeTimeout } from "./safe-timers.ts";
 import { SYSTEM_HANDLE } from "./handlers/herd.ts";
@@ -126,10 +126,11 @@ export function createHerdLifecycle(opts: {
   }
 
   async function closeOpenGates(herdId: string, job: string): Promise<void> {
-    const res = await opts.gate["gate:list"]({ open: true, subjectPrefix: `herd:${herdId}/${job}` });
+    const subject = herdSubject(herdId, job);
+    const res = await opts.gate["gate:list"]({ open: true, subjectPrefix: subject });
     if (!res.ok) return;
     for (const g of res.data.gates as Array<{ id: string; subject: string }>) {
-      if (g.subject !== `herd:${herdId}/${job}`) continue;
+      if (g.subject !== subject) continue;
       await opts.gate["gate:close"]({ id: g.id, reason: "abandoned" });
     }
   }

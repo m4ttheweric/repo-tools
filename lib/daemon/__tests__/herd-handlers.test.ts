@@ -49,12 +49,21 @@ export function harness(over: Partial<HerdDeps> = {}) {
     "worktree:dispose": async (p: any) => { worktreeCalls.push({ verb: "dispose", p }); return { ok: true, data: { disposed: [p.tree], refused: [], recoverable: [] } }; },
   };
   const herdrCalls: string[][] = [];
+  // Socket-side herdr: `session.snapshot` for status, plus the trust-dialog
+  // trio. `paneText` is what `pane.read` hands back, so a test can put the
+  // trust prompt on the screen or leave ordinary output there.
+  const socketCalls: Array<{ method: string; params: any; sock: any }> = [];
+  const screen = { text: "$ claude\nworking...\n" };
   const deps: HerdDeps = {
     store, gateStore, gate, chat, agent, worktree,
     runWorktree: () => null,
     presenceHandleForSession: () => null,
-    herdr: (async (method: string) => {
+    herdr: (async (method: string, params: any, o: any) => {
+      socketCalls.push({ method, params, sock: o?.sockPath ?? null });
       if (method === "session.snapshot") return { ok: true, result: { snapshot: { panes: [{ pane_id: "w9:p1", agent_status: "working" }] } } };
+      if (method === "agent.wait") return { ok: true, result: { agent: { agent_status: "blocked" } } };
+      if (method === "pane.read") return { ok: true, result: { read: screen } };
+      if (method === "pane.send_keys") return { ok: true, result: {} };
       return { ok: false, code: "invalid_request", message: method };
     }) as unknown as HerdDeps["herdr"],
     herdrRunnerFor: (socket: string | null) => {
@@ -75,7 +84,7 @@ export function harness(over: Partial<HerdDeps> = {}) {
     ...over,
   };
   const h = createHerdHandlers(deps);
-  return { h, store, gateStore, gate, chatCalls, agentCalls, worktreeCalls, herdrCalls, dir };
+  return { h, store, gateStore, gate, chatCalls, agentCalls, worktreeCalls, herdrCalls, socketCalls, screen, dir };
 }
 
 const START = { name: "demo", repo: "gh:m4ttstack/rt", session: "sess-shep" };
@@ -162,6 +171,32 @@ describe("herd:resume / status / close", () => {
     expect((await h["herd:resume"]({ herd: "nope", session: "s" })).ok).toBe(false);
   });
 
+  test("resume signs the new session in under the stored handle's base and joins the room", async () => {
+    const { h, store, chatCalls, herd, room } = await started();
+    store.setShepherd(herd, { session: "sess-shep", handle: "shepherd-3" });
+    chatCalls.length = 0;
+    const res = await h["herd:resume"]({ herd, session: "sess-shep-2" });
+    if (!res.ok) throw new Error(res.error);
+    const identity = chatCalls.filter((c) => c.verb !== "rooms");
+    expect(identity.map((c) => c.verb)).toEqual(["sign-in", "join"]);
+    expect(identity[0]!.payload).toMatchObject({ sessionId: "sess-shep-2", baseHandle: "shepherd", noRoom: true });
+    expect(identity[1]!.payload).toMatchObject({ room, handle: "shepherd" });
+    expect(res.data.handle).toBe("shepherd");
+    expect(store.get(herd)!.shepherdHandle).toBe("shepherd");
+  });
+
+  test("resume on a session that already holds a handle joins as that handle without signing in", async () => {
+    const { h, store, chatCalls, herd, room } = await started({ presenceHandleForSession: (s) => (s === "sess-shep-2" ? "kai" : null) });
+    chatCalls.length = 0;
+    const res = await h["herd:resume"]({ herd, session: "sess-shep-2" });
+    if (!res.ok) throw new Error(res.error);
+    const identity = chatCalls.filter((c) => c.verb !== "rooms");
+    expect(identity.map((c) => c.verb)).toEqual(["join"]);
+    expect(identity[0]!.payload).toMatchObject({ room, handle: "kai" });
+    expect(res.data.handle).toBe("kai");
+    expect(store.get(herd)!.shepherdHandle).toBe("kai");
+  });
+
   test("status reports lifecycleConnected, hiddenUp null for a visible herd, and the shepherd's subscription row", async () => {
     const { h, gateStore, herd } = await started();
     const res = await h["herd:status"]({ herd });
@@ -169,6 +204,15 @@ describe("herd:resume / status / close", () => {
     expect(res.data).toMatchObject({ lifecycleConnected: true, hiddenUp: null, unread: 3 });
     const sub = gateStore.subscriptions({ live: true })[0]!;
     expect(res.data.subscription).toEqual({ id: sub.id, dead: false, lastDelivery: null });
+  });
+
+  test("status reports a dead subscription rather than hiding it as missing", async () => {
+    const { h, gateStore, herd } = await started();
+    const sub = gateStore.subscriptions({ live: true })[0]!;
+    gateStore.markSubscriptionDead(sub.id);
+    const res = await h["herd:status"]({ herd });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data.subscription).toMatchObject({ id: sub.id, dead: true });
   });
 
   test("status surfaces an answered gate whose nudge never landed", async () => {
@@ -207,6 +251,24 @@ describe("herd:resume / status / close", () => {
     expect(res.ok).toBe(true);
     expect(herdrCalls).toEqual([]);
     expect(store.getJob(herd, "cv-1")!.status).toBe("closed");
+  });
+});
+
+describe("herd:list", () => {
+  test("lists active herds with their job counts; --all includes wrapped ones", async () => {
+    const hx = harness();
+    const a = await hx.h["herd:start"](START);
+    const b = await hx.h["herd:start"]({ ...START, name: "other" });
+    if (!a.ok || !b.ok) throw new Error("start failed");
+    hx.store.upsertJob({ herd: a.data.herd, name: "cv-1", worktree: "/w", handle: "cv-1", status: "active" });
+    hx.store.setHerdStatus(b.data.herd, "wrapped");
+    const active = await hx.h["herd:list"]({});
+    if (!active.ok) throw new Error(active.error);
+    expect(active.data.herds.map((h) => h.id)).toEqual([a.data.herd]);
+    expect(active.data.herds[0]).toMatchObject({ room: a.data.room, status: "active", jobs: 1 });
+    const all = await hx.h["herd:list"]({ all: true });
+    if (!all.ok) throw new Error(all.error);
+    expect(all.data.herds.map((h) => h.id).sort()).toEqual([a.data.herd, b.data.herd].sort());
   });
 });
 
@@ -331,6 +393,54 @@ describe("herd:spawn", () => {
     const res = await h["herd:spawn"]({ herd, job: "review-cv-1", brief: "review it", dir: "/w/cv-1", disposable: true });
     expect(res.ok).toBe(true);
     expect(store.getJob(herd, "review-cv-1")!.disposable).toBe(true);
+  });
+
+  test("a respawn without --disposable keeps the prior disposable flag", async () => {
+    const { h, store, herd } = await started();
+    expect((await h["herd:spawn"]({ herd, job: "review-cv-1", brief: "review it", dir: "/w/cv-1", disposable: true })).ok).toBe(true);
+    expect((await h["herd:spawn"]({ herd, job: "review-cv-1", dir: "/w/cv-1" })).ok).toBe(true);
+    expect(store.getJob(herd, "review-cv-1")!.disposable).toBe(true);
+  });
+
+  test("a blocked pane showing the trust prompt is accepted with enter", async () => {
+    const { h, socketCalls, screen, herd } = await started();
+    screen.text = "Do you trust the files in this folder?\n1. Yes, proceed\n";
+    const res = await h["herd:spawn"]({ herd, job: "cv-1", brief: "b", dir: "/t" });
+    expect(res.ok).toBe(true);
+    expect(socketCalls.find((c) => c.method === "agent.wait")!.params).toMatchObject({ target: "w9:p1", until: ["idle", "blocked"] });
+    const keys = socketCalls.find((c) => c.method === "pane.send_keys");
+    expect(keys!.params).toEqual({ pane_id: "w9:p1", keys: ["enter"] });
+  });
+
+  test("a pane showing ordinary output is left alone", async () => {
+    const { h, socketCalls, herd } = await started();
+    const res = await h["herd:spawn"]({ herd, job: "cv-1", brief: "b", dir: "/t" });
+    expect(res.ok).toBe(true);
+    expect(socketCalls.some((c) => c.method === "pane.read")).toBe(true);
+    expect(socketCalls.some((c) => c.method === "pane.send_keys")).toBe(false);
+  });
+
+  test("a hidden herd runs the trust check on its own socket", async () => {
+    const hx = harness();
+    hx.screen.text = "Do you trust the files in this folder?";
+    const s = await hx.h["herd:start"]({ ...START, hidden: true });
+    if (!s.ok) throw new Error(s.error);
+    expect((await hx.h["herd:spawn"]({ herd: s.data.herd, job: "cv-1", brief: "b", dir: "/t" })).ok).toBe(true);
+    expect(hx.socketCalls.find((c) => c.method === "pane.send_keys")!.sock).toBe("/tmp/hidden.sock");
+  });
+
+  test("a spawn still succeeds when the herdr socket throws on the trust check", async () => {
+    const hx = harness({
+      herdr: (async (method: string) => {
+        if (method === "session.snapshot") return { ok: true, result: { snapshot: { panes: [] } } };
+        throw new Error("socket gone");
+      }) as unknown as HerdDeps["herdr"],
+    });
+    const s = await hx.h["herd:start"](START);
+    if (!s.ok) throw new Error(s.error);
+    const res = await hx.h["herd:spawn"]({ herd: s.data.herd, job: "cv-1", brief: "b", dir: "/t" });
+    expect(res.ok).toBe(true);
+    expect(hx.store.getJob(s.data.herd, "cv-1")!.pane).toBe("w9:p1");
   });
 
   test("a hidden herd passes its socket to agent:start", async () => {

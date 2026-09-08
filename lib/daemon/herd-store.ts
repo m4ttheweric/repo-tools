@@ -49,6 +49,9 @@ export function isValidJobName(name: string): boolean { return JOB_NAME_RE.test(
 
 export function herdSubject(herdId: string, job: string): string { return `herd:${herdId}/${job}`; }
 
+/** Subject prefix every gate in a herd shares; what the shepherd subscribes on. */
+export function herdPrefix(herdId: string): string { return `herd:${herdId}/`; }
+
 const SUBJECT_RE = /^herd:([^/]+)\/([^/]+)$/;
 export function parseHerdSubject(subject: string): { herd: string; job: string } | null {
   const m = SUBJECT_RE.exec(subject);

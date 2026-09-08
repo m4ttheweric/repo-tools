@@ -135,6 +135,8 @@ export interface GateSubscription {
 }
 
 export interface HerdInfo { id: string; repo: string; room: string; workspace: string; shepherdSession: string; shepherdHandle: string; herdrSocket: string | null; hidden: boolean; status: "active" | "wrapped"; createdAt: number; wrappedAt: number | null }
+/** A herd row as `herd:list` reports it: the registry row plus how many jobs hang off it. */
+export interface HerdListRow extends HerdInfo { jobs: number }
 export interface HerdJobInfo { herd: string; name: string; worktree: string; branch: string | null; tree: string | null; pane: string | null; agentSession: string | null; agentId: string | null; handle: string; status: "spawning" | "active" | "at-gate" | "at-milestone" | "done" | "closed" | "crashed"; disposable: boolean; lastGate: string | null; lastReport: number | null; createdAt: number; updatedAt: number }
 /** `lastGateStatus`/`lastGateDelivery` come from the job's `lastGate` row: an `answered` gate whose delivery is `dead-pane` is the "answered, worker not woken" case the shepherd must act on. */
 export interface HerdStatusData {
@@ -627,8 +629,10 @@ export interface Commands {
 
   // ─── Herd (shepherd run registry) ────────────────────────────────────────
   "herd:start":  { payload: { name: string; repo: string; session: string; hidden?: boolean }; data: { herd: string; room: string; workspace: string; subscription: string; handle: string; hidden: boolean } };
-  "herd:resume": { payload: { herd: string; session: string }; data: { subscription: string; gates: GateRow[]; unread: number; status: HerdStatusData } };
+  "herd:resume": { payload: { herd: string; session: string }; data: { subscription: string; gates: GateRow[]; unread: number; status: HerdStatusData; handle: string } };
   "herd:status": { payload: { herd: string }; data: HerdStatusData };
+  /** Active herds only unless `all`, so a shepherd's "which herd am I on" question has one answer. */
+  "herd:list":   { payload: { all?: boolean }; data: { herds: HerdListRow[] } };
   "herd:close":  { payload: { herd: string; job: string }; data: { job: string; status: "closed" } };
   /** `brief` is the brief TEXT, not a path: the CLI reads the file. It is stored at `<jobsRoot>/<herd>/<job>/job.md`, so a respawn with `dir` and no `brief` reads it back. */
   "herd:spawn":  { payload: { herd: string; job: string; brief?: string; dir?: string; model?: string; effort?: string; account?: string; disposable?: boolean }; data: { herd: string; job: string; pane: string; worktree: string; branch: string | null; tree: string | null; agentId: string; sessionId: string; handle: string } };
@@ -748,6 +752,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "herd:start",
   "herd:resume",
   "herd:status",
+  "herd:list",
   "herd:close",
   "herd:spawn",
   "herd:gates",

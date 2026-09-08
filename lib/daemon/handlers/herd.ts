@@ -9,12 +9,12 @@ import type { Logger } from "pino";
 import type { Commands, GateRow, HerdStatusData } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult } from "./types.ts";
 import type { HerdStore, HerdJobRow } from "../herd-store.ts";
-import { herdSubject, isValidJobName, mintHerdId } from "../herd-store.ts";
+import { herdPrefix, herdSubject, isValidJobName, mintHerdId } from "../herd-store.ts";
 import type { GatesStore } from "../gates-store.ts";
 import type { createGateHandlers } from "./gate.ts";
 import type { createChatHandlers } from "./chat.ts";
 import type { createAgentHandlers } from "./agent.ts";
-import type { herdrRequest } from "../../herdr/client.ts";
+import { waitTimeout, type herdrRequest } from "../../herdr/client.ts";
 import type { HerdrRunner } from "../../agent-herdr.ts";
 import { slugifyChatName } from "../../chat-room-name.ts";
 import { HIDDEN_SESSION } from "../herd-session.ts";
@@ -42,7 +42,13 @@ export const SYSTEM_HANDLE = "herdr";
 export const MILESTONE_OPTIONS = ["Approve", "Revise", "Spawn a reviewer"] as const;
 
 const HERD_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+// Mirrors pane:spawn's own settle budget, which is what the trust prompt sits behind.
+const SETTLE_BUDGET_MS = 50_000;
+const SETTLE_UNTIL = ["idle", "blocked"];
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
+
+/** `shepherd-2` is a collision suffix chat mints, not a name to ask for again. */
+const baseHandleOf = (handle: string): string => handle.replace(/-\d+$/, "");
 
 export function workspaceLabel(herdId: string): string { return `herd: ${herdId}`; }
 export function roomName(herdId: string): string { return slugifyChatName(`herd-${herdId}`); }
@@ -52,7 +58,7 @@ export function createHerdHandlers(deps: HerdDeps) {
   const { store, log } = deps;
 
   async function subscribeShepherd(herdId: string, session: string): Promise<CommandResult<"gate:subscribe">> {
-    return deps.gate["gate:subscribe"]({ subjectPrefix: `herd:${herdId}/`, session });
+    return deps.gate["gate:subscribe"]({ subjectPrefix: herdPrefix(herdId), session });
   }
 
   async function paneStatuses(socket: string | null): Promise<Map<string, string>> {
@@ -71,7 +77,7 @@ export function createHerdHandlers(deps: HerdDeps) {
   }
 
   async function openHerdGates(herdId: string): Promise<GateRow[]> {
-    const res = await deps.gate["gate:list"]({ open: true, subjectPrefix: `herd:${herdId}/` });
+    const res = await deps.gate["gate:list"]({ open: true, subjectPrefix: herdPrefix(herdId) });
     return res.ok ? res.data.gates : [];
   }
 
@@ -80,7 +86,7 @@ export function createHerdHandlers(deps: HerdDeps) {
     if (!herd) return null;
     const [panes, gates, unread, subs] = await Promise.all([
       paneStatuses(herd.herdrSocket), openHerdGates(herdId), unreadFor(herd.shepherdHandle, herd.room),
-      deps.gate["gate:subscriptions"]({ session: herd.shepherdSession, live: true }),
+      deps.gate["gate:subscriptions"]({ session: herd.shepherdSession }),
     ]);
     const jobs = store.jobs(herdId).map((j: HerdJobRow) => {
       const last = j.lastGate ? deps.gateStore.get(j.lastGate) : null;
@@ -92,7 +98,10 @@ export function createHerdHandlers(deps: HerdDeps) {
         lastGateDelivery: last?.delivery?.outcome ?? null,
       };
     });
-    const subRow = subs.ok ? subs.data.subscriptions.find((s) => s.subjectPrefix === `herd:${herdId}/`) ?? null : null;
+    // A dead row is the shepherd's cue to resume, so the live-only query would
+    // hide the very state `renderStatus` prints DEAD for.
+    const mine = subs.ok ? subs.data.subscriptions.filter((s) => s.subjectPrefix === herdPrefix(herdId)) : [];
+    const subRow = mine.findLast((s) => !s.dead) ?? mine.at(-1) ?? null;
     return {
       herd, jobs, unread,
       lifecycleConnected: deps.lifecycle.connected(herd.herdrSocket),
@@ -112,6 +121,31 @@ export function createHerdHandlers(deps: HerdDeps) {
       log.warn({ err, ...context, pane }, "herd: pane close threw");
     }
     return false;
+  }
+
+  /** claude's "do you trust the files in this folder?" prompt blocks a fresh
+      worktree's first turn until it is dismissed, and `agent:start` stops at
+      launching the pane. Best effort throughout: the pane and the job row are
+      already real, so nothing here may fail the spawn. */
+  async function acceptTrustDialog(socket: string | null, pane: string, context: Record<string, unknown>): Promise<void> {
+    const sock = socket ? { sockPath: socket } : {};
+    try {
+      const settled = await deps.herdr("agent.wait", { target: pane, until: SETTLE_UNTIL, timeout_ms: SETTLE_BUDGET_MS }, { ...sock, timeoutMs: waitTimeout(SETTLE_BUDGET_MS) });
+      if (!settled.ok) {
+        log.warn({ ...context, pane, err: settled.message }, "herd: agent never settled; trust dialog not checked");
+        return;
+      }
+      const screen = await deps.herdr<{ read: { text: string } }>("pane.read", { pane_id: pane, source: "visible" }, sock);
+      if (!screen.ok) {
+        log.warn({ ...context, pane, err: screen.message }, "herd: pane read failed; trust dialog not checked");
+        return;
+      }
+      if (!/trust/i.test(screen.result.read.text)) return;
+      const sent = await deps.herdr("pane.send_keys", { pane_id: pane, keys: ["enter"] }, sock);
+      if (!sent.ok) log.warn({ ...context, pane, err: sent.message }, "herd: trust dialog accept failed");
+    } catch (err) {
+      log.warn({ err, ...context, pane }, "herd: trust dialog accept threw");
+    }
   }
 
   function uniqueHerdId(name: string): string {
@@ -160,9 +194,19 @@ export function createHerdHandlers(deps: HerdDeps) {
       if (!herd) return { ok: false, error: `unknown herd "${herdId}"` };
       const sub = await subscribeShepherd(herdId, session);
       if (!sub.ok) return sub;
-      store.setShepherd(herdId, { session, handle: herd.shepherdHandle });
+      // Presence binds a handle to a session: without a row for the relaunched
+      // session, worker reports and lifecycle posts wake nobody.
+      let handle = deps.presenceHandleForSession(session);
+      if (!handle) {
+        const signIn = await deps.chat["chat:sign-in"]({ sessionId: session, baseHandle: baseHandleOf(herd.shepherdHandle), noRoom: true });
+        if (!signIn.ok) return signIn;
+        handle = signIn.data.handle;
+      }
+      const join = await deps.chat["chat:join"]({ room: herd.room, handle });
+      if (!join.ok) return join;
+      store.setShepherd(herdId, { session, handle });
       const status = (await statusData(herdId))!;
-      return { ok: true, data: { subscription: sub.data.id, gates: await openHerdGates(herdId), unread: status.unread, status } };
+      return { ok: true, data: { subscription: sub.data.id, gates: await openHerdGates(herdId), unread: status.unread, status, handle } };
     },
 
     "herd:status": async (raw: unknown): Promise<CommandResult<"herd:status">> => {
@@ -170,6 +214,12 @@ export function createHerdHandlers(deps: HerdDeps) {
       if (!herdId) return { ok: false, error: "herd is required" };
       const data = await statusData(herdId);
       return data ? { ok: true, data } : { ok: false, error: `unknown herd "${herdId}"` };
+    },
+
+    "herd:list": async (raw: unknown): Promise<CommandResult<"herd:list">> => {
+      const all = (raw as { all?: unknown } | undefined)?.all === true;
+      const rows = all ? store.list() : store.list({ status: "active" });
+      return { ok: true, data: { herds: rows.map((h) => ({ ...h, jobs: store.jobs(h.id).length })) } };
     },
 
     "herd:close": async (raw: unknown): Promise<CommandResult<"herd:close">> => {
@@ -210,7 +260,9 @@ export function createHerdHandlers(deps: HerdDeps) {
         if (!prov.ok) return { ok: false, error: `provision failed: ${prov.error}` };
         worktree = prov.data.path as string; branch = prov.data.branch as string; tree = prov.data.tree as string;
       }
-      const disposable = p?.disposable === true;
+      // A respawn that does not repeat --disposable must not un-dispose a
+      // reviewer the shepherd already marked throwaway.
+      const disposable = p?.disposable ?? prior?.disposable ?? false;
 
       // The prior pane is closed above, so the row must not go on naming it
       // while agent:start decides whether there is a new one.
@@ -225,6 +277,7 @@ export function createHerdHandlers(deps: HerdDeps) {
       if (!started.ok) return started;
       const rec = started.data;
       store.upsertJob({ herd: herdId, name, worktree, branch, tree, handle: name, status: "spawning", pane: rec.paneId ?? null, agentSession: rec.sessionId, agentId: rec.id });
+      if (rec.paneId) await acceptTrustDialog(herd.herdrSocket, rec.paneId, { herd: herdId, job: name });
 
       const signIn = await deps.chat["chat:sign-in"]({ sessionId: rec.sessionId, baseHandle: name, pane: rec.paneId, cwd: worktree, noRoom: true });
       if (!signIn.ok) log.warn({ herd: herdId, job: name, error: signIn.error }, "herd: worker chat sign-in failed; reports will not deliver until it signs in");
