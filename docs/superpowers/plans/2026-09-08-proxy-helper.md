@@ -28,6 +28,7 @@
 
 **Files:**
 - Modify: `rt-tray/deps.lock` (rows `mattstack-proxy-install` at ~line 70; add `portless` after `cloudflared`)
+- Modify: `rt-tray/check-bundle.sh` (the `node|fast-browser` directory-skip case, ~line 341)
 - Modify: `lib/__tests__/deps-lock-live.test.ts`
 - Test: `lib/__tests__/deps-lock-live.test.ts`
 
@@ -80,7 +81,7 @@ Also in this task, `rt-tray/check-bundle.sh:341-352`'s per-row smoke runs
 `node|fast-browser` case — add `portless` to that case in the same commit,
 or any intermediate check-bundle run fails on the directory bundlePath.
 - [ ] **Step 4: Run** `bun test lib/__tests__/deps-lock-live.test.ts lib/__tests__/bundle-layout.test.ts lib/__tests__/deps-lock-file.test.ts` → PASS; then `bash scripts/fetch-deps.sh` → portless downloads, verifies, unpacks.
-- [ ] **Step 5: Commit** — `git add rt-tray/deps.lock lib/__tests__/deps-lock-live.test.ts && git commit -m "deps.lock: pin portless, retire the pending helper row"`.
+- [ ] **Step 5: Commit** — `git add rt-tray/deps.lock rt-tray/check-bundle.sh lib/__tests__/deps-lock-live.test.ts && git commit -m "deps.lock: pin portless, retire the pending helper row"`.
 
 ### Task 2: Helper skeleton with the MATTSTACK_EXIT contract and --version
 
@@ -248,18 +249,18 @@ The tree-hash definition the fake and real ops share: sha256 over each file's `(
 - [ ] **Step 3: Implement.** `gen-pins.sh` (bash, run by build.sh before the helper compile): reads `rt-tray/deps.lock` with the bundled jq or python3, accepts the app version as `$1` (build.sh normalizes its version only at ~line 336, AFTER the embed block's position, so the embed block passes the value explicitly rather than reading a not-yet-set variable — hoist the version stanza or pass the raw value, and say which in the code), computes the tree hash of the FETCHED `rt-tray/deps/arm64/portless-dist` (fetch-deps output; fail loudly if absent), and writes `Sources/ProxyInstall/Pins.generated.swift`:
 
 ```swift
-enum Pins {
-    static let portlessVersion = "<from deps.lock>"
-    static let portlessTarballSha256 = "<from deps.lock>"
-    static let portlessTreeSha256 = "<computed>"
-    static let appVersion = "<build version>"
-}
-enum HelperVersion { static let value = Pins.appVersion }
+let PINS_CURRENT = PinsValues(
+    portlessVersion: "<from deps.lock>",
+    portlessTarballSha256: "<from deps.lock>",
+    portlessTreeSha256: "<computed>",
+    appVersion: "<build version>")
+enum Pins { static let current = PINS_CURRENT }
+enum HelperVersion { static let value = Pins.current.appVersion }
 ```
 
 Delete the placeholder `HelperVersion.swift`. `Pins.generated.swift` defines `Pins.current: PinsValues` (and `HelperVersion.value = Pins.current.appVersion`); gen-pins.sh writes it and every `swift build`/`swift test` fails loudly without it, which is correct: the helper must never build with unpinned values. Tests never touch `Pins.current` — they construct `PinsValues` fixtures inline (`PinsValues.fixture(...)` is a test-only convenience initializer in the test target).
 
-`CopyStep.swift` implements: resolve `bundleRoot/Helpers/portless-dist` and `bundleRoot/Helpers/node`; `fs.treeHash(portlessDist) == Pins.portlessTreeSha256` else throw `hash mismatch`; walk each ancestor segment of `targetRoot` that exists: `fs.stat` must be root-owned (uid 0) and not a symlink, else throw; stage into `targetRoot.deletingLastPathComponent()/.proxy-stage-<pid>`; `fs.rename` over `targetRoot`; write `VERSION`.
+`CopyStep.swift` implements: resolve `bundleRoot/Helpers/portless-dist` and `bundleRoot/Helpers/node`; `fs.treeHash(portlessDist) == pins.portlessTreeSha256` else throw `hash mismatch`; walk each ancestor segment of `targetRoot` that exists: `fs.stat` must be root-owned (uid 0) and not a symlink, else throw; stage into `targetRoot.deletingLastPathComponent()/.proxy-stage-<pid>`; `fs.rename` over `targetRoot`; write `VERSION`.
 - [ ] **Step 4: Run** `swift test` → PASS. Wire `bash rt-tray/proxy-helper/scripts/gen-pins.sh` into build.sh immediately before the helper's swift build; scratch-build to prove the generated pins compile.
 - [ ] **Step 5: Commit** — `git add -A rt-tray/proxy-helper rt-tray/build.sh && git commit -m "proxy-helper: build-time pins and verified stage+rename copy"`.
 
@@ -371,7 +372,7 @@ Then the assertion block, gated `[ "$exe" = mattstack ]` like rt-ui's
 local pxy="$app/Contents/Helpers/mattstack-proxy-install"
 if [ -f "$pxy" ]; then
     pass "$exe ships Helpers/mattstack-proxy-install"
-    assert_eq "$exe proxy-helper codesign identifier" "Identifier=com.mattstack.helper.proxy-install" "$(codesign -dv "$pxy" 2>&1 | grep '^Identifier=' || true)"
+    assert_eq "$exe proxy-helper codesign identifier" "Identifier=com.mattstack.helper.mattstack-proxy-install" "$(codesign -dv "$pxy" 2>&1 | grep '^Identifier=' || true)"
     "$pxy" --version 2>/dev/null | grep -q '^mattstack-proxy-install .* protocol 1$' && pass "$exe proxy-helper answers --version" || fail "$exe proxy-helper --version failed"
     [ -d "$app/Contents/Helpers/portless-dist" ] && pass "$exe ships portless-dist" || fail "$exe missing Helpers/portless-dist"
 else
@@ -379,7 +380,7 @@ else
 fi
 ```
 
-The identifier must match what build.sh signs; set the helper's bundle identifier `com.mattstack.helper.proxy-install` in the signing step the same way rt-ui's is set (find rt-ui's `--identifier` flag in build.sh and mirror it).
+No signing work is needed: build.sh's `sign_helper_tree` pass derives every helper's identifier as `com.mattstack.helper.$(basename)`, so Task 2's `HELPER_ENTITLEMENTS` entry already yields `com.mattstack.helper.mattstack-proxy-install`.
 - [ ] **Step 2: Run** `bash -n rt-tray/check-bundle.sh`; then the scratch-bundle check-bundle run → the new assertions PASS against the Task 2 build.
 - [ ] **Step 3: Commit** — `git commit -am "check-bundle: assert the proxy helper and portless-dist ship and run"`.
 
