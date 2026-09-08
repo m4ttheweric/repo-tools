@@ -4,6 +4,7 @@
 **Tickets:** SKILLS-59 (field report), SKILLS-58 (gate decisions through the bus), SKILLS-35 (watch loop drops events)
 **Repos:** rt (the facility), mattstack-skills (shepherdr engine and job template)
 **Supersedes:** the shepherd-side half of `mattstack-skills:docs/superpowers/specs/2026-08-19-shepherdr-event-bus-design.md` (herd-wait, herd-bridge, the herd DB's question and report tables) and the shepherdr adopter section of `2026-09-03-gate-facility-design.md`, which this spec completes.
+**Status:** W1 implemented (rt, branch brisk-beacon), W2 pending (mattstack-skills)
 
 ## Problem
 
