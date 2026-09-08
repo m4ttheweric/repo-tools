@@ -1125,7 +1125,7 @@ test("an object-form pack that is not installed says rt does not manage it, neve
   });
   const row = rows.find((r) => r.id === "pack.remote")!;
   expect(row.status).toBe("skipped");
-  expect(row.detail).toContain("rt does not manage this source");
+  expect(row.detail).toContain("rt does not track this source");
 });
 
 test("an unparsable marketplace.json renders one error row, outside the pack namespace", async () => {

@@ -221,7 +221,7 @@ function statusPlan(rows: Row[]) {
 
 test("a skipped pack row never lands in requiredMissing, so it cannot block Install", () => {
   const plan = statusPlan([
-    row({ id: "pack.remote", kind: "tool", title: "remote", why: "x", required: false, status: "skipped", detail: "version unknown; rt does not manage this source" }),
+    row({ id: "pack.remote", kind: "tool", title: "remote", why: "x", required: false, status: "skipped", detail: "version unknown; rt does not track this source's version" }),
   ]);
   expect(plan.requiredMissing).not.toContain("pack.remote");
   expect(plan.canInstall).toBe(true);

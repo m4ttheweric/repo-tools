@@ -442,7 +442,7 @@ which is how a pack with no `requirements.jsonc` gets a row at all.
 | Condition | Status | Detail |
 | --- | --- | --- |
 | marketplace.json unparsable | `error` | `<path> did not parse` |
-| served version unreadable **and** not installed | `skipped` | `version unknown; rt does not manage this source` |
+| served version unreadable **and** not installed | `skipped` | `version unknown; rt does not track this source's version` |
 | not installed | `missing` | installed by Install (plugins.install) |
 | installed, versions match, not enabled | `ready` | `<v> installed, not enabled ... claude plugin enable <id>`, plus the restart caveat |
 | installed, versions match, enabled | `ready` | `<v> installed and enabled`, plus the restart caveat |
@@ -453,11 +453,15 @@ The unreadable-served-version row is placed above `not installed` because it
 takes precedence over it. `readServedPacks` lists an object-form pack with a null
 served version and `packRow` unions served packs into the table, so such a pack
 does get a row; without this line it would read `missing ... installed by
-Install`, promising an action that will never happen for it. The per-pack
-sequence skips a null served version structurally, and `plugins.install` runs
-that same sequence, so neither the converge nor Install will ever install it. An
-object-form pack that is already installed keeps the `version unknown` row below,
-which is honest for the same reason: rt can see it but does not manage it.
+Install`, which reads as a pack rt is keeping current. It is not. The converge
+skips a null served version structurally, so it never installs or updates such a
+pack. `plugins.install` shares only `settlePack`, not that gate, so it does still
+install one at setup time: the pack lands once and is then never auto-updated,
+because every later converge skips it as unknown. The row's detail therefore
+names what rt cannot do (read that source's version) rather than an action rt
+will take. An object-form pack that is already installed keeps the
+`version unknown` row below for the same reason: rt can see it but cannot tell
+whether it is current.
 
 **The restart caveat sits on the converged row, not the stale one.** On a stale
 row the cache itself still holds the old version, so a restart changes nothing

@@ -489,7 +489,7 @@ function packRow(req: PackRequirements, pluginList: ExecResult, served?: ServedP
   if (served && served.servedVersion === null && !entry) {
     // optionalNote is dropped: base carries "Installed by Install", which
     // contradicts this row's own detail.
-    return row({ ...base, optionalNote: null, status: "skipped", detail: "version unknown; rt does not manage this source" });
+    return row({ ...base, optionalNote: null, status: "skipped", detail: "version unknown; rt does not track this source's version" });
   }
   if (!entry) return row({ ...base, status: "missing", detail: "installed by Install (plugins.install)" });
 
@@ -497,8 +497,8 @@ function packRow(req: PackRequirements, pluginList: ExecResult, served?: ServedP
   if (served && served.servedVersion !== null && entry.version !== null && entry.version !== served.servedVersion) {
     return row({ ...base, status: "needs-you", detail: `installed ${installed}, team serves ${served.servedVersion}`, action: INSTALL_PLUGINS_ACTION });
   }
-  // No served pack AND no version to report: keep the pre-existing wording
-  // exactly, or validators-tools.test.ts:801 ("-> ready, installed") goes red.
+  // No served pack AND no version to report: the pre-existing wording is a
+  // pinned contract string, so it stays exactly "installed".
   if (!served && entry.version === null) return row({ ...base, status: "ready", detail: "installed" });
   if (!served || served.servedVersion === null) {
     return row({ ...base, status: "ready", detail: entry.version === null ? "installed version unknown, served version unknown" : `${installed} installed, served version unknown` });
@@ -595,9 +595,9 @@ async function linearMcpRow(p: Probes, secrets: SecretPresence): Promise<Row> {
 export async function toolRows(
   p: Probes,
   reqs: PackRequirements[],
-  // Optional, not required: 85 existing call sites in validators-tools.test.ts
-  // pass only { hasBrew, secrets }, and tests are inside the root tsconfig, so a
-  // required field turns `bunx tsc --noEmit` red while `bun test` stays green.
+  // Optional, not required: the existing test call sites pass only
+  // { hasBrew, secrets }, and tests are inside the root tsconfig, so a required
+  // field turns `bunx tsc --noEmit` red while `bun test` stays green.
   opts: { hasBrew: boolean; secrets: SecretPresence; teamSlug?: string },
   seams: ToolsSeams = REAL_SEAMS,
 ): Promise<Row[]> {
