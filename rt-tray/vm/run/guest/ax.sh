@@ -205,9 +205,34 @@ ax_wait_status_not() {  # <rowId> <status-to-leave> <timeout-s>
 # One-shot, non-blocking: returns immediately when no dialog is up. A poll loop must use this
 # form, not ax_admin_auth's own 30s wait-for-appearance — that form belongs only at call sites
 # that just triggered a privileged action and expect the dialog imminently.
+#
+# The proxy step raises TWO SecurityAgent prompts in a row and they do not
+# answer the same way. The escalation ("Install Helper") takes a written value;
+# the CA trust prompt that follows it ("You are making changes to your
+# Certificate Trust Settings" / "Update Settings") discards one. Written into
+# that one, the password never reaches SecurityAgent, the click submits an
+# empty field, and the prompt silently comes back about 12s later, forever
+# (proven in the guest: seven such rounds, then portless's 60s `security`
+# timeout ends the install). Typed, it authorises first time. So the trust
+# prompt is matched by its own wording and driven with keystrokes.
 ax_admin_auth_once() {
   local u p; u=$(ax_esc "$VM_ADMIN_USER"); p=$(ax_esc "$VM_ADMIN_PASS")
+  # Both branches stay inside the one "is a dialog up?" probe: the no-dialog
+  # path is polled every couple of seconds by screen_install and is bounded at
+  # 3s by check-vm-scripts.sh, so it can afford no extra round trip.
   if ax_osa 'tell application "System Events" to exists window 1 of process "SecurityAgent"' 2>/dev/null | grep -q true; then
+    if ax_osa 'tell application "System Events" to tell process "SecurityAgent" to exists (first static text of window 1 whose name contains "Certificate Trust Settings")' 2>/dev/null | grep -q true; then
+      ax_osa "tell application \"System Events\" to tell process \"SecurityAgent\"
+        set frontmost to true
+        tell window 1 to set focused of text field 1 to true
+        key code 0 using {command down}
+        keystroke \"$u\"
+        keystroke tab
+        keystroke \"$p\"
+        delay 0.3
+        tell window 1 to click (first button whose name is \"Update Settings\")
+      end tell" >/dev/null && { ax_log "admin auth typed (SecurityAgent: certificate trust)"; return 0; }
+    fi
     ax_osa "tell application \"System Events\" to tell process \"SecurityAgent\" to tell window 1
       set value of text field 1 to \"$u\"
       set value of text field 2 to \"$p\"
