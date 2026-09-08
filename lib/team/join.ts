@@ -37,7 +37,7 @@ import { AUTH_FAILURE_PATTERN } from "./publish.ts";
 import { withoutUrls } from "./redact.ts";
 import type { RelayClient } from "./relay-client.ts";
 import { storedForgeToken } from "./stored-forge-token.ts";
-import { updateTeamLocal } from "./team-local.ts";
+import { readTeamLocal, updateTeamLocal } from "./team-local.ts";
 
 export interface JoinResult {
   team: { slug: string; name: string; owner: string };
@@ -347,9 +347,13 @@ export async function joinRedeem(
   // Ordering is the point: the clone creates ~/.mattstack/teams/<slug>, which
   // is what the daemon's teams/ watcher fires on. Recording after the clone
   // races that watcher for the mode of the engine it starts. Every exit below
-  // that leaves this call without a usable clone at `dir` clears it back to
-  // false, so a failed or refused join cannot leave this machine asserting
-  // membership in a team it never actually joined.
+  // that leaves this call without a usable clone at `dir` restores the value
+  // read here rather than hardcoding false: this call's own pointer can name
+  // a slug some earlier, genuinely successful join already owns (a stale or
+  // mistyped code resolving to the same slug with a different remote), and
+  // that prior join must not be flipped back into push mode by a failure that
+  // has nothing to do with it.
+  const priorJoined = readTeamLocal(p, pointer.team).joinedByRt;
   updateTeamLocal(p, pointer.team, { joinedByRt: true });
 
   const token = await seams.forgeToken(p, pointer.remote);
@@ -358,7 +362,7 @@ export async function joinRedeem(
 
   if (existingOrigin !== null) {
     if (stripUserinfo(existingOrigin) !== stripUserinfo(pointer.remote)) {
-      updateTeamLocal(p, pointer.team, { joinedByRt: false });
+      updateTeamLocal(p, pointer.team, { joinedByRt: priorJoined });
       throw new UserActionableError(
         "team-remote-mismatch",
         `"${pointer.team}" is already cloned at ${dir} with a different remote — remove it to rejoin, or resolve by hand`,
@@ -370,7 +374,7 @@ export async function joinRedeem(
     const git = gitWithToken(["clone", pointer.remote, dir], token, GIT_ENV);
     const clone = await p.exec(git.argv, { env: git.env });
     if (clone.code !== 0) {
-      updateTeamLocal(p, pointer.team, { joinedByRt: false });
+      updateTeamLocal(p, pointer.team, { joinedByRt: priorJoined });
       return gitAccessResult(pointer, clone);
     }
   }

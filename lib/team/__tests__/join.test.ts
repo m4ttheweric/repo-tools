@@ -11,7 +11,7 @@ import { JoinKeyExchangeError, joinDryRun, joinRedeem, type JoinRedeemSeams } fr
 import type { RelayClient } from "../relay-client.ts";
 import type { SecretsSeams } from "../../secrets/store.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
-import { readTeamLocal } from "../team-local.ts";
+import { readTeamLocal, updateTeamLocal } from "../team-local.ts";
 
 const HOME = "/home";
 const ID_HEX = "0102030405060708090a0b0c0d0e0f10";
@@ -685,6 +685,23 @@ describe("joinRedeem", () => {
     await expect(joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams)).rejects.toMatchObject({ code: "team-remote-mismatch" });
 
     expect(readTeamLocal(p, POINTER.team).joinedByRt).toBe(false);
+  });
+
+  test("a remote-mismatch refusal does NOT clobber a genuine prior join under the same slug", async () => {
+    const p = redeemProbes({
+      dirs: { [TEAM_DIR]: [".git"] },
+      files: { [pathJoin(TEAM_DIR, ".git", "config")]: gitConfigWithRemote("git@github.com:someone-else/other.git") },
+    });
+    updateTeamLocal(p, POINTER.team, { joinedByRt: true });
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams();
+
+    // A stale or mistyped code resolving to this same slug, with a remote
+    // that no longer matches what this machine already joined, must refuse
+    // without touching the standing record of that earlier, unrelated join.
+    await expect(joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams)).rejects.toMatchObject({ code: "team-remote-mismatch" });
+
+    expect(readTeamLocal(p, POINTER.team).joinedByRt).toBe(true);
   });
 
   test("no code and no saved intent throws no-join-intent", async () => {
