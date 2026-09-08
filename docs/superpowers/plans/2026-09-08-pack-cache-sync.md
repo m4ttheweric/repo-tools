@@ -345,11 +345,13 @@ describe("settlePack", () => {
     const outcome = await settlePack(r, "p@m", { teamAuthored: true });
     expect(outcome.kind).toBe("failed");
     expect(outcome.kind === "failed" && outcome.detail).toContain("permission denied");
+    expect(outcome.kind === "failed" && outcome.stage).toBe("rollback");
   });
 
-  test("a clean install failure is terminal: no disable, no uninstall", async () => {
-    const r = runner({ install: fail("network refused") });
-    expect((await settlePack(r, "p@m", { teamAuthored: true })).kind).toBe("failed");
+  test("a clean install failure is terminal, and carries the stage and code plugins.install reports", async () => {
+    const r = runner({ install: fail("network refused", 3) });
+    const outcome = await settlePack(r, "p@m", { teamAuthored: true });
+    expect(outcome).toEqual({ kind: "failed", id: "p@m", detail: "network refused", stage: "install", code: 3 });
     expect(r.verbs).toEqual(["install"]);
   });
 
@@ -388,9 +390,9 @@ Expected: FAIL, `settlePack` is not exported.
 
 Append:
 
-```ts
-import type { ExecResult } from "./probes.ts";
+Add `ExecResult` to the existing `./probes.ts` type import at the top of the file, then append:
 
+```ts
 /** Measured against the real ClaimView pack (1.1 MB, 106 files): install 0.86s, disable 0.40s, uninstall 0.41s. */
 export const SETTLE_EXEC_TIMEOUT_MS = 30_000;
 /** Three settlement execs. A settlement never starts without this much budget left, so it can never abort part-way and strand a pack installed-and-enabled. */
@@ -407,7 +409,8 @@ export type SettleOutcome =
   | { kind: "installed"; id: string }
   | { kind: "current"; id: string }
   | { kind: "rolledBack"; id: string; detail: string }
-  | { kind: "failed"; id: string; detail: string };
+  /** `stage` and `code` let plugins.install keep its exact contract wording for a clean install failure. */
+  | { kind: "failed"; id: string; detail: string; stage: "install" | "disable" | "rollback"; code: number };
 
 function isAlready(res: ExecResult): boolean {
   return /already (installed|added|exists)/i.test(res.stderr);
@@ -428,8 +431,8 @@ function isAlreadyGone(res: ExecResult): boolean {
  * the pack is installed-and-settled or not installed, never installed-and-enabled
  * for a team-authored pack.
  */
-export async function settlePack(run: ClaudeRunner, id: string, opts: { teamAuthored: boolean }): Promise<SettleOutcome> {
-  const install = await run(["plugin", "install", id], SETTLE_EXEC_TIMEOUT_MS);
+export async function settlePack(runner: ClaudeRunner, id: string, opts: { teamAuthored: boolean }): Promise<SettleOutcome> {
+  const install = await runner.run(["plugin", "install", id], SETTLE_EXEC_TIMEOUT_MS);
 
   if (install.code !== 0) {
     // A pack that already exists appeared underneath this run, so rt did not
@@ -438,27 +441,27 @@ export async function settlePack(run: ClaudeRunner, id: string, opts: { teamAuth
     // SIGKILL can land after the install wrote its records, so a timeout cannot
     // be read as "nothing happened"; undo it before reporting failure.
     if (install.code === 124) {
-      const undo = await run(["plugin", "uninstall", id], SETTLE_EXEC_TIMEOUT_MS);
+      const undo = await runner.run(["plugin", "uninstall", id], SETTLE_EXEC_TIMEOUT_MS);
       const detail = `install timed out; rollback ${undo.code === 0 || isAlreadyGone(undo) ? "ok" : `failed: ${undo.stderr.trim()}`}`;
-      return { kind: "failed", id, detail };
+      return { kind: "failed", id, detail, stage: "install", code: install.code };
     }
-    return { kind: "failed", id, detail: install.stderr.trim() || `install exited ${install.code}` };
+    return { kind: "failed", id, detail: install.stderr.trim() || `install exited ${install.code}`, stage: "install", code: install.code };
   }
 
   if (!opts.teamAuthored) {
     // Enable is best-effort for rt's own baseline: an older claude without the
     // subcommand must not fail an otherwise-good install.
-    await run(["plugin", "enable", id], SETTLE_EXEC_TIMEOUT_MS);
+    await runner.run(["plugin", "enable", id], SETTLE_EXEC_TIMEOUT_MS);
     return { kind: "installed", id };
   }
 
-  const disable = await run(["plugin", "disable", id], SETTLE_EXEC_TIMEOUT_MS);
+  const disable = await runner.run(["plugin", "disable", id], SETTLE_EXEC_TIMEOUT_MS);
   if (disable.code === 0 || isAlreadyDisabled(disable)) return { kind: "installed", id };
 
-  const undo = await run(["plugin", "uninstall", id], SETTLE_EXEC_TIMEOUT_MS);
+  const undo = await runner.run(["plugin", "uninstall", id], SETTLE_EXEC_TIMEOUT_MS);
   const why = disable.stderr.trim() || `disable exited ${disable.code}`;
   if (undo.code === 0 || isAlreadyGone(undo)) return { kind: "rolledBack", id, detail: why };
-  return { kind: "failed", id, detail: `${why}; rollback failed: ${undo.stderr.trim()}` };
+  return { kind: "failed", id, detail: `${why}; rollback failed: ${undo.stderr.trim()}`, stage: "rollback", code: undo.code };
 }
 ```
 
@@ -607,6 +610,47 @@ describe("convergePackCache", () => {
     expect(result.skipped).toEqual([{ id: "*", reason: "claude not found" }]);
   });
 
+  test("a pack reached after the budget is spent is skipped as budget-exhausted", async () => {
+    let clock = 0;
+    const { p, execs } = probesWith(
+      { ...served([{ name: "claimview", source: "./packs/claimview" }]), ...pluginJson("claimview", "0.5.28") },
+      (argv) => {
+        if (argv.includes("list")) { clock += 200_000; return listing([{ id: "claimview@assured", version: "0.5.18", enabled: false }]); }
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    );
+    const result = await convergePackCache(p, "acme", quietLog, { now: () => clock });
+    expect(result.skipped).toEqual([{ id: "claimview@assured", reason: "converge budget exhausted" }]);
+    expect(execs.some((a) => a[2] === "update")).toBe(false);
+  });
+
+  test("an update failure that is not not-found never reaches install", async () => {
+    const { p, execs } = probesWith(
+      { ...served([{ name: "claimview", source: "./packs/claimview" }]), ...pluginJson("claimview", "0.5.28") },
+      (argv) => {
+        if (argv.includes("list")) return listing([{ id: "claimview@assured", version: "0.5.18", enabled: false }]);
+        return { code: 1, stdout: "", stderr: "registry exploded" };
+      },
+    );
+    const result = await convergePackCache(p, "acme", quietLog);
+    expect(result.failed).toEqual([{ id: "claimview@assured", detail: "registry exploded" }]);
+    expect(execs.some((a) => a[2] === "install")).toBe(false);
+  });
+
+  test("a timed-out update records failed, never 'not installed'", async () => {
+    const { p, execs } = probesWith(
+      { ...served([{ name: "claimview", source: "./packs/claimview" }]), ...pluginJson("claimview", "0.5.28") },
+      (argv) => {
+        if (argv.includes("list")) return listing([{ id: "claimview@assured", version: "0.5.18", enabled: false }]);
+        return { code: 124, stdout: "", stderr: "" };
+      },
+    );
+    const result = await convergePackCache(p, "acme", quietLog);
+    expect(result.failed).toHaveLength(1);
+    expect(result.installed).toEqual([]);
+    expect(execs.some((a) => a[2] === "install")).toBe(false);
+  });
+
   test("an unparsable marketplace.json is reported, not silently empty", async () => {
     const { p } = probesWith({ [marketplacePath]: "{ broken" }, () => listing([]));
     const result = await convergePackCache(p, "acme", quietLog);
@@ -735,13 +779,20 @@ export async function convergePackCache(
       else result.failed.push({ id: outcome.id, detail: outcome.detail });
     }
 
+  }
+
+  // Outside the per-dir loop: the result accumulates across dirs, so logging
+  // inside it would re-log earlier dirs' entries on every iteration. Silent when
+  // nothing moved, per the spec: a converging pull that changed nothing is not an event.
+  const moved = result.updated.length + result.installed.length + result.rolledBack.length;
+  if (moved > 0) {
     log.info(
-      { slug, configDir: dir, updated: result.updated.length, installed: result.installed.length, rolledBack: result.rolledBack.length },
+      { slug, updated: result.updated.length, installed: result.installed.length, rolledBack: result.rolledBack.length },
       "pack cache converged",
     );
-    for (const entry of result.rolledBack) log.warn({ slug, id: entry.id, detail: entry.detail }, "pack install rolled back");
-    for (const entry of result.failed) log.warn({ slug, id: entry.id, detail: entry.detail }, "pack converge failed");
   }
+  for (const entry of result.rolledBack) log.warn({ slug, id: entry.id, err: entry.detail }, "pack install rolled back");
+  for (const entry of result.failed) log.warn({ slug, id: entry.id, err: entry.detail }, "pack converge failed");
 
   return result;
 }
@@ -750,7 +801,7 @@ export async function convergePackCache(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `bun test lib/setup/__tests__/pack-cache-converge.test.ts`
-Expected: PASS, 8 tests.
+Expected: PASS, 11 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -776,44 +827,68 @@ git commit -m "pack-cache: converge the cache against what the team clone serves
 Add to the existing pull describe block in `lib/daemon/__tests__/home-snapshot.test.ts`:
 
 ```ts
+/** Mirrors the idiom already used in this describe block (see the teamSnapshotSpec pull tests). */
+function pullHarness(opts: { behind: number; ahead: number; onPulled?: (o: "fast-forwarded" | "rebased") => Promise<void> }) {
+  const { fn } = makeFakeExec([...pullResponders({ behind: opts.behind, ahead: opts.ahead }), ...defaultResponders()]);
+  const { deps } = baseDeps({ exec: fn });
+  const { repoDir: _repoDir, ...specDeps } = deps;
+  const spec = { ...teamSpecFor(), pull: { intervalSec: 300, onPulled: opts.onPulled } };
+  return startSnapshot(spec, specDeps);
+}
+
 test("onPulled fires once for a fast-forward, with the outcome", async () => {
   const seen: string[] = [];
-  const h = harness({ exec: makeFakeExec(pullResponders({ behind: 1, ahead: 0 })), onPulled: async (o: string) => { seen.push(o); } });
-  await h.handle.pullNow();
+  const handle = pullHarness({ behind: 1, ahead: 0, onPulled: async (o) => { seen.push(o); } });
+  await handle.ready;
+  await handle.pullNow();
+  handle.stop();
   expect(seen).toEqual(["fast-forwarded"]);
 });
 
 test("onPulled does not fire when HEAD did not move", async () => {
   const seen: string[] = [];
-  const h = harness({ exec: makeFakeExec(pullResponders({ behind: 0, ahead: 0 })), onPulled: async (o: string) => { seen.push(o); } });
-  await h.handle.pullNow();
+  const handle = pullHarness({ behind: 0, ahead: 0, onPulled: async (o) => { seen.push(o); } });
+  await handle.ready;
+  await handle.pullNow();
+  handle.stop();
   expect(seen).toEqual([]);
 });
 
 test("a throwing onPulled leaves the pull's own outcome intact", async () => {
-  const h = harness({ exec: makeFakeExec(pullResponders({ behind: 1, ahead: 0 })), onPulled: async () => { throw new Error("converge blew up"); } });
-  const result = await h.handle.pullNow();
+  const handle = pullHarness({ behind: 1, ahead: 0, onPulled: async () => { throw new Error("converge blew up"); } });
+  await handle.ready;
+  const result = await handle.pullNow();
+  handle.stop();
   expect(result.outcome).toBe("fast-forwarded");
 });
 
-test("pullNow({ converge: false }) skips the hook", async () => {
+test("pullNow({ converge: false }) skips the hook, which is how the push path opts out", async () => {
   const seen: string[] = [];
-  const h = harness({ exec: makeFakeExec(pullResponders({ behind: 1, ahead: 0 })), onPulled: async (o: string) => { seen.push(o); } });
-  await h.handle.pullNow({ converge: false });
+  const handle = pullHarness({ behind: 1, ahead: 0, onPulled: async (o) => { seen.push(o); } });
+  await handle.ready;
+  await handle.pullNow({ converge: false });
+  handle.stop();
   expect(seen).toEqual([]);
 });
 ```
 
-The existing `harness()` helper takes the spec's pull options; thread `onPulled` through it the same way `pullIntervalSec` is threaded.
+`makeFakeExec` returns `{ fn, calls, optsLog }`, so the responder list is spread with `defaultResponders()` exactly as the neighbouring pull tests do; `baseDeps` supplies the injected timers, watcher and settings, and `teamSpecFor()` supplies a spec that pulls. There is no `harness()` helper in this file.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `bun test lib/daemon/__tests__/home-snapshot.test.ts -t onPulled`
 Expected: FAIL, the hook never fires.
 
-- [ ] **Step 3: Add the hook to the spec type and `teamSnapshotSpec`**
+- [ ] **Step 3: Add the hook to the spec type, the handle interface, and `teamSnapshotSpec`**
 
-In `lib/daemon/home-snapshot.ts`, change the `pull` field on `SnapshotSpec`:
+In `lib/daemon/home-snapshot.ts`, widen the handle's own method signature (line 111), or the Task 4 test's `pullNow({ converge: false })` fails `tsc` with "Expected 0 arguments":
+
+```ts
+  /** Fetch, then fast-forward or rebase. A spec without a `pull` policy always skips. `converge:false` suppresses the post-pull hook. */
+  pullNow(opts?: { converge?: boolean }): Promise<PullResult>;
+```
+
+Then change the `pull` field on `SnapshotSpec`:
 
 ```ts
   /** Fetch + rebase policy; absent = never pull (the home repo is single-writer). */
@@ -887,9 +962,9 @@ Replace the body of `pullNow`:
   }
 ```
 
-- [ ] **Step 5: Keep the push path off the hook**
+- [ ] **Step 5: Keep BOTH push-path pulls off the hook**
 
-In `doPushInner`, change the pull call:
+`doPushInner` pulls twice, and both run inside `pushInFlight`. Change the pre-push pull:
 
 ```ts
     if (spec.pull) {
@@ -899,6 +974,38 @@ In `doPushInner`, change the pull call:
       if (pulled.outcome === "conflict" || conflicted) return;
     }
 ```
+
+and the inline replay after a rejected push, a few lines below:
+
+```ts
+      await pullNow({ converge: false });
+```
+
+Missing either one puts a plugin install inside the push path, which is what this
+whole split exists to prevent.
+
+- [ ] **Step 6: Test that a push fires no converge**
+
+Asserting the option is not the same as asserting the path, and the spec lists
+"a push-path pull fires no converge" as a case that must be covered:
+
+```ts
+test("a push fires no converge, even though its pull moves HEAD", async () => {
+  const seen: string[] = [];
+  const { fn } = makeFakeExec([...pullResponders({ behind: 1, ahead: 0 }), ...defaultResponders({ statusZ: "?? mattstack/new.jsonc\0" })]);
+  const { deps, timers } = baseDeps({ exec: fn });
+  const { repoDir: _repoDir, ...specDeps } = deps;
+  const handle = startSnapshot({ ...teamSpecFor(), pull: { intervalSec: 300, onPulled: async (o) => { seen.push(o); } } }, specDeps);
+  await handle.ready;
+  await handle.runNow("manual");
+  await timers.fireAll();
+  handle.stop();
+  expect(seen).toEqual([]);
+});
+```
+
+Use whatever this file's existing helper is for advancing the push timer (the
+push tests already drive it); the assertion is what matters.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -931,16 +1038,26 @@ Add to `lib/daemon/__tests__/team-snapshots.test.ts`:
 ```ts
 test("each clone's spec carries an onPulled that converges that slug's packs", async () => {
   const converged: string[] = [];
-  const h = harness({ converge: async (_p: unknown, slug: string) => { converged.push(slug); return null; } });
+  const h = harness({
+    converge: async (_p: unknown, slug: string) => {
+      converged.push(slug);
+      return { updated: [], installed: [], rolledBack: [], current: [], skipped: [], failed: [] };
+    },
+  });
   await h.handle.ready;
-  const spec = h.deps.start.mock.calls[0]![0] as { pull?: { onPulled?: (o: string) => Promise<void> } };
+  const spec = h.started[0]!.spec as { pull?: { onPulled?: (o: string) => Promise<void> } };
   expect(typeof spec.pull?.onPulled).toBe("function");
   await spec.pull!.onPulled!("fast-forwarded");
   expect(converged).toEqual(["acme"]);
 });
 ```
 
-Extend the test harness's `TeamSnapshotsDeps` stub with the injectable `converge` seam the next step adds.
+Two changes to the harness this needs, because neither exists today: `harness()`
+currently takes no arguments, so give it an options object spread into the deps
+it builds; and the recorded specs live in `h.started`, not on a mock (`start` is
+a plain arrow, so `.mock.calls` is undefined). The stub returns a full empty
+`ConvergeResult` rather than `null`, so it still satisfies
+`typeof convergePackCache`.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -974,7 +1091,7 @@ and pass the hook when building each clone's spec:
         originUrl,
         probes,
         onPulled: async () => {
-          await converge(probes, slug, log.child({ team: slug }));
+          await converge(probes, slug, rawDeps.log.child({ team: slug }));
         },
       });
 ```
@@ -1005,7 +1122,13 @@ git commit -m "team-snapshots: converge the plugin cache after a converging pull
 
 - [ ] **Step 1: Write the failing test**
 
-Replace the argv-absence assertions in the happy-path test with an outcome assertion. Add to the `plugins.install` describe block:
+`steps-c.test.ts` does not import `BASE_PLUGINS` today, so add it to the imports first:
+
+```ts
+import { BASE_PLUGINS } from "../base-plugins.ts";
+```
+
+Then replace the argv-absence assertions in the happy-path test with an outcome assertion, and add to the `plugins.install` describe block:
 
 ```ts
 test("a team-authored pack ends DISABLED, asserted on the resulting state rather than the argv", async () => {
@@ -1084,7 +1207,12 @@ Swap the per-plugin body for the shared sequence:
     };
     const listed = await runner.run(["plugin", "list", "--json"], PACK_EXEC_TIMEOUT_MS);
     const installedBefore = listed.code === 0 ? parsePluginList(listed.stdout) : null;
-    const byId = new Map((installedBefore ?? []).map((e) => [e.id, e]));
+    // Guessing "nothing is installed" here would send every plugin down the
+    // install path, and install re-enables a pack the member disabled.
+    if (!installedBefore) {
+      return { state: "failed", detail: "claude plugin list --json could not be read", remedy: RETRY_REMEDY };
+    }
+    const byId = new Map(installedBefore.map((e) => [e.id, e]));
 
     for (const plugin of allPlugins) {
       const teamAuthored = teamAuthoredPlugins.includes(plugin);
@@ -1104,7 +1232,11 @@ Swap the per-plugin body for the shared sequence:
 
       const outcome = await settlePack(runner, plugin, { teamAuthored });
       if (outcome.kind === "failed") {
-        return { state: "failed", detail: `claude plugin install ${plugin}: ${outcome.detail}`, remedy: RETRY_REMEDY };
+        // The install-stage wording is the contract's documented example
+        // (docs/superpowers/specs/2026-08-21-rt-setup-contract.md) and an
+        // existing test asserts it verbatim.
+        const detail = outcome.stage === "install" ? `claude plugin install exited ${outcome.code}` : `claude plugin ${plugin}: ${outcome.detail}`;
+        return { state: "failed", detail, remedy: RETRY_REMEDY };
       }
       if (outcome.kind === "rolledBack") {
         ctx.log("plugins.install", `${plugin}: install rolled back (${outcome.detail})`);
@@ -1133,17 +1265,40 @@ import { parsePluginList, settlePack, PACK_EXEC_TIMEOUT_MS, type ClaudeRunner } 
 
 Leave the `teamAuthoredPlugins.length > 0` log line and the `pendingNote` detail as they are: the wording still describes the outcome.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 4: Fix the two existing tests whose fake exec cannot answer the new listing**
+
+The happy-path test (around :163) and the idempotent-re-run test (around :266)
+use a blanket `ok("")` exec. `""` is not parsable JSON, so under the new loop
+they would fail the step on an unreadable listing. Make their exec answer the
+listing specifically, leaving every other verb as it was:
+
+```ts
+        exec: async (argv, opts) => {
+          execCalls.push({ argv, env: opts?.env });
+          return argv[2] === "list" ? ok("[]") : ok("");
+        },
+```
+
+The `install exits non-zero` test at :249 keeps its exact expected detail
+(`"claude plugin install exited 3"`) and must still pass unchanged: that string
+is the contract's documented example. Give its exec the same `list` answer.
+
+- [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `bun test lib/setup/__tests__/steps-c.test.ts`
-Expected: PASS, the whole file.
+Expected: PASS, the whole file, including the unchanged contract-string test.
 
-- [ ] **Step 5: Run the wider setup suite**
+- [ ] **Step 6: Run the wider setup suite**
 
 Run: `bun test lib/setup`
 Expected: PASS. `uninstall.test.ts` still passes because `setup-state` records the same ids for a successful run.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Delete the now-dead `isUnknownSubcommand`**
+
+Its only caller was the `enable` branch this task replaced. Leaving it would be
+dead code the next reader has to reason about.
+
+- [ ] **Step 8: Commit**
 
 ```bash
 git add lib/setup/steps/plugins.ts lib/setup/__tests__/steps-c.test.ts
@@ -1214,7 +1369,42 @@ test("an unparsable marketplace.json renders one error row", async () => {
 });
 ```
 
-Add a `toolRowsFor` helper to that file that builds `fakeProbes` whose `readFile` serves a marketplace.json matching `servedPacks`, whose `exec` answers `claude plugin list --json` with `pluginList`, and calls `toolRows(p, [], { hasBrew: false, secrets, teamSlug: "acme" })`.
+Add this helper to that file. It must pass `NOOP_SEAMS` like all 85 existing
+`toolRows` calls, or `REAL_SEAMS` runs `detectEditors()` against the real machine:
+
+```ts
+const TEAM_CLONE = "/fake-home/.mattstack/teams/acme";
+
+async function toolRowsFor(opts: {
+  servedPacks?: { id: string; name: string; servedVersion: string | null }[];
+  servedError?: string;
+  pluginList: unknown[];
+}): Promise<Row[]> {
+  const packs = opts.servedPacks ?? [];
+  const files: Record<string, string> = {};
+  if (opts.servedError) {
+    files[`${TEAM_CLONE}/.claude-plugin/marketplace.json`] = "{ broken";
+  } else {
+    files[`${TEAM_CLONE}/.claude-plugin/marketplace.json`] = JSON.stringify({
+      name: "assured",
+      // A readable served version needs a string source with a plugin.json behind it;
+      // a null one is expressed as the object form, exactly as a real marketplace would.
+      plugins: packs.map((s) => (s.servedVersion === null ? { name: s.name, source: { source: "github", repo: "o/r" } } : { name: s.name, source: `./packs/${s.name}` })),
+    });
+    for (const s of packs) {
+      if (s.servedVersion !== null) {
+        files[`${TEAM_CLONE}/packs/${s.name}/.claude-plugin/plugin.json`] = JSON.stringify({ version: s.servedVersion });
+      }
+    }
+  }
+  const p = fakeProbes({
+    home: "/fake-home",
+    files,
+    exec: async (argv) => (argv.includes("list") ? { code: 0, stdout: JSON.stringify(opts.pluginList), stderr: "" } : { code: 0, stdout: "", stderr: "" }),
+  });
+  return toolRows(p, [], { hasBrew: false, secrets: NO_SECRETS, teamSlug: "acme" }, NOOP_SEAMS);
+}
+```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1229,7 +1419,10 @@ Change the signature in `lib/setup/validators/tools.ts`:
 export async function toolRows(
   p: Probes,
   reqs: PackRequirements[],
-  opts: { hasBrew: boolean; secrets: SecretPresence; teamSlug: string },
+  // Optional, not required: 85 existing call sites in validators-tools.test.ts
+  // pass only { hasBrew, secrets }, and tests are inside the root tsconfig, so a
+  // required field turns `bunx tsc --noEmit` red while `bun test` stays green.
+  opts: { hasBrew: boolean; secrets: SecretPresence; teamSlug?: string },
   seams: ToolsSeams = REAL_SEAMS,
 ): Promise<Row[]> {
 ```
@@ -1266,15 +1459,18 @@ Replace `packRow`'s tail (everything after the existing `entries` null-check) wi
   if (served && served.servedVersion !== null && entry.version !== null && entry.version !== served.servedVersion) {
     return row({ ...base, status: "needs-you", detail: `installed ${installed}, team serves ${served.servedVersion}`, action: INSTALL_PLUGINS_ACTION });
   }
-  if (!served || served.servedVersion === null || entry.version === null) {
+  if (!served || served.servedVersion === null) {
     return row({ ...base, status: "ready", detail: `${installed} installed, served version unknown` });
+  }
+  if (entry.version === null) {
+    return row({ ...base, status: "ready", detail: `installed version unknown, team serves ${served.servedVersion}` });
   }
   const caveat = "a Claude session started before this version landed uses the old cache until it restarts";
   const enablement = entry.enabled ? "installed and enabled" : `installed, not enabled ... claude plugin enable ${entry.id}`;
   return row({ ...base, status: "ready", detail: `${installed} ${enablement}; ${caveat}` });
 ```
 
-Add the import:
+Extend the import Task 1 already added (a second `import ... parsePluginList` would be a duplicate identifier):
 
 ```ts
 import { parsePluginList, readServedPacks, type ServedPack } from "../pack-cache.ts";
@@ -1282,7 +1478,47 @@ import { parsePluginList, readServedPacks, type ServedPack } from "../pack-cache
 
 and give `packRow` its third parameter: `function packRow(req: PackRequirements, pluginList: ExecResult, served?: ServedPack): Row`.
 
-- [ ] **Step 4: Update the only caller**
+- [ ] **Step 4: Stop a `skipped` pack row from blocking Install forever**
+
+`isInstallSatisfied` (`lib/setup/plan.ts:123`) matches every id starting with
+`pack.`, and in status mode `applyInstallSatisfiedFlip` flips those to
+`required: true`. `finalizePlan` then puts any non-`ready` required row into
+`requiredMissing`, which sets `canInstall: false`. An object-form pack's
+`skipped` row is never going to become `ready`, so it would block Install
+permanently.
+
+A row Install cannot satisfy must not be flipped to required:
+
+```ts
+/** A row Install itself can make ready. A `skipped` row is by definition one it cannot: rt does not manage that pack's source, so flipping it to required would park canInstall at false forever. */
+function isInstallSatisfied(r: Row): boolean {
+  if (r.status === "skipped") return false;
+  return INSTALL_SATISFIED_IDS.has(r.id) || r.id.startsWith("pack.");
+}
+```
+
+and its call site becomes `if (!isInstallSatisfied(r)) return r;`.
+
+This is a deliberate change to shared plan semantics, so it gets its own test:
+
+```ts
+test("a skipped pack row never lands in requiredMissing, so it cannot block Install", async () => {
+  const rows = await toolRowsFor({
+    servedPacks: [{ id: "remote@assured", name: "remote", servedVersion: null }],
+    pluginList: [],
+  });
+  const plan = finalizePlan({ slug: "acme", name: "Acme", mode: "none" }, applyInstallSatisfiedFlipForTest([{ id: "tools", rows }], "status"));
+  expect(plan.requiredMissing).not.toContain("pack.remote");
+  expect(plan.canInstall).toBe(true);
+});
+```
+
+If `applyInstallSatisfiedFlip` is not exported, assert through `composePlan` in
+`lib/setup/__tests__/plan.test.ts` instead, whichever that file's existing tests
+already do. The assertion is what matters: a `skipped` pack row leaves
+`canInstall` true.
+
+- [ ] **Step 5: Update the only caller**
 
 In `lib/setup/plan.ts:157`:
 
@@ -1290,15 +1526,15 @@ In `lib/setup/plan.ts:157`:
       const tools = await toolRows(i.p, reqs, { hasBrew, secrets: i.secrets, teamSlug: team.slug });
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `bun test lib/setup/__tests__/validators-tools.test.ts lib/setup/__tests__/plan.test.ts`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add lib/setup/validators/tools.ts lib/setup/plan.ts lib/setup/__tests__/validators-tools.test.ts
+git add lib/setup/validators/tools.ts lib/setup/plan.ts lib/setup/__tests__/validators-tools.test.ts lib/setup/__tests__/plan.test.ts
 git commit -m "setup status: a row per team-served pack with its installed and served versions"
 ```
 
