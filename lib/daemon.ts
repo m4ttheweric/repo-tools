@@ -71,7 +71,7 @@ import { startHomeSnapshot } from "./daemon/home-snapshot.ts";
 import { startTeamSnapshots } from "./daemon/team-snapshots.ts";
 import { startAgentStatusPoller } from "./daemon/agent-status-poller.ts";
 import { startNotifyBridge, parseEventBridgeRules, type EventBridgeRule } from "./notify-bridge.ts";
-import { herdrRequest } from "./herdr/client.ts";
+import { herdrRequest, herdrSocketPath } from "./herdr/client.ts";
 import type { HerdrSnapshot } from "./daemon/handlers/pane.ts";
 import {
   initFreshness,
@@ -91,6 +91,7 @@ import { installSignalHandlers, removeRuntimeFiles } from "./daemon/shutdown.ts"
 import { createEventsBus, type EventsBus } from "./daemon/events-bus.ts";
 import { createGatesStore, type GatesStore } from "./daemon/gates-store.ts";
 import { createHerdStore, type HerdStore } from "./daemon/herd-store.ts";
+import { createHerdLifecycle, type HerdLifecycle } from "./daemon/herd-lifecycle.ts";
 import { hiddenSocketPath } from "./daemon/herd-session.ts";
 import { createGatePush, type GatePush } from "./daemon/gate-push.ts";
 import { createEscapeInjector } from "./daemon/gate-escape.ts";
@@ -280,6 +281,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
   let eventsBus: EventsBus;
   let gatesStore: GatesStore;
   let herdStore: HerdStore;
+  let herdLifecycle: HerdLifecycle | undefined;
   let gatePush: GatePush;
   let identity: {
     flavor: "dev" | "prod";
@@ -872,10 +874,15 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           gatesStore,
           gatePush,
           herdStore,
+          // The lifecycle is built from this router's own gate/chat handlers,
+          // so it cannot exist yet; the holder delegates once it does.
+          herdLifecycle: {
+            connected: (socket) => herdLifecycle?.connected(socket) ?? false,
+            watch: (socket) => herdLifecycle?.watch(socket),
+          },
           // No hidden herdr server exists yet, so `ensure` throws rather than
           // handing back a socket path nothing serves: `herd:start --hidden`
           // must fail loudly instead of registering an undeliverable herd.
-          herdLifecycle: { connected: () => false, watch: () => {} },
           herdHidden: {
             socketPath: () => hiddenSocketPath(),
             ensure: async () => { throw new Error("hidden mode not wired yet"); },
@@ -892,8 +899,20 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           stateDb: getStateDb("daemon"),
           chatDeliveryChains,
         });
+        herdLifecycle = createHerdLifecycle({
+          store: herdStore,
+          gate: { "gate:close": routedHandlers["gate:close"]!, "gate:list": routedHandlers["gate:list"]! },
+          chat: { "chat:post": routedHandlers["chat:post"]! },
+          bus: eventsBus,
+          gateStore: gatesStore,
+          defaultSocket: herdrSocketPath(),
+          log,
+        });
+        herdLifecycle.start();
       },
-      stop() {},
+      stop() {
+        herdLifecycle?.stop();
+      },
     },
 
     // 8: API server. A failed bind exits fatally (fatal-boot handler), and
