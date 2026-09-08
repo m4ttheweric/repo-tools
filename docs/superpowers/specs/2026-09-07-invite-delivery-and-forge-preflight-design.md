@@ -166,6 +166,12 @@ It returns the normalized bare code ... uppercase, no dashes or whitespace,
 `normalizeCode`'s folding applied ... or null. One return form, pinned by the
 fixture, so no caller has to guess which shape it holds.
 
+Both callers treat null the same way: `extractInviteCode(raw) ?? raw`. An
+unrecognized string is handed on untouched rather than rejected, so the "invite
+code is the wrong length" message keeps coming from `decodeCode` on both
+surfaces. Neither the field nor the CLI invents an extractor error, and the
+fixture-driven tests pin that branch on both sides.
+
 The URL shape is **host-agnostic**: any URL with a fragment yields that
 fragment, which is then validated as a code. `RT_JOIN_BASE_URL` exists precisely
 so the VM harness can mint links against its own host, and a rule anchored to
@@ -175,13 +181,15 @@ component), because there the code is the path, not a fragment.
 
 Swift gets the mirror: `JoinLink.code(fromText:)` in
 `rt-tray/Sources-core/Launch/LaunchGuard.swift`, reusing the existing
-`code(from: URL)` for the deep-link shape. `normalizedInviteCode` becomes
-`extract(input) ?? whitespace-stripped input`: a recognized link or code is
-normalized, and anything else passes through untouched so the CLI keeps
-answering for it. That matters ... rejecting locally would turn "invite code is
-the wrong length" into a disabled button with no explanation, and it is also why
-`rt-tray/Tests/stub-rt/stub.ts:165`'s 39-character stub code keeps working
-(it is not extractor-valid, and never reaches the extractor).
+`code(from: URL)` for the deep-link shape. `normalizedInviteCode` applies the
+same rule, with today's whitespace strip as the fallback. That is also why
+`rt-tray/Tests/stub-rt/stub.ts:165`'s 39-character stub code keeps working: it
+is not extractor-valid, passes through untouched, and the stub answers for it as
+it always has.
+
+The field's own copy goes stale with this change and moves with it:
+`TeamScreen.swift:80` still says "or open the mattstack://join link you were
+sent", when the field now accepts that link ... it should say paste it.
 
 The CLI's own code reader (`commands/team.ts:61`, `defaultReadCode`) routes
 through the TS extractor, so a terminal user pasting a link is no worse off than
@@ -230,6 +238,16 @@ The real adapter over `NSPasteboard.general.string(forType: .string)` lives in
 `rt-tray/Sources/` beside the other AppKit code and is injected at
 construction; the checks inject a fake. The protocol carries only the read,
 not `changeCount`, because nothing suppresses anything any more.
+
+`TeamChoiceModel`'s initializer (`TeamChoiceModel.swift:49`, today
+`init(rt:)`) grows the seam, and core cannot default it to the AppKit adapter,
+so every construction site changes: one in the app
+(`SetupWindowController.swift:37`) and eleven in
+`Tests/MattstackCoreChecks/TeamChoiceChecks.swift`. The sweep is mechanical, and
+the checks share one fake reader rather than each declaring its own, but it is
+twelve sites and the plan budgets a task for it. The argument stays required on
+purpose: a defaulted no-op reader would turn a forgotten injection into a Paste
+button that silently does nothing.
 
 ### Deploy dependency (not a design input)
 
@@ -445,13 +463,13 @@ Swift (`MattstackCoreChecks`):
 - `TeamChoiceModel` proceeds on `access: "denied"` with `intent: "written"`,
   proceeds on an unrecognized `access` value, and blocks both when
   `intent: "not-written"` and when `intent` is absent with a non-`ok` access.
-- `rt-tray/Tests/stub-rt/stub.ts:166`'s invite fixture gains `link` so the
+- `rt-tray/Tests/stub-rt/stub.ts:165`'s invite fixture gains `link` so the
   pane's checks exercise the new buttons.
 - `JoinLink.code(fromText:)` against the same shared fixture file as the TS
   extractor, which is what keeps the two from drifting.
-- `normalizedInviteCode`: a recognized link normalizes, an unrecognized string
-  (the 39-character stub code included) passes through unchanged so the CLI
-  still owns the malformed-code message.
+- `normalizedInviteCode` and `defaultReadCode`: a recognized link normalizes on
+  both, an unrecognized string (the 39-character stub code included) passes
+  through unchanged on both, so the CLI still owns the malformed-code message.
 - The Paste-invite button, against a fake `PasteboardReading`: a usable invite
   fills the field, an unusable one and a nil read (a denied permission alert)
   both leave it untouched with no error state, and no other code path calls the
