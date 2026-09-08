@@ -219,7 +219,7 @@ which clone exists locally.
 | `rt settings set --scope team` (`commands/settings-keys.ts:259`) | ~30 registered keys | refuse |
 | `rt settings unset --scope team` (`commands/settings-keys.ts:323`) | same keys, via a **different** resolver | refuse |
 | `rt team invite` (`addToRoster`, `lib/team/invite.ts:95-101`) | `board.members`, `mattstack.roster` | refuse early, see below |
-| settings-kit `POST /set` with `scope:"team"` (`packages/settings-kit/src/server.ts:259,299`) | same keys, from any console/board/deck UI | refuse |
+| settings-kit `POST /set` and `/unset` with `scope:"team"` (`packages/settings-kit/src/server.ts:259,299`) | same keys, from any console/board/deck UI | refuse |
 | `saveVariation` (`lib/variations.ts:96`) | `rt.variations` | degrade, see below |
 | VSCode legacy import (`extensions/vscode/rt-context/src/branchNaming.ts:65`) | `rt.branchNaming` | degrade, see below |
 | `rt team publish` (`lib/team/publish.ts:74`) | pushes straight to the forge | refuse |
@@ -235,7 +235,7 @@ lives in `packages/rt-client/src/settings/write.ts`, and every settings write
 funnels through it: the CLI, the HTTP surface, variations, and the extension.
 But `set` and `unset` do not share a resolver. `setSetting` uses
 `resolveStorePath` (`:212-231`); `unsetSetting` uses a separate
-`resolveStorePathForUnset` (called at `:192`, defined `:240-256`), which exists
+`resolveStorePathForUnset` (called at `:192`, defined `:240-255`), which exists
 because the two disagree about the no-such-store case.
 
 **Both get the guard.** Guarding only `resolveStorePath` would leave
