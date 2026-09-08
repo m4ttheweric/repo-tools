@@ -55,7 +55,8 @@ Three consequences drive the whole design. The converge verb is `update`, never
 `install`, because only `update` preserves the disabled state. The served
 version must be read from the clone on disk, because the CLI will not report it.
 And `update`'s own not-found failure is a reliable, cheap proof that a plugin is
-absent, which the design uses instead of a separate installed-check.
+absent, which the design uses as the gate on every `disable`, alongside a
+read-only listing that decides whether to attempt an update at all.
 
 ## Alignment with the owner/member split
 
@@ -132,6 +133,21 @@ Together these cap the hook's contribution to `pullNow` at a known bound, so
 `schedulePull` always re-arms. The hook's own `catch` additionally guarantees a
 throwing converge cannot turn a successful pull into a failure.
 
+**The budget has a ceiling that is not arbitrary.** `rt team pull` gives the
+`team:pull` verb a 180_000 ms client timeout (`commands/team.ts:164`), and that
+round trip already spends up to `FETCH_TIMEOUT_MS` 30_000 on the fetch
+(`home-snapshot.ts:166`). 30s plus the 120s budget leaves 30s of headroom. The
+budget must never be raised past that without raising `PULL_TIMEOUT_MS` first,
+or a manual `rt team pull` starts timing out on the client while the daemon is
+still working.
+
+**One converge can be skipped by coalescing, and that is acceptable.** `pullNow`
+returns the in-flight promise when a pull is already running, so a timer tick
+that lands during a push-path pull (which passes `converge: false`) gets that
+pull's result and runs no converge of its own. The clone is still current; only
+the cache waits. The next interval converges it, so the gap self-corrects
+without any extra machinery.
+
 ### Converge: `lib/setup/pack-cache.ts`
 
 A new module beside `base-plugins.ts`, and for the same reason: the daemon
@@ -161,26 +177,76 @@ export async function convergePackCache(p: Probes, slug: string, log: Logger): P
 same `CLAUDE_CONFIG_DIR` env as `plugins.install`, so the two agree about which
 Claude installs they manage.
 
-**The per-pack sequence, which is also the ruling's single enforcement point:**
+**The per-pack sequence, which is also the ruling's single enforcement point.**
+It has two layers: a read-only listing that decides *whether to act at all*, and
+`update`'s own not-found failure as the proof of absence before anything is
+disabled.
 
 ```
-update <id> -y
-  exit 0                  -> it existed and is now current. Enable state untouched.
-  exit != 0, "not found"  -> it did not exist:
-                               install <id>
-                               disable <id>        (team-authored)
-  exit != 0, otherwise    -> failed, recorded with stderr
+listing = claude plugin list --json          (read-only, once per config dir)
+  failed or unparsable -> every pack recorded `failed`, NO write of any kind
+
+per pack:
+  listed, both versions known and equal  -> current      (no exec at all)
+  listed, either version unknown         -> skipped      ("version unknown")
+  otherwise                              -> update <id> -y
+        exit 0                  -> updated. Enable state untouched.
+        exit != 0, "not found"  -> it does not exist:
+                                     install <id>
+                                     disable <id>        (team-authored)
+        exit != 0, otherwise    -> failed, recorded with stderr
 ```
 
-Deriving absence from `update`'s own not-found failure, rather than from a
-separate `claude plugin list` pre-check, is what makes the never-disable-on-
-uncertainty rule structural rather than a promise. `disable` runs only on the
-branch where `update` proved the pack absent and `install` then created it. There
-is no code path where an unreadable listing, a timeout or any other uncertainty
-can reach a `disable`, because uncertainty exits through the `failed` branch.
+The listing is what makes "a pull that changes no pack version issues no
+`update`" achievable: without it, nothing knows the installed version, and the
+sequence could only open with an unconditional update. It is read-only, so it
+gates writes without ever authorizing one.
+
+The absence proof stays where it was, and it is deliberately not replaced by the
+listing. `disable` runs only on the branch where `update` itself reported the
+pack missing and `install` then created it. Uncertainty of every kind (an
+unreadable listing, a timeout, any other non-zero) exits through `skipped` or
+`failed`, so no code path reaches a `disable` on a pack that might already have
+existed. Keeping both layers means the never-stomp guarantee does not depend on
+the listing being accurate, only on `update` being honest about not-found.
 
 A "not found" match is anchored to that phrasing in stderr, the way `isAlready`
 is anchored today, so an unrelated failure cannot be read as absence.
+
+**Cost of the second layer, stated plainly:** on a fresh machine every pack is
+absent, so each one costs one deliberately-failing `update` per config dir
+before its `install`. That is a handful of fast, immediately-returning calls on
+the one run where nothing is installed yet, and it buys a never-stomp guarantee
+that survives a wrong listing.
+
+### When a disable fails, it self-heals
+
+A `disable` that fails or times out after a successful `install` would leave the
+pack installed **and enabled**, forever: every later converge takes the `update`
+path, which by design leaves enablement alone. That is precisely the ruling
+violation this spec exists to prevent, so it may not be left to a log line.
+
+`SetupState` (`~/.mattstack/rt/setup-state.json`, already the record of what
+`plugins.install` installed) gains one optional field:
+
+```ts
+/** Packs rt installed whose disable did not confirm; retried until it does. */
+pendingDisable?: string[];
+```
+
+An id is added when this run installed the pack and its `disable` did not
+succeed, and removed the moment a `disable` succeeds. Every converge and every
+`plugins.install` begins by retrying `disable` for the ids already there.
+
+The field is optional, so it needs no `v` bump and old state files stay valid.
+It is reachable from both callers, which is why it lives here rather than in the
+daemon's per-clone kv: the daemon and the CLI must not keep two disagreeing
+records of the same fact.
+
+This can never stomp a deliberate enable, because an id only enters the list on
+the branch where this run itself created the pack, and leaves it as soon as the
+disable lands. A pack the member enabled after a successful disable is not in
+the list and is never touched again.
 
 `install` on a fresh pack is what delivers the 2026-09-07 ruling that a pack
 added to the team after a member joined installs through the converge, disabled,
@@ -224,10 +290,10 @@ rejecting. That parser moves into `pack-cache.ts` and gains `version`;
 `validators/tools.ts` imports it. The contract and its tests are preserved
 exactly; the change is additive.
 
-The status row still needs the listing (to report installed version and enable
-state), so the pre-check that the converge no longer performs remains where it
-always was: in the read-only status path, where being unable to read it renders
-an honest `error` row rather than driving a write.
+Both the converge and the status row read this listing, for different ends: the
+converge to gate its updates, the row to report installed version and enable
+state. Neither may write on a listing it could not read... the converge records
+`failed`, the row renders an honest `error`.
 
 ### Wiring
 
@@ -246,7 +312,7 @@ Making them agree is out of scope here (it is a setting, not a fix in this lane)
 ### Surfacing: the pack rows
 
 `toolRows` gains the team slug through its `opts` argument; `composePlan` has
-`team.slug` in hand at the call site (`plan.ts:143`, used at `plan.ts:156`).
+`team.slug` in hand at the call site (`plan.ts:145`, used at `plan.ts:157`).
 
 `packRow` is rebuilt around the union of two sources, keyed by pack name so each
 pack yields exactly one row:
@@ -289,9 +355,22 @@ This is what stops `rt setup apply` re-enabling a pack the member deliberately
 turned off: an already-installed plugin now takes the `update` path, which
 preserves enablement, and never the `install` path, which does not.
 
-A failed `disable` is logged and named in the step detail but does not fail the
-step, matching the existing best-effort posture for `enable`: an otherwise
-successful install should not fail over enable-state bookkeeping.
+**The step's failure contract is unchanged.** `pluginsInstallRun` today returns
+`{ state: "failed", detail, remedy: RETRY_REMEDY }` and stops on the first
+non-zero, non-`isAlready` result (`plugins.ts:174-176`). A failed `update` and a
+failed `install` both keep exactly that: same state, same `RETRY_REMEDY`, same
+immediate return. Only the argv changes, never the contract.
+
+A failed `disable` is the one exception, and it stays an exception: logged,
+named in the step detail, and recorded in `pendingDisable` for retry, but it
+does not fail the step. That matches the existing best-effort posture for
+`enable`... an otherwise successful install should not fail over enable-state
+bookkeeping, and the retry list means the state is corrected rather than merely
+reported.
+
+Inside the daemon converge the posture is different again: nothing fails a
+pull. Every `failed` entry is recorded in the result and logged at `warn`, and
+the next converging pull retries it.
 
 ### Logging
 
@@ -322,11 +401,14 @@ assertion cannot fail when the outcome is wrong, which is precisely how the
 current defect stayed green.
 
 Cases that must be covered because the design turns on them: a converge with no
-version change issues no `update`; a stale pack updates and keeps its disabled
-state; a served-but-absent pack installs and ends disabled; an `update` failure
-that is not "not found" never reaches `install` or `disable`; a per-exec timeout
-records `failed` and never `not installed`; the budget cap returns and lets the
-pull loop re-arm; and a push-path pull fires no converge.
+version change issues no `update`; an unreadable or unparsable listing performs
+no write of any kind; a stale pack updates and keeps its disabled state; a
+served-but-absent pack installs and ends disabled; an `update` failure that is
+not "not found" never reaches `install` or `disable`; a per-exec timeout records
+`failed` and never `not installed`; a failed `disable` lands in `pendingDisable`
+and the next converge retries it to success; a pack the member enabled after a
+successful disable is never re-disabled; the budget cap returns and lets the pull
+loop re-arm; and a push-path pull fires no converge.
 
 **Contract e2e, opt-in.** `RT_CLAUDE_PLUGIN_E2E=1` runs the real `claude` binary
 against a fixture directory marketplace in an isolated HOME and asserts the
@@ -358,6 +440,9 @@ That work stays in MAT-402's lane.
   caveat on the row where the cache has already moved.
 - A pull that moves HEAD without changing any pack version runs no
   `claude plugin update`.
+- A converge whose `claude plugin list --json` could not be read writes nothing.
+- A pack whose `disable` failed is disabled by a later converge without any
+  command typed, and a pack the member enabled deliberately is not.
 - A `claude` that never exits cannot stop a clone's pull loop: the converge
   returns within its budget and `schedulePull` re-arms.
 
