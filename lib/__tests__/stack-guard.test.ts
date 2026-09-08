@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
-import { checkStackMembership, createStackGuardRunners, type StackGuardRunners } from "../stack-guard.ts";
+import {
+  STACK_REFUSAL_EXIT,
+  checkStackMembership,
+  createStackGuardRunners,
+  renderStackRefusal,
+  type StackGuardRunners,
+  type StackRefusal,
+} from "../stack-guard.ts";
 import { fakeProbes, missing, ok, type ExecScript } from "../setup/__tests__/fakes.ts";
 
 function gitqStore(stacks: { stackName: string; root: string; nodes: { branch: string; parent: string }[] }[]): string {
@@ -230,5 +237,33 @@ describe("createStackGuardRunners", () => {
     await r.forgeOpenMrs("/wt-a");
     await r.forgeOpenMrs("/wt-b");
     expect(p.calls.exec.filter((a) => a[0] === "gh")).toHaveLength(1);
+  });
+});
+
+describe("renderStackRefusal", () => {
+  const refusal: StackRefusal = {
+    kind: "stack-refusal",
+    branch: "feat",
+    source: "gitq",
+    stack: { name: "s1", root: "master", parent: "master", children: [] },
+    mrs: null,
+    tool: "gitq sync --stack s1",
+    hint: "feat is a member of stack s1",
+  };
+
+  test("json mode is the refusal object, parseable as-is", () => {
+    const out = renderStackRefusal(refusal, "json");
+    expect(JSON.parse(out)).toEqual(refusal);
+  });
+
+  test("human mode is one line naming the reason and the tool", () => {
+    const out = renderStackRefusal(refusal, "human");
+    expect(out.split("\n")).toHaveLength(1);
+    expect(out).toContain("feat is a member of stack s1");
+    expect(out).toContain("gitq sync --stack s1");
+  });
+
+  test("the refusal exit code is distinct from the paused-conflict bundle's 3", () => {
+    expect(STACK_REFUSAL_EXIT).toBe(4);
   });
 });

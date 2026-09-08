@@ -35,6 +35,14 @@ export interface StackRefusal {
   hint: string;
 }
 
+/** Distinct from 3, which is the paused-conflict bundle the same --json mode emits. */
+export const STACK_REFUSAL_EXIT = 4;
+
+export function renderStackRefusal(refusal: StackRefusal, mode: "json" | "human"): string {
+  if (mode === "json") return JSON.stringify(refusal, null, 2);
+  return refusal.tool ? `${refusal.hint} (${refusal.tool})` : refusal.hint;
+}
+
 export type StackVerdict =
   | { verdict: "clear" }
   | { verdict: "refuse"; refusal: StackRefusal }
