@@ -85,6 +85,66 @@ if [ -e /Applications/rt-tray.app ] || [ -e "$HOME/Applications/rt-tray.app" ]; 
 
 if [ "$HEADLESS" = 0 ]; then
   [ -d "$HOME/.mattstack/user/.git" ] && ok "~/.mattstack/user is the home repo" || bad "~/.mattstack/user is not a git repo (home-repo re-root ruling)"
+
+  # ── the local HTTPS proxy ──────────────────────────────────────────────────
+  # Headless has no app to answer proxy.install's need, so the whole block is
+  # inside the same gate as the home repo rather than reporting a bare-machine
+  # absence as a defect.
+  #
+  # jq is not on this PATH: only DEFAULT_EXPOSED (rt, deck, gitq, fast-browser)
+  # is linked into ~/.local/bin, so the bundle's own copy is the one to use.
+  JQ=/Applications/mattstack.app/Contents/Helpers/jq
+  # `setup status --json` is a Plan (groups/rows), not a step ledger: apply's
+  # step states are streamed as NDJSON and never persisted. tool.proxy is the
+  # row that reads back what proxy.install left behind: `ready` only when the
+  # plist is there AND the deployed VERSION matches the bundle's pin.
+  rt setup status --json 2>/dev/null | tail -1 > "$LOGS/setup-status.json"
+  proxy_row=$([ -x "$JQ" ] && "$JQ" -r '.groups[].rows[]|select(.id=="tool.proxy")|.status + ": " + (.detail // "")' < "$LOGS/setup-status.json" 2>/dev/null)
+  case "$proxy_row" in
+    ready:*) ok "proxy installed: tool.proxy $proxy_row";;
+    "")      bad "no tool.proxy row in rt setup status --json (see logs/setup-status.json)";;
+    *)       bad "proxy not installed: tool.proxy $proxy_row";;
+  esac
+  [ -f /Library/LaunchDaemons/sh.portless.proxy.plist ] && ok "portless LaunchDaemon plist present" || bad "portless plist missing"
+  # `launchctl print system/<label>` answers a standard user with "Could not
+  # find service" whether the service is absent or merely unreadable, and the
+  # tester has no passwordless sudo to get past it. The domain listing IS
+  # readable, and its `<pid> <status> <label>` rows separate loaded-and-running
+  # (a pid) from loaded-but-dead (0) without any privilege at all.
+  launchctl print system > "$LOGS/portless-launchctl.txt" 2>&1
+  proxy_pid=$(awk '$NF == "sh.portless.proxy" { print $1; exit }' "$LOGS/portless-launchctl.txt")
+  case "$proxy_pid" in
+    ""|0) bad "portless daemon not running (launchctl print system pid: ${proxy_pid:-not listed})";;
+    *)    ok "portless daemon running (pid $proxy_pid)";;
+  esac
+  # The end-to-end fact: an app domain resolving to loopback (the root daemon
+  # rewrites /etc/hosts from routes.json) and answering TLS with a host cert it
+  # mints on demand under the CA the installer trusted.
+  #
+  # The hostname comes from the route table, not a literal. Which apps hold a
+  # .mattstack route is deck's business: `deck adopt` reconciles one per managed
+  # record, and deck's own `deck.mattstack` comes from `deck setup`, which rt
+  # never runs. Hard-coding one app would assert deck's registrations, not this
+  # proxy. Both halves are still asserted: a route has to exist, and it has to
+  # answer.
+  cat "$HOME/.portless/routes.json" > "$LOGS/proxy-routes.json" 2>&1
+  served=$([ -x "$JQ" ] && "$JQ" -r '.[].hostname | select(endswith(".mattstack"))' < "$LOGS/proxy-routes.json" 2>/dev/null | head -1)
+  if [ -z "$served" ]; then
+    bad "no .mattstack route in ~/.portless/routes.json for the proxy to serve"
+  elif curl -fsS --max-time 10 "https://$served" >/dev/null 2>&1; then
+    ok "$served answers over https through the proxy"
+  else
+    bad "$served is routed but does not answer through the proxy"
+  fi
+
+  # Evidence for the proxy assertions above, whether they passed or failed:
+  # what the daemon was told to serve, what it published to the resolver, and
+  # what it said while doing it.
+  sed -n '/# portless-start/,/# portless-end/p' /etc/hosts > "$LOGS/proxy-hosts.txt" 2>&1
+  ls -la "$HOME/.portless" "$HOME/.portless/host-certs" > "$LOGS/proxy-statedir.txt" 2>&1
+  curl -sS -o /dev/null -D - --max-time 10 "https://${served:-deck.mattstack}" > "$LOGS/proxy-curl.txt" 2>&1
+  tail -100 "/Library/Application Support/mattstack/proxy/log/service.log" > "$LOGS/proxy-service.log" 2>&1
+  cat "$HOME/.mattstack/deck/platform.json" "$HOME/.mattstack/deck/registry.json" > "$LOGS/proxy-deck-state.json" 2>&1
 fi
 echo "$fails" > "$LOGS/assert-fails.txt"
 [ "$fails" -eq 0 ]
