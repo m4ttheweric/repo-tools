@@ -49,6 +49,8 @@ public actor NeedBroker {
                 return await privileged.proxyInstall()
             case "app-privileged" where request.op == "proxy-remove":
                 return await privileged.proxyRemove()
+            case "app-privileged" where request.op == "proxy-trust":
+                return await privileged.proxyTrust()
             default:
                 return NeedResult(ok: false, detail: "unknown need type \(request.type)\(request.op.map { "/\($0)" } ?? "")")
             }
