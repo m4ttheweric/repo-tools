@@ -494,6 +494,10 @@ Cases that must be covered because the design turns on them:
 - an `update` failure that is not "not found" never reaches `install`;
 - a failed `install` records `failed` and never reaches `disable`, so it cannot
   be recorded as installed by way of "already disabled";
+- a timed-out `install` (exit 124) attempts `uninstall` before recording
+  `failed`, so a half-written install cannot survive as installed-and-enabled;
+- an `isAlready` install records `current` and issues no `disable`, leaving a
+  pre-existing pack's enablement untouched;
 - a rolled-back pack is absent from `SetupState.plugins`;
 - a per-exec timeout records `failed` and never `not installed`;
 - a settlement that does not fit the remaining budget is skipped whole, leaving
