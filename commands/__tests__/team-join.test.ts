@@ -210,9 +210,8 @@ describe("teamJoin", () => {
       stdinSpy.mockRestore();
     }
 
-    // extractInviteCode("nope") is null, so defaultReadCode falls back to the
-    // raw string; decodeCode then rejects it on length, same as before an
-    // extractor existed at all — proof it was never rewritten in between.
+    // decodeCode's wrong-length error is unchanged whether or not
+    // extractInviteCode recognized the input.
     expect(code).toBe(2);
     const body = JSON.parse(deps.lines[0]!);
     expect(body.error.code).toBe("invite-malformed");
