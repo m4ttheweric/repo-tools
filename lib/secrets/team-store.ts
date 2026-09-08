@@ -36,6 +36,8 @@
 import { join } from "path";
 import { createRealAgeKeySeam, renderSopsYamlFor } from "../home/age-key.ts";
 import { teamsDir } from "../rt-paths.ts";
+import { createRealProbes } from "../setup/probes.ts";
+import { assertNotJoined } from "../team/team-local.ts";
 import {
   createRealSecretsExecSeam,
   decryptAtLocation,
@@ -209,6 +211,10 @@ export async function listTeamSecretNames(slug: string, domain: string, seams: S
 }
 
 export async function writeTeamSecret(slug: string, domain: string, key: string, value: string, seams: SecretsSeams): Promise<void> {
+  // No Probes reaches this store (SecretsSeams carries only the sops/age
+  // seams), so the local-record check reads the real machine directly rather
+  // than through a caller-supplied seam.
+  assertNotJoined(createRealProbes(), slug);
   validateKey(key);
   const recipients = readTeamRecipients(slug, seams);
   if (recipients.length === 0) throw new NoTeamRecipientsError(slug);

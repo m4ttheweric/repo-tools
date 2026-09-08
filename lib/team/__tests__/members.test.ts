@@ -9,6 +9,7 @@ import { teamsDir } from "../../rt-paths.ts";
 import { seal, sealReply } from "../invite-crypto.ts";
 import { upsertInviteRecord, type InviteRecord } from "../invite-records.ts";
 import { membersRemove, membersSync, MembersSyncAbortedError, type MembersSeams } from "../members.ts";
+import { teamLocalPath } from "../team-local.ts";
 import type { RelayClient } from "../relay-client.ts";
 
 const HOME = "/home/x";
@@ -21,6 +22,14 @@ const CREATOR_SECRET = "creator-secret-alice";
 
 function teamCloneRootFor(slug: string): string {
   return join(teamsDir(), slug);
+}
+
+/** A machine that redeemed an invite for `slug` (the local record read by `assertNotJoined`), unrelated to any file in the team clone itself. */
+function probesWithJoinedTeam(slug = SLUG) {
+  return fakeProbes({
+    home: HOME,
+    files: { [teamLocalPath(HOME, slug)]: JSON.stringify({ createdByRt: false, joinedByRt: true, rtMayManageMembership: false }) },
+  });
 }
 
 function fakeAgeKeySeam(privateKey = "AGE-SECRET-KEY-1OWNER", publicKey = OWNER_PUBLIC_KEY): AgeKeySeam {
@@ -512,6 +521,15 @@ describe("membersSync", () => {
     expect(err.pending).toEqual([]);
     expect(err.message).toContain("aborted after adding 0 key(s)");
   });
+
+  test("membersSync refuses on a joined clone", async () => {
+    const p = probesWithJoinedTeam();
+    const { secrets } = seamsWithClone();
+    const { seams } = fakeMembersSeams();
+    const relay = fakeRelay();
+
+    await expect(membersSync(p, relay, secrets, SLUG, seams)).rejects.toThrow(/pull-only/);
+  });
 });
 
 describe("membersRemove", () => {
@@ -771,5 +789,13 @@ describe("membersRemove", () => {
       // 3. owner still a recipient throughout.
       expect(readTeamRecipients(SLUG, secrets)).toContain(OWNER_PUBLIC_KEY);
     });
+  });
+
+  test("membersRemove refuses on a joined clone", async () => {
+    const p = probesWithJoinedTeam();
+    const { secrets } = seamsWithClone();
+    const { seams } = fakeMembersSeams();
+
+    await expect(membersRemove(p, secrets, SLUG, "zaphod", undefined, seams)).rejects.toThrow(/pull-only/);
   });
 });

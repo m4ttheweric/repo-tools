@@ -12,6 +12,7 @@
  */
 
 import { dirname, join } from "path";
+import { UserActionableError } from "../setup/errors.ts";
 import type { Probes } from "../setup/probes.ts";
 
 export interface TeamLocalRecord {
@@ -77,6 +78,15 @@ export function writeTeamLocal(
   p.chmod(dirname(path), RECORD_DIR_MODE);
   p.writeFile(path, `${JSON.stringify(record, null, 2)}\n`);
   p.chmod(path, RECORD_MODE);
+}
+
+/** The one refusal every owner-shaped team verb raises on a joined machine, so the wording cannot drift between them. */
+export function assertNotJoined(p: Pick<Probes, "readFile" | "home">, slug: string): void {
+  if (!readTeamLocal(p, slug).joinedByRt) return;
+  throw new UserActionableError(
+    "team-pull-only",
+    `this machine joined "${slug}" by invite, so its clone is pull-only. Ask the team's owner to make this change. Member-proposed changes are tracked in MAT-415.`,
+  );
 }
 
 /** Merges one field without clobbering the rest — callers set `createdByRt` and the operator sets the permission, at different times. */

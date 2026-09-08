@@ -35,7 +35,7 @@ import type { Probes } from "../setup/probes.ts";
 import { parseOriginUrl } from "../setup/team-settings.ts";
 import { revokeRead, type RevokeAccess } from "./forge.ts";
 import { storedForgeToken } from "./stored-forge-token.ts";
-import { readTeamLocal } from "./team-local.ts";
+import { assertNotJoined, readTeamLocal } from "./team-local.ts";
 import { openReply } from "./invite-crypto.ts";
 import { readInviteRecords, removeInviteRecord } from "./invite-records.ts";
 import type { RelayClient } from "./relay-client.ts";
@@ -227,6 +227,8 @@ export async function membersSync(
   slug: string,
   seams: MembersSeams = realMembersSeams(),
 ): Promise<MembersSyncResult> {
+  assertNotJoined(p, slug);
+
   const added: string[] = [];
   const pending: string[] = [];
   const reencrypted = new Set<string>();
@@ -332,6 +334,8 @@ export async function membersRemove(
   agePublicKey?: string,
   seams: MembersSeams = realMembersSeams(),
 ): Promise<MembersRemoveResult> {
+  assertNotJoined(p, slug);
+
   if (agePublicKey !== undefined && !isValidAgePublicKey(agePublicKey)) {
     throw new UserActionableError(
       "invalid-age-key",
