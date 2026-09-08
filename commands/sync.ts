@@ -12,7 +12,8 @@
  *   rt sync                  sync current worktree
  *   rt sync all              sync all worktrees with open MRs
  *   rt sync --dry-run        show what would happen
- *   rt sync --json           on conflict: emit a JSON conflict bundle, exit 3, leave rebase paused
+ *   rt sync --json           on conflict: emit a JSON conflict bundle, exit 3, leave rebase paused;
+ *                            on a stack member: emit a JSON refusal, exit 4, touch nothing
  *   rt sync --agent          on conflict: skip the prompt, hand straight to a Claude agent in herdr
  *   rt sync --no-agent       never offer agent escalation (abort on conflict, as before)
  */
@@ -26,6 +27,14 @@ import { repoLabel } from "../lib/repo-label.ts";
 import { rebaseOnto, type RebaseResult } from "./git/rebase.ts";
 import { resetToOrigin, type ResetResult } from "./git/reset.ts";
 import { syncLog } from "../lib/sync-log.ts";
+import {
+  STACK_REFUSAL_EXIT,
+  checkStackMembership,
+  createStackGuardRunners,
+  renderStackRefusal,
+  type StackGuardRunners,
+  type StackRefusal,
+} from "../lib/stack-guard.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -37,6 +46,8 @@ interface SyncSummary {
   rebaseResult: RebaseResult | null;
   pushed: boolean;
   error?: string;
+  /** Set when the stack guard stopped the sync before any ref moved. */
+  refusal?: StackRefusal;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -95,9 +106,16 @@ function hasDivergedFromRemote(branch: string, cwd: string): boolean {
 
 // ─── Single-branch sync ─────────────────────────────────────────────────────
 
-async function syncBranch(
+export async function syncBranch(
   cwd: string,
-  opts: { dryRun?: boolean; quiet?: boolean; onConflict?: "abort" | "pause" },
+  opts: {
+    dryRun?: boolean;
+    quiet?: boolean;
+    onConflict?: "abort" | "pause";
+    stackRunners?: StackGuardRunners;
+    /** Refuse when stack membership cannot be verified (agent callers); a human run warns and proceeds. */
+    strictStackCheck?: boolean;
+  },
 ): Promise<SyncSummary> {
   // Guard: rebase-in-progress takes priority — getCurrentBranch returns null
   // during a rebase, which would cause a confusing "detached HEAD" error later.
@@ -169,6 +187,20 @@ async function syncBranch(
 
   const { createStepRunner } = await import("../lib/rt-render.ts");
   const steps = createStepRunner();
+
+  // Stack guard: a stack member rebased alone onto the default branch lands
+  // on master and strands its chain, so this runs before the first ref move.
+  const stackRunners = opts.stackRunners ?? createStackGuardRunners((await import("../lib/setup/probes.ts")).createRealProbes());
+  const stack = await checkStackMembership({ cwd, branch, defaultBranch: defaultBranch ? defaultBranchName : null, runners: stackRunners });
+  syncLog.phase("stack-guard", { verdict: stack.verdict, ...(stack.verdict === "clear" ? {} : { kind: stack.refusal.kind, source: stack.refusal.source }) });
+  if (stack.verdict === "refuse" || (stack.verdict === "unverified" && opts.strictStackCheck)) {
+    const line = renderStackRefusal(stack.refusal, "human");
+    syncLog.worktreeEnd(branch, line);
+    return { branch, worktree: cwd, resetResult: null, rebaseResult: null, pushed: false, error: line, refusal: stack.refusal };
+  }
+  if (stack.verdict === "unverified" && !opts.quiet) {
+    steps.log(`${stack.refusal.hint} — proceeding; rerun with --json to fail closed`, "warn");
+  }
 
   // 1. Fetch once (rebase/reset will skip their own fetch)
   if (opts.quiet) {
@@ -357,6 +389,8 @@ async function syncAll(
 
   console.log(`\n  ${bold}${cyan}rt sync all${reset} ${dim}(${syncable.length} branches)${reset}\n`);
 
+  const { createRealProbes } = await import("../lib/setup/probes.ts");
+  const stackRunners = createStackGuardRunners(createRealProbes());
   const summaries: SyncSummary[] = [];
 
   for (const wt of syncable) {
@@ -394,6 +428,7 @@ async function syncAll(
       dryRun: opts.dryRun,
       quiet: false,
       onConflict: "abort",
+      stackRunners,
     });
     summaries.push(summary);
     console.log("");
@@ -465,6 +500,7 @@ export async function syncCommand(
       dryRun,
       quiet: mode === "json",
       onConflict: mode === "off" ? "abort" : "pause",
+      strictStackCheck: mode === "json",
     });
 
     const paused =
@@ -486,6 +522,12 @@ export async function syncCommand(
 
   if (escalationExit !== null) {
     process.exit(escalationExit);
+  }
+
+  if (summary.refusal) {
+    if (mode === "json") console.log(renderStackRefusal(summary.refusal, "json"));
+    else console.error(`\n  ${red}${renderStackRefusal(summary.refusal, "human")}${reset}\n`);
+    process.exit(STACK_REFUSAL_EXIT);
   }
 
   if (summary.error) {
