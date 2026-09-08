@@ -25,8 +25,18 @@ final class PipedOutputTests: XCTestCase {
         return (String(data: data, encoding: .utf8) ?? "", process.terminationReason)
     }
 
-    func testInstallTrailerSurvivesPipedStdout() {
+    // `install` refuses before it reads anything, so this exercises the real
+    // binary's first failure path without touching /Library. Under root there is
+    // no refusal to observe and the run would install for real.
+    func testInstallRefusesUnescalatedAndStillEmitsTheTrailer() throws {
+        try XCTSkipIf(getuid() == 0, "the unescalated refusal path does not exist when the suite runs as root")
         let result = runPiped(["install"])
+        XCTAssertEqual(result.reason, .exit)
+        XCTAssertTrue(result.output.hasSuffix("MATTSTACK_EXIT=77\n"), "got: \(result.output)")
+    }
+
+    func testRemoveTrailerSurvivesPipedStdout() {
+        let result = runPiped(["remove"])
         XCTAssertEqual(result.reason, .exit)
         XCTAssertTrue(result.output.hasSuffix("MATTSTACK_EXIT=69\n"), "got: \(result.output)")
     }

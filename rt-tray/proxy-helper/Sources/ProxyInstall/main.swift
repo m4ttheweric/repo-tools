@@ -19,8 +19,10 @@ case .version:
     exit(0)
 case .usage:
     Report.step("usage: mattstack-proxy-install install|remove|--version")
-    Report.finish(64)
-case .install, .remove:
+    Report.finish(ExitCode.usage)
+case .install:
+    Report.finish(InstallOp.run())
+case .remove:
     Report.step("not implemented yet")
-    Report.finish(69)
+    Report.finish(ExitCode.unavailable)
 }

@@ -46,6 +46,10 @@ protocol FileOps {
     func write(_ contents: String, to path: URL) throws
     func rename(from: URL, to: URL) throws
     func removeTree(_ path: URL) throws
+    /// Set before the rename into place: what launchd and sudo read must never
+    /// have been readable or writable at looser terms, even briefly.
+    func setMode(_ path: URL, _ mode: mode_t) throws
+    func setOwner(_ path: URL, uid: uid_t, gid: gid_t) throws
     func treeHash(_ root: URL) throws -> String
     func fileHash(_ path: URL) throws -> String
 }
@@ -145,5 +149,17 @@ struct RealFileOps: FileOps {
     func removeTree(_ path: URL) throws {
         guard try stat(path) != nil else { return }
         try fm.removeItem(at: path)
+    }
+
+    func setMode(_ path: URL, _ mode: mode_t) throws {
+        guard Darwin.chmod(path.path, mode) == 0 else {
+            throw ProxyInstallError("chmod(\(path.path)): \(String(cString: strerror(errno)))")
+        }
+    }
+
+    func setOwner(_ path: URL, uid: uid_t, gid: gid_t) throws {
+        guard Darwin.chown(path.path, uid, gid) == 0 else {
+            throw ProxyInstallError("chown(\(path.path)): \(String(cString: strerror(errno)))")
+        }
     }
 }

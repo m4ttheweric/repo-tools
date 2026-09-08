@@ -127,6 +127,11 @@ final class FakeFileOps: FileOps {
         log.append("remove \(path.lastPathComponent)")
         removed.append(path.path)
     }
+
+    // CopyStep takes the modes it needs from mkdir and the copy; these exist for
+    // the single-file writes InstallOp does.
+    func setMode(_ path: URL, _ mode: mode_t) throws { log.append("chmod \(path.lastPathComponent)") }
+    func setOwner(_ path: URL, uid: uid_t, gid: gid_t) throws { log.append("chown \(path.lastPathComponent)") }
 }
 
 final class CopyStepTests: XCTestCase {

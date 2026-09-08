@@ -13,3 +13,19 @@ enum Report {
         exit(code)
     }
 }
+
+// sysexits(3), reaching the app only through that trailer.
+enum ExitCode {
+    static let ok: Int32 = 0
+    static let usage: Int32 = 64
+    /// A rendered file the system refused (visudo).
+    static let dataErr: Int32 = 65
+    static let unavailable: Int32 = 69
+    /// This helper's own failure: a refused payload, a write that did not land.
+    static let software: Int32 = 70
+    /// A privileged command the OS ran and failed (launchctl, the trust run).
+    static let osErr: Int32 = 71
+    static let noPerm: Int32 = 77
+    /// No console user to install for.
+    static let config: Int32 = 78
+}
