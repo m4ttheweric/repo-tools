@@ -107,8 +107,8 @@ export interface SnapshotStatus {
 export interface HomeSnapshotHandle {
   stop(): void;
   runNow(reason: SnapshotReason): Promise<SnapshotResult>;
-  /** Fetch, then fast-forward or rebase. A spec without a `pull` policy always skips. */
-  pullNow(): Promise<PullResult>;
+  /** Fetch, then fast-forward or rebase. A spec without a `pull` policy always skips. `converge:false` suppresses the post-pull hook. */
+  pullNow(opts?: { converge?: boolean }): Promise<PullResult>;
   status(): SnapshotStatus;
   /** Resolves once startup arming (the enabled + is-a-repo checks) has settled. Not needed by the daemon (which just fires and forgets); tests await it so assertions don't race the async repo check. */
   ready: Promise<void>;
@@ -150,7 +150,11 @@ export interface SnapshotSpec {
   /** Paths (relative to repoDir) the engine may stage; undefined = everything outside claimed zones. */
   scope?: (relPath: string) => boolean;
   /** Fetch + rebase policy; absent = never pull (the home repo is single-writer). */
-  pull?: { intervalSec: number };
+  pull?: {
+    intervalSec: number;
+    /** Fired after a pull that moved HEAD, outside the git lock. */
+    onPulled?: (outcome: "fast-forwarded" | "rebased") => Promise<void>;
+  };
   /** The forge token rt holds for origin; absent = git's own credentials. */
   tokenFor?: () => Promise<string | null>;
   /** The retired pre-kv state file to import once; home only. */
@@ -352,7 +356,13 @@ export function homeSnapshotSpec(repoDir: string = join(mattstackHome(), "user")
 export function teamSnapshotSpec(
   slug: string,
   repoDir: string,
-  opts: { pullIntervalSec: number; originUrl: string; probes: Probes; readToken?: (p: Probes, remote: string) => Promise<string | null> },
+  opts: {
+    pullIntervalSec: number;
+    originUrl: string;
+    probes: Probes;
+    readToken?: (p: Probes, remote: string) => Promise<string | null>;
+    onPulled?: (outcome: "fast-forwarded" | "rebased") => Promise<void>;
+  },
 ): SnapshotSpec {
   const readToken = opts.readToken ?? storedForgeToken;
   return {
@@ -361,7 +371,7 @@ export function teamSnapshotSpec(
     kvNamespace: `team-snapshot:${slug}`,
     eventPrefix: "team",
     scope: teamScope,
-    pull: { intervalSec: opts.pullIntervalSec },
+    pull: { intervalSec: opts.pullIntervalSec, onPulled: opts.onPulled },
     tokenFor: () => readToken(opts.probes, opts.originUrl),
   };
 }
@@ -683,7 +693,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     }, spec.pull.intervalSec * 1000);
   }
 
-  async function pullNow(): Promise<PullResult> {
+  async function pullNow(opts: { converge?: boolean } = {}): Promise<PullResult> {
     await readyPromise;
     // A fetch and a `git merge --ff-only` need no committer, so a clone that
     // cannot commit still stays current; every other disabledReason
@@ -693,16 +703,31 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     if (!spec.pull || blocked || safeReadSettings().enabled === false) {
       return { outcome: "skipped", detail: "pull not enabled for this repo" };
     }
+    // A caller that coalesces onto an in-flight pull inherits that pull's hook
+    // decision: `converge:false` keeps this path from STARTING a converge, not
+    // from waiting on one already running.
     if (pullInFlight) return pullInFlight;
     const p = withGitLock(() => doPull());
     pullInFlight = p;
+    let result: PullResult;
     try {
-      const result = await p;
+      result = await p;
       lastPullSkipped = result.outcome === "skipped" ? result.detail : null;
-      return result;
     } finally {
       pullInFlight = null;
     }
+    // Outside the lock: the hook shells out to another CLI, and holding the git
+    // lock that long would block the commit cycle. Awaited so the pull loop's
+    // re-arm waits for it, which is why the hook carries its own time budget.
+    const moved = result.outcome === "fast-forwarded" || result.outcome === "rebased";
+    if (moved && opts.converge !== false && spec.pull.onPulled) {
+      try {
+        await spec.pull.onPulled(result.outcome as "fast-forwarded" | "rebased");
+      } catch (err) {
+        deps.log.warn({ err, id: spec.id }, `${label}: post-pull hook failed; the pull itself stands`);
+      }
+    }
+    return result;
   }
 
   async function doPull(): Promise<PullResult> {
@@ -863,14 +888,16 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     // a clone from diverging, and a conflict suspends the push rather than
     // resolving it in either direction.
     if (spec.pull) {
-      const pulled = await pullNow();
+      // converge:false: this pull exists to avoid diverging before a push, not
+      // to react to content, and it runs inside pushInFlight.
+      const pulled = await pullNow({ converge: false });
       if (pulled.outcome === "conflict" || conflicted) return;
     }
     let result = await remoteGit(["push", "-q", "origin", "HEAD"], PUSH_TIMEOUT_MS);
     if (result.exitCode !== 0 && spec.pull && pushRetryAttempt === 0 && /\[rejected\]|non-fast-forward|fetch first/i.test(result.stderr)) {
       // The remote moved between the pull above and this push; one inline
       // replay beats waiting out a whole retry-backoff window.
-      await pullNow();
+      await pullNow({ converge: false });
       if (conflicted) return;
       result = await remoteGit(["push", "-q", "origin", "HEAD"], PUSH_TIMEOUT_MS);
     }
