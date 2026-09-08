@@ -220,7 +220,7 @@ which clone exists locally.
 | `rt settings unset --scope team` (`commands/settings-keys.ts:323`) | same keys, via a **different** resolver | refuse |
 | `rt team invite` (`addToRoster`, `lib/team/invite.ts:95-101`) | `board.members`, `mattstack.roster` | refuse early, see below |
 | settings-kit `POST /set` and `/unset` with `scope:"team"` (`packages/settings-kit/src/server.ts:259,299`) | same keys, from any console/board/deck UI | refuse |
-| `saveVariation` (`lib/variations.ts:96`) | `rt.variations` | degrade, see below |
+| `saveVariation` (`lib/variations.ts:96`) | `rt.variations` | already degrades, see below |
 | VSCode legacy import (`extensions/vscode/rt-context/src/branchNaming.ts:65`) | `rt.branchNaming` | degrade, see below |
 | `rt team publish` (`lib/team/publish.ts:74`) | pushes straight to the forge | refuse |
 | `rt team members sync` (`lib/team/members.ts:149,236`) | roster, `.sops.yaml`, re-encrypts every secret | refuse |
@@ -356,7 +356,8 @@ New coverage:
 - every refusal guard, `unset` as well as `set`;
 - `rt team invite` on a joined machine refusing with the relay client never
   constructed, asserted by the relay seam recording no call;
-- `saveVariation`'s degrade to user scope;
+- `saveVariation` returning a structured `write-failed` rather than crashing
+  `rt run`, asserted against the code as it already stands;
 - the Install secrets step staying green on a joined machine.
 
 e2e gets the `manage-membership` `--json` envelope and usage string, since

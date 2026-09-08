@@ -413,7 +413,7 @@ describe("teamManageMembership", () => {
     await teamManageMembership(["on", "--team", "acme", "--json"], {}, deps);
 
     expect(deps.exitCode).toBe(2);
-    expect(JSON.parse(deps.lines[0]!).failure.code).toBe("not-rt-created");
+    expect(JSON.parse(deps.lines[0]!).error.code).toBe("not-rt-created");
     expect(readTeamLocal(deps.probes, "acme").rtMayManageMembership).toBe(false);
   });
 
@@ -509,32 +509,53 @@ bun run docs:gen
 bun run picker:check
 bun test commands/__tests__/team.test.ts lib/__tests__/picker-conformance.test.ts
 ```
-Expected: all PASS. `picker:check` failing here means the `optional: true` or `omitBehavior` above is wrong; fix it rather than the checker.
+Expected: all PASS. Note what `picker:check` does and does not say here: it
+gates leaves with a REQUIRED positional, so an optional-positional leaf like
+this one is outside its scope entirely and will pass either way. Keep
+`omitBehavior: "list"` regardless, because it is the honest declaration of
+what the bare form does; just do not read a green `picker:check` as having
+verified it.
 
 - [ ] **Step 6: Write the e2e test**
 
-Create `e2e/tests/team-membership.test.ts`, following the shape of `e2e/tests/setup.test.ts`:
+Create `e2e/tests/team-membership.test.ts`. The harness is `e2e/harness.ts`
+(there is no `helpers.ts` and no `runRt`), and `createTestHome()` is
+mandatory: `rt()` drives the compiled `dist/rt`, which reads `~/.mattstack`
+and acts on it, so a run against ambient HOME would touch the developer's
+real machine and make the assertions depend on whose laptop it is.
+`RT_APP_SOCKET=/nonexistent.sock` is copied from `setup.test.ts` for the same
+determinism reason.
 
 ```ts
-import { describe, test, expect } from "bun:test";
-import { runRt } from "../helpers.ts";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { createTestHome, rt } from "../harness.ts";
 
-describe("rt team manage-membership", () => {
-  test("an unknown state is a usage error at exit 2 with the envelope", async () => {
-    const r = await runRt(["team", "manage-membership", "sideways", "--team", "acme", "--json"]);
-    expect(r.exitCode).toBe(2);
-    expect(JSON.parse(r.stdout).failure.code).toBe("usage");
+describe("rt team manage-membership (e2e, no live app/daemon)", () => {
+  let home: string;
+  let cleanup: () => void;
+
+  beforeAll(() => {
+    ({ path: home, cleanup } = createTestHome());
   });
+  afterAll(() => cleanup());
+
+  function run(args: string[]) {
+    return rt(args, { home, env: { RT_APP_SOCKET: "/nonexistent.sock" } });
+  }
+
+  test("an unknown state is a usage error at exit 2 with the envelope", async () => {
+    const res = await run(["team", "manage-membership", "sideways", "--team", "acme", "--json"]);
+    expect(res.exitCode).toBe(2);
+    expect(JSON.parse(res.stdout.trim()).error.code).toBe("usage");
+  }, 15_000);
 
   test("no local team is a user error, not a crash", async () => {
-    const r = await runRt(["team", "manage-membership", "--json"]);
-    expect(r.exitCode).toBe(2);
-    expect(JSON.parse(r.stdout).failure.code).toBe("no-team");
-  });
+    const res = await run(["team", "manage-membership", "--json"]);
+    expect(res.exitCode).toBe(2);
+    expect(JSON.parse(res.stdout.trim()).error.code).toBe("no-team");
+  }, 15_000);
 });
 ```
-
-Match `runRt`'s real name and import path from the existing e2e tests.
 
 - [ ] **Step 7: Run e2e**
 
@@ -573,7 +594,7 @@ test("a joined machine refuses before the relay is ever touched", async () => {
 
   expect(relayCalls).toBe(0);
   expect(deps.exitCode).toBe(2);
-  expect(JSON.parse(deps.lines[0]!).failure.code).toBe("team-pull-only");
+  expect(JSON.parse(deps.lines[0]!).error.code).toBe("team-pull-only");
 });
 
 test("on a TTY, accepting the offer writes the permission before minting", async () => {
@@ -670,6 +691,10 @@ In `lib/daemon/__tests__/home-snapshot.test.ts`, inside the existing `describe("
 
 ```ts
 test("a pull-only spec fetches and fast-forwards but never commits or pushes", async () => {
+  // Dirty for the same reason as the control test below: a clean tree would
+  // not commit anyway.
+  dirtyInScope("mattstack/settings.team.jsonc");
+
   const h = startSnapshot({ ...teamSpecFixture(), pullOnly: true }, deps);
   await h.ready;
 
@@ -692,6 +717,12 @@ test("a pull-only spec reports its skip reason rather than looking idle", async 
 });
 
 test("a spec without pullOnly is unchanged and still commits and pushes", async () => {
+  // The fixture must report DIRTY in-scope paths from git status, or this
+  // passes vacuously: a clean tree does not commit either, so it would prove
+  // nothing about pullOnly. Use whatever the surrounding tests use to stage a
+  // pending change (the porcelain fixture their commit tests already rely on).
+  dirtyInScope("mattstack/settings.team.jsonc");
+
   const h = startSnapshot(teamSpecFixture(), deps);
   await h.ready;
 
@@ -975,7 +1006,7 @@ git commit -m "setup: report pull-only honestly in team.sync, access.team-repo a
 **Files:**
 - Create: `packages/rt-client/src/settings/team-local-read.ts`
 - Modify: `packages/rt-client/src/settings/paths.ts`, `packages/rt-client/src/settings/write.ts:192` and `:212-231` and `:240-255`
-- Test: `packages/rt-client/test/settings-write.test.ts` (or the file that already covers `resolveStorePath`)
+- Test: `packages/rt-client/src/settings/__tests__/write.test.ts` (the file that already covers `resolveStorePath`)
 
 **Interfaces:**
 - Consumes: the on-disk record from Task 1.
@@ -1010,9 +1041,21 @@ test("a clone with no record at all is unaffected", () => {
 
 test("user and machine scope are never gated by a team record", () => {
   seedJoinedTeam("acme");
-  expect(() => setSetting("board.title", "x", "user", {})).not.toThrow();
+  // NOT board.title: its scopes are ["team"] only (registry-defs.ts:386), so a
+  // user-scope write throws a scope refusal before the guard is ever reached,
+  // and the test would pass for the wrong reason. claude.plugins is user+team.
+  expect(() => setSetting("claude.plugins", [], "user", {})).not.toThrow();
 });
 ```
+
+**The three seed helpers must create the team SETTINGS STORE, not just the
+record.** `resolveStorePath` refuses a nonexistent store at `write.ts:216-219`,
+which runs before the guard, so a seed that writes only
+`~/.mattstack/rt/teams/acme.json` produces a "does not exist" refusal and the
+tests pass without exercising anything. Each helper writes both:
+`~/.mattstack/teams/acme/mattstack/settings.team.jsonc` (a seeded `{}` with the
+header the store expects) and, except for `seedTeamWithNoRecord`, the record
+with the right `joinedByRt`.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -1110,8 +1153,8 @@ git commit -m "rt-client: refuse team settings writes on a pull-only clone, set 
 ### Task 10: The four non-settings guards
 
 **Files:**
-- Modify: `lib/team/publish.ts`, `lib/team/members.ts` (both `membersSync` and `membersRemove`), `lib/secrets/team-store.ts` (`writeTeamSecret`), `lib/setup/steps/secrets.ts` (`secretsWriteRun`)
-- Test: `lib/team/__tests__/publish.test.ts`, `lib/team/__tests__/members.test.ts`, `lib/secrets/__tests__/team-store.test.ts`, `lib/setup/__tests__/steps-secrets.test.ts`
+- Modify: `lib/team/publish.ts`, `lib/team/members.ts` (both `membersSync` and `membersRemove`), `lib/secrets/team-store.ts` (`writeTeamSecret`), `lib/setup/steps/secrets.ts` (the `run` body behind `secretsWriteStep`)
+- Test: `lib/team/__tests__/publish.test.ts`, `lib/team/__tests__/members.test.ts`, `lib/secrets/__tests__/team-store.test.ts`, `lib/setup/__tests__/steps-a.test.ts` (its `describe("secrets.write")` block at `:548`)
 
 **Interfaces:**
 - Consumes: `readTeamLocal` (Task 1).
@@ -1142,9 +1185,11 @@ test("writeTeamSecret refuses on a joined clone", async () => {
   await expect(writeTeamSecret("acme", "rt", "k", "v", seamsForJoined("acme"))).rejects.toThrow(/pull-only/);
 });
 
-// steps-secrets.test.ts
+// steps-a.test.ts, inside the existing describe("secrets.write") block at :548.
+// secretsWriteRun is module-private: only secretsWriteStep is exported
+// (secrets.ts:55). Drive it through the step, exactly as :560 already does.
 test("a staged team secret on a joined machine skips the step instead of failing Install", async () => {
-  const outcome = await secretsWriteRun(ctxWithStagedTeamSecret("acme"));
+  const outcome = await secretsWriteStep.run(ctxWithStagedTeamSecret("acme"));
   expect(outcome.state).toBe("skipped");
   expect(outcome.detail).toContain("pull-only");
 });
@@ -1154,12 +1199,12 @@ Match each file's existing helper names and call signatures; the calls above sho
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `bun test lib/team lib/secrets lib/setup/__tests__/steps-secrets.test.ts`
+Run: `bun test lib/team lib/secrets lib/setup/__tests__/steps-a.test.ts`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement the three throwing guards**
 
-Add to `lib/team/team-local.ts` (it already owns the record, so the shared sentence belongs with it):
+Add to `lib/team/team-local.ts` (it already owns the record, so the shared sentence belongs with it). It currently imports only `path` and the `Probes` type, so add `import { UserActionableError } from "../setup/errors.ts";`:
 
 ```ts
 /** The one refusal every owner-shaped team verb raises on a joined machine, so the wording cannot drift between them. */
@@ -1176,7 +1221,7 @@ Call `assertNotJoined(p, slug)` at the top of `publishTeam` (after `validateSlug
 
 - [ ] **Step 4: Implement the secrets guard and the step's catch**
 
-In `lib/secrets/team-store.ts`, call the same assertion at the top of `writeTeamSecret`. In `lib/setup/steps/secrets.ts`'s `secretsWriteRun`, catch it:
+In `lib/secrets/team-store.ts`, call the same assertion at the top of `writeTeamSecret`. In `lib/setup/steps/secrets.ts`, inside the `run` body behind `secretsWriteStep` (the function is module-private; do not export it), catch it:
 
 ```ts
     if (err instanceof UserActionableError && err.code === "team-pull-only") {
@@ -1214,7 +1259,22 @@ bun run picker:check
 bash scripts/repo-purity.sh
 ```
 
-All five must pass. The baseline before this work was green (6253 pass / 0 fail unit, 83 pass / 0 fail e2e), so any red is from this branch.
+All five must pass. The baseline before this work was green (6253 pass / 0 fail
+unit, 83 pass / 0 fail e2e), so any red is presumed to be from this branch.
+
+**Presumed, not proven.** The full suite on this repo is known to rotate
+flakes: a different test can fail run to run without any code changing. So
+before you attribute a failure to this branch, or dismiss one as noise:
+
+1. Re-run the failing file ALONE. A failure that vanishes in isolation is a
+   cross-test pollution problem, and it is still worth reporting.
+2. If it persists alone, check out clean `main` in a scratch worktree and run
+   that same file twice there. Two green runs on main means the failure is
+   yours; a red run on main means it is pre-existing and belongs in the report
+   as such, not silently fixed here.
+
+Never report a suite as green on the strength of one run that happened to
+pass, and never dismiss a red as "a known flake" without doing the above.
 
 - [ ] **Step 2: If docs:check fails**
 
