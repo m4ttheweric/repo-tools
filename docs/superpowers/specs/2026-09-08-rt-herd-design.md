@@ -4,7 +4,7 @@
 **Tickets:** SKILLS-59 (field report), SKILLS-58 (gate decisions through the bus), SKILLS-35 (watch loop drops events)
 **Repos:** rt (the facility), mattstack-skills (shepherdr engine and job template)
 **Supersedes:** the shepherd-side half of `mattstack-skills:docs/superpowers/specs/2026-08-19-shepherdr-event-bus-design.md` (herd-wait, herd-bridge, the herd DB's question and report tables) and the shepherdr adopter section of `2026-09-03-gate-facility-design.md`, which this spec completes.
-**Status:** W1 implemented (rt, branch brisk-beacon), W2 pending (mattstack-skills)
+**Status:** W1 implemented (rt, branch rt-herd-spec), W2 pending (mattstack-skills)
 
 ## Problem
 
@@ -155,10 +155,16 @@ Every verb records what it did. There is no separate bookkeeping verb.
 - `rt herd status [--herd <id>] [--json]` renders jobs with status, pane,
   open gate id, unread count, and herdr's live agent status per pane, plus
   whether lifecycle forwarding is connected.
-- `rt herd resume <id>` re-subscribes with the caller's current session
-  (idempotent on the daemon side), updates `shepherd.session`, and prints
-  `gates`, unread room messages (`rt chat read <room>` semantics), and
-  `status`. That is the entire resume checklist.
+- `rt herd list [--all] [--json]` prints one line per herd: id, status,
+  room, job count. Active herds only unless `--all`. `gates`, `status` and
+  `resume` fall back to the single active herd when exactly one exists, so
+  the id is something they look up rather than something to remember.
+- `rt herd resume [<id>]` re-subscribes with the caller's current session
+  (idempotent on the daemon side), updates `shepherd.session`, re-binds the
+  shepherd's chat handle to that session (presence keys on the session, so a
+  relaunched shepherd is otherwise unreachable), and prints `gates`, unread
+  room messages (`rt chat read <room>` semantics), and `status`. That is the
+  entire resume checklist.
 - `rt herd close <job>` closes the pane and sets `closed`; the daemon's
   lifecycle forwarder sees a `closed` job and stays silent on its
   `pane.closed`.
