@@ -17,17 +17,22 @@ describe.skipIf(!enabled)("claude plugin contract", () => {
   let market: string;
   const id = "demopack@probeorg";
 
-  function claude(args: string[]): { code: number; out: string } {
+  /** The streams are kept apart because the matchers are: isNotFound/isAlready/isAlreadyDisabled read stderr alone, so a combined string here would pass through a stream change they would not survive. */
+  function claude(args: string[]): { code: number; stdout: string; stderr: string } {
+    const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") };
+    // Explicit, because execFileSync inherits stderr by default and the error
+    // path would then hand back a null stderr for every probe below.
+    const stdio: ("ignore" | "pipe")[] = ["ignore", "pipe", "pipe"];
     try {
-      return { code: 0, out: execFileSync("claude", args, { encoding: "utf8", env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") } }) };
+      return { code: 0, stdout: execFileSync("claude", args, { encoding: "utf8", env, stdio }), stderr: "" };
     } catch (err) {
       const e = err as { status: number; stdout?: string; stderr?: string };
-      return { code: e.status ?? 1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+      return { code: e.status ?? 1, stdout: e.stdout ?? "", stderr: e.stderr ?? "" };
     }
   }
 
   function version(): string {
-    return JSON.parse(claude(["plugin", "list", "--json"]).out).find((p: { id: string }) => p.id === id).version;
+    return JSON.parse(claude(["plugin", "list", "--json"]).stdout).find((p: { id: string }) => p.id === id).version;
   }
 
   function isEnabled(): boolean {
@@ -70,7 +75,7 @@ describe.skipIf(!enabled)("claude plugin contract", () => {
   test("disable on an already-disabled pack exits non-zero saying already disabled", () => {
     const res = claude(["plugin", "disable", id]);
     expect(res.code).not.toBe(0);
-    expect(res.out).toMatch(/already disabled/i);
+    expect(res.stderr).toMatch(/already disabled/i);
   });
 
   test("uninstall clears the plugin and its enabledPlugins entry", () => {
@@ -83,14 +88,15 @@ describe.skipIf(!enabled)("claude plugin contract", () => {
     const res = claude(["plugin", "update", id, "-y"]);
     expect(res.code).not.toBe(0);
     // The exact wording moved between claude releases ("not found" -> "is not
-    // installed"); isNotFound/isNotFoundResult accept both, so the pattern
-    // pins recognition rather than freezing today's exact string.
-    expect(res.out).toMatch(/not found|not installed/i);
+    // installed"); isNotFound accepts both, so the pattern pins recognition
+    // rather than freezing today's exact string.
+    expect(res.stderr).toMatch(/not found|not installed/i);
   });
 
   test("uninstall on an absent pack matches isAlreadyGone's phrasing", () => {
     const res = claude(["plugin", "uninstall", id]);
     expect(res.code).not.toBe(0);
-    expect(res.out).toMatch(/not installed|not found/i);
+    // isAlreadyGone is the one matcher that reads both streams, so this probe does too.
+    expect(`${res.stdout}\n${res.stderr}`).toMatch(/not installed|not found/i);
   });
 });
