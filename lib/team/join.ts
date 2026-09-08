@@ -37,12 +37,15 @@ import { AUTH_FAILURE_PATTERN } from "./publish.ts";
 import { withoutUrls } from "./redact.ts";
 import type { RelayClient } from "./relay-client.ts";
 import { storedForgeToken } from "./stored-forge-token.ts";
+import { forgeLabel, probeTeamRepoAccess, type RepoAccessVerdict } from "./repo-access.ts";
+import { forgeTokenLookupReal } from "./forge-token.ts";
 
 export interface JoinResult {
   team: { slug: string; name: string; owner: string };
-  access: "ok" | "denied" | "unreachable";
+  access: "ok" | "deferred" | "no-account" | "denied" | "unreachable" | "undetermined";
   peering: "applied" | "idle" | "unavailable";
   message: string;
+  intent: "written" | "not-written";
 }
 
 /** Raised only after the clone and the relay redeem have already succeeded — the join is real, but the local age key could not be read. Deliberately NOT a `UserActionableError`: the CLI reports it and exits 1 (a machine/environment problem), never 2 (a dead invite). */
@@ -50,7 +53,6 @@ export class JoinKeyExchangeError extends Error {}
 
 const NO_TEAM: JoinResult["team"] = { slug: "", name: "", owner: "" };
 
-const NO_CREDENTIAL_PATTERN = /could not read Username/;
 const GIT_ENV = { GIT_TERMINAL_PROMPT: "0", GIT_PROTOCOL_FROM_USER: "0" };
 
 function inviteUnknownError(message = "invite not recognized or expired: ask the team owner for a new one"): UserActionableError {
@@ -67,11 +69,12 @@ function deniedResult(pointer: InvitePointer): JoinResult {
     access: "denied",
     peering: "idle",
     message: `you don't have access yet: ask ${pointer.owner} to grant you access to ${pointer.name}`,
+    intent: "written",
   };
 }
 
 function unreachableResult(team: JoinResult["team"], message: string): JoinResult {
-  return { team, access: "unreachable", peering: "idle", message };
+  return { team, access: "unreachable", peering: "idle", message, intent: "written" };
 }
 
 // A real hostname/IP[:port] — starts and ends alnum, `.`/`-` in between, an
@@ -200,37 +203,37 @@ function gitAccessResult(pointer: InvitePointer, result: ExecResult): JoinResult
   return unreachableResult(teamRefFrom(pointer), gitFailureMessage(kind, pointer.remote, result));
 }
 
+function accessFromVerdict(v: RepoAccessVerdict, pointer: InvitePointer): { access: JoinResult["access"]; message: string } {
+  const joining = `Joining ${pointer.name} (owner ${pointer.owner})`;
+  const forge = forgeLabel(forgeFromRemote(pointer.remote)?.provider);
+  const repo = stripUserinfo(pointer.remote);
+  switch (v.kind) {
+    case "ok":
+      return { access: "ok", message: joining };
+    case "no-clt":
+      return { access: "deferred", message: `${joining} - access to the team repo is checked on the next screen` };
+    case "no-account":
+      return { access: "no-account", message: `${joining}. Connect your ${forge} account on the next screen so rt can reach ${repo}.` };
+    case "denied":
+      return { access: "denied", message: `${joining}. Your ${forge} account cannot see ${repo} yet: ask ${pointer.owner} or your org admin to grant read access.` };
+    case "unreachable":
+      return { access: "unreachable", message: `${joining}. Could not reach ${repo}: ${v.detail}. The next screen re-checks it.` };
+    default:
+      return { access: "undetermined", message: `${joining}. Could not determine access to ${repo} yet: ${v.detail}. The next screen re-checks it.` };
+  }
+}
+
 export async function joinDryRun(p: Probes, relay: RelayClient, code: string): Promise<JoinResult> {
   const { idHex, key } = decodeCode(code);
 
   const pointer = await fetchPointer(relay, idHex, key);
   if (pointer === null) {
-    return unreachableResult(NO_TEAM, "could not reach the invite relay — check your network and try again");
+    return { ...unreachableResult(NO_TEAM, "could not reach the invite relay - check your network and try again"), intent: "not-written" };
   }
 
-  // Two things defer the access check to the checklist's access.team-repo
-  // row: no Command Line Tools yet (git is the xcode-select shim, which
-  // fails and raises Apple's install dialog), and no forge token yet (a
-  // private repo answers "could not read Username": nothing was refused,
-  // git had nothing to offer). That row holds the token and runs after
-  // tool.clt, so it is what proves access before Install.
-  let deferred = !(await gitUsable(p.exec));
-  if (!deferred) {
-    // --exit-code turns "repo reachable but HEAD doesn't resolve" (a brand
-    // new, still-empty team repo) into exit 2, not a failure — both 0 and 2
-    // mean the joiner can read the repo.
-    const lsRemote = await p.exec(["git", "ls-remote", "--exit-code", pointer.remote, "HEAD"], { env: GIT_ENV });
-    deferred = lsRemote.code === 128 && NO_CREDENTIAL_PATTERN.test(lsRemote.stderr);
-    if (lsRemote.code !== 0 && lsRemote.code !== 2 && !deferred) {
-      return gitAccessResult(pointer, lsRemote);
-    }
-  }
-
+  const verdict = await probeTeamRepoAccess(p, pointer.remote, await forgeTokenLookupReal(p, pointer.remote));
   writeIntent(p, { v: 1, at: p.now().toISOString(), mode: "join", join: { id: idHex, keyB64: Buffer.from(key).toString("base64"), pointer } });
-  const message = deferred
-    ? `Joining ${pointer.name} (owner ${pointer.owner}) — access to the team repo is checked on the next screen`
-    : `Joining ${pointer.name} (owner ${pointer.owner})`;
-  return { team: teamRefFrom(pointer), access: "ok", peering: "idle", message };
+  return { team: teamRefFrom(pointer), ...accessFromVerdict(verdict, pointer), peering: "idle", intent: "written" };
 }
 
 export interface JoinRedeemOpts {
@@ -433,11 +436,12 @@ export async function joinRedeem(
         access: "ok",
         peering,
         message: `joined ${pointer.name}, but could not send your key back to ${pointer.owner} — run \`rt team join\` again once the relay is reachable to finish (no new code needed)`,
+        intent: "written",
       };
     }
     throw err;
   }
 
   clearIntent(p);
-  return { team: teamRefFrom(pointer), access: "ok", peering, message: `Joined ${pointer.name} (owner ${pointer.owner})` };
+  return { team: teamRefFrom(pointer), access: "ok", peering, message: `Joined ${pointer.name} (owner ${pointer.owner})`, intent: "written" };
 }

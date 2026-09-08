@@ -145,6 +145,7 @@ describe("teamJoin", () => {
       access: "ok",
       peering: "idle",
       message: "Joining Acme (owner matt)",
+      intent: "written",
     });
     // The stdout envelope never carries the raw code back, either.
     expect(deps.lines[0]).not.toContain(CODE);
@@ -161,7 +162,7 @@ describe("teamJoin", () => {
 
     await teamJoin(["--dry-run"], {}, deps);
 
-    expect(deps.lines[0]).toContain("you don't have access yet: ask matt to grant you access to Acme");
+    expect(deps.lines[0]).toContain("ask matt or your org admin");
     expect(deps.lines[0]).not.toContain("http");
   });
 

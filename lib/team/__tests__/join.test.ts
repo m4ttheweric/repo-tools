@@ -11,6 +11,7 @@ import { JoinKeyExchangeError, joinDryRun, joinRedeem, type JoinRedeemSeams } fr
 import type { RelayClient } from "../relay-client.ts";
 import type { SecretsSeams } from "../../secrets/store.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
+import type { ExecResult } from "../../setup/probes.ts";
 
 const HOME = "/home";
 const ID_HEX = "0102030405060708090a0b0c0d0e0f10";
@@ -145,10 +146,26 @@ function gitAnswers(script: ExecScript): ExecScript {
   return (argv, opts) => (argv[0] === "xcode-select" ? { code: 0, stdout: "/Library/Developer/CommandLineTools", stderr: "" } : script(argv, opts));
 }
 
+function relayWith(pointer: InvitePointer): RelayClient {
+  return fakeRelay({ fetch: relayServing(pointer) }).client;
+}
+
+function unreachableRelay(): RelayClient {
+  return fakeRelay({
+    fetch: async () => {
+      throw new UserActionableError("relay-unreachable", "could not reach the invite relay");
+    },
+  }).client;
+}
+
+function ok(): ExecResult {
+  return { code: 0, stdout: "", stderr: "" };
+}
+
 describe("joinDryRun", () => {
   beforeEach(() => resetCltCacheForTests());
 
-  test("no Command Line Tools yet: git is never run (the xcode-select shim fails and raises Apple's dialog); access ok, intent written, message defers to the next screen", async () => {
+  test("no Command Line Tools yet: git is never run (the xcode-select shim fails and raises Apple's dialog); access deferred, intent written, message defers to the next screen", async () => {
     const seen: string[][] = [];
     const p = fakeProbes({
       home: HOME,
@@ -162,7 +179,8 @@ describe("joinDryRun", () => {
 
     const result = await joinDryRun(p, relay.client, CODE);
 
-    expect(result.access).toBe("ok");
+    expect(result.access).toBe("deferred");
+    expect(result.intent).toBe("written");
     expect(result.message).toContain("next screen");
     expect(readIntent(p)?.mode).toBe("join");
     expect(seen.some((argv) => argv[0] === "git")).toBe(false);
@@ -179,6 +197,7 @@ describe("joinDryRun", () => {
       access: "ok",
       peering: "idle",
       message: "Joining Acme (owner matt)",
+      intent: "written",
     });
 
     const raw = p.calls.writes[intentPath(HOME)];
@@ -257,43 +276,41 @@ describe("joinDryRun", () => {
     const result = await joinDryRun(p, relay.client, CODE);
 
     expect(result.access).toBe("denied");
-    expect(result.message).toBe("you don't have access yet: ask matt to grant you access to Acme");
+    expect(result.message).toContain("ask matt or your org admin");
     expect(result.message).not.toContain("http");
     expect(result.message).not.toContain("fatal:");
   });
 
   test("ls-remote exit 2 (empty repo, no HEAD) still counts as access ok", async () => {
-    const p = fakeProbes({ home: HOME, now: NOW, exec: () => ({ code: 2, stdout: "", stderr: "" }) });
+    const p = fakeProbes({ home: HOME, now: NOW, exec: gitAnswers(() => ({ code: 2, stdout: "", stderr: "" })) });
     const relay = fakeRelay();
 
     const result = await joinDryRun(p, relay.client, CODE);
     expect(result.access).toBe("ok");
+    expect(result.intent).toBe("written");
   });
 
-  // At Team Continue the joiner has connected no forge token yet (that is the
-  // next screen), so a private team repo answers "could not read Username":
-  // nothing was refused, git simply had nothing to offer. The checklist's
-  // access.team-repo row, which has the token, is what gates Install.
-  test("no credential at all (could not read Username) is not denied: access ok, intent written, message defers to the next screen", async () => {
-    const p = fakeProbes({ home: HOME, now: NOW, exec: () => ({ code: 128, stdout: "", stderr: "fatal: could not read Username for 'https://gitlab.com': terminal prompts disabled" }) });
+  test("no credential at all (could not read Username) with no token: access no-account, intent written, message directs to next screen", async () => {
+    const p = fakeProbes({ home: HOME, now: NOW, exec: gitAnswers(() => ({ code: 128, stdout: "", stderr: "fatal: could not read Username for 'https://gitlab.com': terminal prompts disabled" })) });
     const relay = fakeRelay();
 
     const result = await joinDryRun(p, relay.client, CODE);
-    expect(result.access).toBe("ok");
+    expect(result.access).toBe("no-account");
+    expect(result.intent).toBe("written");
     expect(result.message).toContain("next screen");
     expect(readIntent(p)?.mode).toBe("join");
   });
 
-  test("a non-auth git failure reports access:unreachable, message says the network, not a guess", async () => {
+  test("a non-auth git failure reports access:unreachable, message provides detail and re-check guidance", async () => {
     const p = fakeProbes({ home: HOME, exec: gitAnswers(() => ({ code: 128, stdout: "", stderr: "fatal: Could not resolve host: github.com" })) });
     const relay = fakeRelay();
 
     const result = await joinDryRun(p, relay.client, CODE);
     expect(result.access).toBe("unreachable");
-    expect(result.message).toContain("check your network");
+    expect(result.message).toContain("re-checks it");
   });
 
-  test("uses GIT_TERMINAL_PROMPT=0 and GIT_PROTOCOL_FROM_USER=0, --exit-code against the pointer's remote", async () => {
+  test("uses GIT_TERMINAL_PROMPT=0, --exit-code against the pointer's remote, and offers the forge token", async () => {
     const calls: { argv: string[]; opts?: Parameters<Probes["exec"]>[1] }[] = [];
     const p = fakeProbes({
       home: HOME,
@@ -310,7 +327,6 @@ describe("joinDryRun", () => {
     expect(git).toHaveLength(1);
     expect(git[0]!.argv).toEqual(["git", "ls-remote", "--exit-code", REMOTE, "HEAD"]);
     expect(git[0]!.opts?.env?.GIT_TERMINAL_PROMPT).toBe("0");
-    expect(git[0]!.opts?.env?.GIT_PROTOCOL_FROM_USER).toBe("0");
   });
 
   describe("a hostile pointer is rejected before it ever reaches a path join or a git argv", () => {
@@ -405,6 +421,42 @@ describe("joinDryRun", () => {
         expect(result.access).toBe("ok");
       }
     });
+  });
+
+  test("a denial writes the intent anyway, so Continue can proceed and the checklist holds the line", async () => {
+    const p = fakeProbes({ exec: gitAnswers(() => ({ code: 128, stdout: "", stderr: "remote: Permission denied" })) });
+    const r = await joinDryRun(p, relayWith(POINTER), CODE);
+    expect(r.access).toBe("denied");
+    expect(r.intent).toBe("written");
+    expect(r.message).toContain("ask matt");
+    expect(readIntent(p)?.mode).toBe("join");
+  });
+
+  test("no forge account connected says so by name", async () => {
+    const p = fakeProbes({ exec: gitAnswers(() => ({ code: 128, stdout: "", stderr: "fatal: could not read Username" })) });
+    const r = await joinDryRun(p, relayWith(POINTER), CODE);
+    expect(r.access).toBe("no-account");
+    expect(r.intent).toBe("written");
+  });
+
+  test("an unreachable relay writes nothing and still blocks", async () => {
+    const p = fakeProbes({ exec: gitAnswers(() => ok()) });
+    const r = await joinDryRun(p, unreachableRelay(), CODE);
+    expect(r.access).toBe("unreachable");
+    expect(r.intent).toBe("not-written");
+    expect(readIntent(p)).toBeNull();
+  });
+
+  test("the probe is offered rt's token, so a private repo is a verdict rather than a deferral", async () => {
+    const envs: Record<string, string>[] = [];
+    const exec = gitAnswers((argv, opts) => { envs.push((opts?.env ?? {}) as Record<string, string>); return ok(); });
+    const p = fakeProbes({
+      exec,
+      home: "/home/joiner",
+      files: { "/home/joiner/.mattstack/rt/setup-staging/rt.json": JSON.stringify({ githubToken: "gho_x" }) },
+    });
+    await joinDryRun(p, relayWith(POINTER), CODE);
+    expect(envs.some((e) => e.RT_GIT_TOKEN === "gho_x")).toBe(true);
   });
 });
 
