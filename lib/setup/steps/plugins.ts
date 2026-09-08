@@ -40,7 +40,7 @@ function isAlready(res: { stderr: string }): boolean {
 }
 
 function isNotFoundResult(res: { stderr: string }): boolean {
-  return /not found/i.test(res.stderr);
+  return /not found|not installed/i.test(res.stderr);
 }
 
 function isUnknownSubcommand(res: { stdout: string; stderr: string }): boolean {

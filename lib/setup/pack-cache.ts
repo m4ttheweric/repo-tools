@@ -198,7 +198,7 @@ function emptyResult(): ConvergeResult {
 }
 
 function isNotFound(res: ExecResult): boolean {
-  return /not found/i.test(res.stderr);
+  return /not found|not installed/i.test(res.stderr);
 }
 
 /**

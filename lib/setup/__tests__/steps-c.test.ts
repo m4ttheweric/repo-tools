@@ -534,6 +534,32 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
       expect(outcome.state).toBe("done");
       expect(execCalls.some((a) => a[2] === "install")).toBe(true);
     });
+
+    test.each([['Plugin "foo" not found'], ['Plugin "foo" is not installed']])(
+      "an update failing with %j falls through to the settlement instead of failing the step",
+      async (stderr) => {
+        const installed = BASE_PLUGINS.map((id) => ({ id, version: "1.0.0", enabled: true }));
+        const execCalls: string[][] = [];
+        const p = fakeProbes({
+          home,
+          env: { PATH: "/usr/local/bin" },
+          files: { "/usr/local/bin/claude": "bin" },
+          exec: async (argv) => {
+            execCalls.push(argv);
+            if (argv[2] === "list") return ok(JSON.stringify(installed));
+            if (argv[2] === "update") return { code: 1, stdout: "", stderr };
+            if (argv[2] === "install") return { code: 1, stdout: "", stderr: "plugin already installed" };
+            return ok("");
+          },
+        });
+        const { ctx } = makeCtx(p);
+
+        const outcome = await pluginsInstallStep.run(ctx);
+
+        expect(outcome.state).toBe("done");
+        expect(execCalls.some((a) => a[2] === "install")).toBe(true);
+      },
+    );
   });
 
   // ─── git.identity ───────────────────────────────────────────────────────
