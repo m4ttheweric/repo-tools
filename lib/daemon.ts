@@ -650,7 +650,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         ));
         sweepHandles.push(scheduleSweep(
           "gate-nudge-retry",
-          () => { void gatePush.retryDeadPanes(); },
+          async () => { await gatePush.retryDeadPanes(); },
           { bootDelayMs: 30_000, intervalMs: 30_000 },
           log,
         ));

@@ -40,6 +40,7 @@ export const GATE_SUBSCRIPTION_PHRASE = (row: Pick<GateRow, "id" | "status">) =>
   `[gate] ${row.id} is now ${row.status}; re-read the gate registry.`;
 
 const DEFAULT_DEAD_AFTER_FAILURES = 3;
+const DEFAULT_MAX_PANE_RETRIES = 20;
 
 export interface GatePush {
   /** Pane push (attended gates with a nudge) + subscription fan-out. */
@@ -70,7 +71,7 @@ export function createGatePush(opts: {
 }): GatePush {
   const { store, deliver, resolveSession, resolveAll, log } = opts;
   const deadAfterFailures = opts.deadAfterFailures ?? DEFAULT_DEAD_AFTER_FAILURES;
-  const maxPaneRetries = opts.maxPaneRetries ?? 20;
+  const maxPaneRetries = opts.maxPaneRetries ?? DEFAULT_MAX_PANE_RETRIES;
 
   // Consecutive-failure counts live only in daemon memory, not the store:
   // the store's `lastDelivery` is a single observable outcome, not a running
@@ -80,6 +81,7 @@ export function createGatePush(opts: {
   // already give a reader.
   const consecutiveFailures = new Map<string, number>();
   const paneAttempts = new Map<string, number>();
+  let paneRetriesInFlight = false;
 
   async function safeDeliver(socketPath: string, body: string, context: Record<string, unknown>): Promise<boolean> {
     try {
@@ -176,21 +178,27 @@ export function createGatePush(opts: {
       await pushToPane(row, GATE_CLOSED_PHRASE(row.id, row.closedReason));
     },
     async retryDeadPanes() {
-      let retried = 0, delivered = 0, gaveUp = 0;
-      const live = new Set<string>();
-      for (const row of store.deadPanePushes()) {
-        live.add(row.id);
-        const attempts = paneAttempts.get(row.id) ?? 0;
-        if (attempts >= maxPaneRetries) continue;
-        retried++;
-        paneAttempts.set(row.id, attempts + 1);
-        await pushToPane(row, GATE_ANSWERED_PHRASE(row.id));
-        const after = store.get(row.id);
-        if (after?.delivery?.outcome === "delivered") { delivered++; paneAttempts.delete(row.id); }
-        else if (attempts + 1 >= maxPaneRetries) { gaveUp++; log.warn({ gateId: row.id, session: row.nudge?.session }, "gate-push: pane nudge gave up; worker was never woken"); }
+      if (paneRetriesInFlight) return { retried: 0, delivered: 0, gaveUp: 0 };
+      paneRetriesInFlight = true;
+      try {
+        let retried = 0, delivered = 0, gaveUp = 0;
+        const live = new Set<string>();
+        for (const row of store.deadPanePushes()) {
+          live.add(row.id);
+          const attempts = paneAttempts.get(row.id) ?? 0;
+          if (attempts >= maxPaneRetries) continue;
+          retried++;
+          paneAttempts.set(row.id, attempts + 1);
+          await pushToPane(row, GATE_ANSWERED_PHRASE(row.id));
+          const after = store.get(row.id);
+          if (after?.delivery?.outcome === "delivered") { delivered++; paneAttempts.delete(row.id); }
+          else if (attempts + 1 >= maxPaneRetries) { gaveUp++; log.warn({ gateId: row.id, session: row.nudge?.session }, "gate-push: pane nudge gave up; worker was never woken"); }
+        }
+        for (const id of [...paneAttempts.keys()]) if (!live.has(id)) paneAttempts.delete(id);
+        return { retried, delivered, gaveUp };
+      } finally {
+        paneRetriesInFlight = false;
       }
-      for (const id of [...paneAttempts.keys()]) if (!live.has(id)) paneAttempts.delete(id);
-      return { retried, delivered, gaveUp };
     },
   };
 }

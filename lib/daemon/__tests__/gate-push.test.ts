@@ -375,4 +375,27 @@ describe("retryDeadPanes", () => {
     expect(await push.retryDeadPanes()).toEqual({ retried: 1, delivered: 0, gaveUp: 1 });
     expect(await push.retryDeadPanes()).toEqual({ retried: 0, delivered: 0, gaveUp: 0 });
   });
+
+  test("reentrancy guard returns zeros while a run is in flight", async () => {
+    const store = freshStore();
+    let deliverStarted = false;
+    let deliverResolve: (() => void) = () => {};
+    const deliverPromise = new Promise<void>((resolve) => { deliverResolve = resolve; });
+    const push = createGatePush({
+      store,
+      deliver: async () => { deliverStarted = true; await deliverPromise; return { ok: false, error: "blocked" }; },
+      resolveSession: (id) => ({ socketPath: id }),
+      log,
+      maxPaneRetries: 2,
+    });
+    const row = store.open({ subject: "herd:h/j", kind: "question", questions: qs(), nudge: { session: "w" } }).row;
+    store.answer(row.id, { q: "a" }, "shepherd");
+    store.markDelivery(row.id, "dead-pane");
+    const first = push.retryDeadPanes();
+    for (let i = 0; i < 100 && !deliverStarted; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    const second = push.retryDeadPanes();
+    expect(await second).toEqual({ retried: 0, delivered: 0, gaveUp: 0 });
+    deliverResolve();
+    expect(await first).toEqual({ retried: 1, delivered: 0, gaveUp: 0 });
+  });
 });
