@@ -283,7 +283,7 @@ git commit -m "pack-cache: shared plugin-list parser and readServedPacks"
 
 **Interfaces:**
 - Consumes: `ExecResult` from `./probes.ts`.
-- Produces: `ClaudeRunner`, `SettleOutcome`, `settlePack(run, id, opts)`, and the constants `SETTLE_EXEC_TIMEOUT_MS`, `SETTLEMENT_MAX_MS`, `PACK_EXEC_TIMEOUT_MS`, `CONVERGE_BUDGET_MS`.
+- Produces: `ClaudeRunner`, `SettleOutcome`, `settlePack(runner, id, opts)`, and the constants `SETTLE_EXEC_TIMEOUT_MS`, `SETTLEMENT_MAX_MS`, `PACK_EXEC_TIMEOUT_MS`, `CONVERGE_BUDGET_MS`. `settlePack` never enables: a trusted pack is returned `installed` for the caller to enable.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -367,16 +367,17 @@ describe("settlePack", () => {
     expect(r.verbs).toEqual(["install"]);
   });
 
-  test("a trusted (non-team) pack is enabled instead of disabled", async () => {
-    const r = runner({ install: ok, enable: ok });
+  test("a trusted (non-team) pack is installed and handed back, never disabled and never enabled here", async () => {
+    const r = runner({ install: ok });
     expect(await settlePack(r, "p@m", { teamAuthored: false })).toEqual({ kind: "installed", id: "p@m" });
-    expect(r.verbs).toEqual(["install", "enable"]);
+    // The caller owns the enable, so this function issues exactly one command.
+    expect(r.verbs).toEqual(["install"]);
   });
 
-  test("a trusted pack whose enable fails is NOT rolled back", async () => {
-    const r = runner({ install: ok, enable: fail("boom") });
+  test("a trusted pack is never rolled back, even though a team pack would be", async () => {
+    const r = runner({ install: ok, disable: fail("boom"), uninstall: ok });
     expect(await settlePack(r, "p@m", { teamAuthored: false })).toEqual({ kind: "installed", id: "p@m" });
-    expect(r.verbs).toEqual(["install", "enable"]);
+    expect(r.verbs).not.toContain("uninstall");
   });
 });
 ```
@@ -448,12 +449,10 @@ export async function settlePack(runner: ClaudeRunner, id: string, opts: { teamA
     return { kind: "failed", id, detail: install.stderr.trim() || `install exited ${install.code}`, stage: "install", code: install.code };
   }
 
-  if (!opts.teamAuthored) {
-    // Enable is best-effort for rt's own baseline: an older claude without the
-    // subcommand must not fail an otherwise-good install.
-    await runner.run(["plugin", "enable", id], SETTLE_EXEC_TIMEOUT_MS);
-    return { kind: "installed", id };
-  }
+  // A trusted plugin is installed and handed back. Enabling it is the caller's
+  // job, so every trusted-only rule (and its logging) lives in one place; this
+  // function is "install a pack and make sure it is not left enabled".
+  if (!opts.teamAuthored) return { kind: "installed", id };
 
   const disable = await runner.run(["plugin", "disable", id], SETTLE_EXEC_TIMEOUT_MS);
   if (disable.code === 0 || isAlreadyDisabled(disable)) return { kind: "installed", id };
@@ -469,6 +468,11 @@ export async function settlePack(runner: ClaudeRunner, id: string, opts: { teamA
 
 Run: `bun test lib/setup/__tests__/pack-cache-settle.test.ts`
 Expected: PASS, 11 tests.
+
+Note what the two trusted cases pin: `settlePack` issues exactly `["install"]`
+for a trusted pack, and never reaches the rollback arm. If a future change makes
+it enable again, the first assertion fails, which is what keeps the enable in one
+place.
 
 - [ ] **Step 5: Commit**
 
@@ -1453,13 +1457,13 @@ Swap the per-plugin body for the shared sequence:
       // dedupe below is what makes that harmless.
       const outcome = await settlePack(runner, plugin, { teamAuthored });
 
-      // settlePack returns `current` before its enable when install reports
-      // "already installed", which is right for a team pack (rt did not install
-      // it, so it does not touch its enablement) and wrong for a trusted one,
-      // which today falls through to the enable at plugins.ts:186. Reachable:
-      // a plugin installed at another scope is absent from this scope's listing
-      // while install still reports it already installed.
-      if (outcome.kind === "current" && !teamAuthored) {
+      // Every trusted enable goes through here, both the fresh install
+      // (`installed`) and the pack that turned out to be already present
+      // (`current`, reachable when a plugin installed at another scope is absent
+      // from this scope's listing while install still reports it installed).
+      // settlePack deliberately does not enable, so this is the only site and
+      // the only place the result gets logged.
+      if (!teamAuthored && (outcome.kind === "installed" || outcome.kind === "current")) {
         await enableTrusted(runner, plugin, dir);
       }
       if (outcome.kind === "failed") {
@@ -1491,7 +1495,7 @@ function isNotFoundResult(res: { stderr: string }): boolean {
 ```
 
 ```ts
-  /** Best-effort, and logged: an older claude without the subcommand must never fail an otherwise-good install, but a silent failure leaves a disabled baseline plugin with no signal anywhere. */
+  /** The single site every trusted enable goes through. Best-effort, and logged: an older claude without the subcommand must never fail an otherwise-good install, but a silent failure would leave a disabled baseline plugin with no signal anywhere. */
   async function enableTrusted(runner: ClaudeRunner, plugin: string, dir: string): Promise<void> {
     const enable = await runner.run(["plugin", "enable", plugin], SETTLE_EXEC_TIMEOUT_MS);
     if (enable.code !== 0 && !isAlready(enable) && !isUnknownSubcommand(enable)) {
