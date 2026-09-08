@@ -391,13 +391,17 @@ the listing: such a pack is never installed by the converge and never updated by
 it, whether it is present or absent, and its row says `version unknown`. Unknown
 is not a mismatch, so it is never stale either.
 
-That rule is what keeps object-form sources out. An object-form pack's install
-would be a network fetch, while the 30 s settlement constant was measured against
-a local directory copy; a slow fetch would time out, take the exit-124 path,
-uninstall, record `failed`, and repeat on every pull forever. It also removes the
-opposite oddity: an object-form pack that did get installed would carry a null
-served version permanently, so every later converge would skip it as unknown,
-leaving it installed once and never updated.
+That rule is what keeps object-form sources out of the CONVERGE. An object-form
+pack's install would be a network fetch, while the 30 s settlement constant was
+measured against a local directory copy; a slow fetch would time out, take the
+exit-124 path, uninstall, record `failed`, and repeat on every pull forever.
+
+What the rule does not do is stop `plugins.install` installing such a pack at
+setup time, which it always has. So an object-form pack lands once and is then
+never updated, because its null served version makes every later converge skip
+it as unknown. That is a real limitation rather than a tidy outcome, and it is
+why the row says rt does not track that source's version instead of claiming rt
+does not manage it.
 
 The rule is stated here rather than left implied by the `listed` guard in the
 sequence above, because the two readings describe the same pack and only agree
