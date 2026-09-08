@@ -25,7 +25,7 @@ const flush = () => new Promise<void>((resolve) => { globalThis.setTimeout(resol
 const warned = (log: ReturnType<typeof fakeLog>, needle: string): boolean =>
   log.calls.some((c) => c.level === "warn" && JSON.stringify(c.args).includes(needle));
 
-function harness() {
+function harness(opts: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), "rt-team-snapshots-"));
   const started: { spec: SnapshotSpec; stopped: boolean }[] = [];
   const watchCalls: { path: string; options: { recursive: boolean } }[] = [];
@@ -70,6 +70,7 @@ function harness() {
       const i = pending.findIndex((t) => t.id === (h as unknown as number));
       if (i >= 0) pending.splice(i, 1);
     },
+    ...opts,
   };
   return {
     root, started, deps, log, settings, watchCalls, pending,
@@ -276,6 +277,27 @@ describe("startTeamSnapshots", () => {
     await handle.ready;
     expect(h.started[0]!.spec.pull?.intervalSec).toBe(30);
     expect(h.pending.map((t) => t.ms)).toEqual([30_000]);
+    handle.stop();
+    h.cleanup();
+  });
+
+  test("each clone's spec carries an onPulled that converges that slug's packs", async () => {
+    const converged: string[] = [];
+    const h = harness({
+      converge: async (_p: unknown, slug: string) => {
+        converged.push(slug);
+        return { updated: [], installed: [], rolledBack: [], current: [], skipped: [], failed: [] };
+      },
+    });
+    clone(h.root, "acme");
+    const handle = startTeamSnapshots(h.deps);
+    await handle.ready;
+
+    const spec = h.started[0]!.spec;
+    expect(typeof spec.pull?.onPulled).toBe("function");
+    await spec.pull!.onPulled!("fast-forwarded");
+    expect(converged).toEqual(["acme"]);
+
     handle.stop();
     h.cleanup();
   });
