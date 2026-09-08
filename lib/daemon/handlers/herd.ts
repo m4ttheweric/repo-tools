@@ -99,6 +99,19 @@ export function createHerdHandlers(deps: HerdDeps) {
     };
   }
 
+  /** Never throws: a pane that cannot be closed (herdr gone, stale binary,
+      non-zero exit) must not block the caller's own bookkeeping. */
+  async function closePane(socket: string | null, pane: string, context: Record<string, unknown>): Promise<boolean> {
+    try {
+      const r = await deps.herdrRunnerFor(socket)(["pane", "close", pane]);
+      if (r.exitCode === 0) return true;
+      log.warn({ ...context, pane, exitCode: r.exitCode }, "herd: pane close failed");
+    } catch (err) {
+      log.warn({ err, ...context, pane }, "herd: pane close threw");
+    }
+    return false;
+  }
+
   function uniqueHerdId(name: string): string {
     const base = mintHerdId(name);
     if (!store.get(base)) return base;
@@ -164,10 +177,7 @@ export function createHerdHandlers(deps: HerdDeps) {
       const herd = store.get(herdId);
       const job = herd ? store.getJob(herdId, name) : null;
       if (!herd || !job) return { ok: false, error: `unknown job "${name}" in herd "${herdId}"` };
-      if (job.pane) {
-        const r = await deps.herdrRunnerFor(herd.herdrSocket)(["pane", "close", job.pane]);
-        if (r.exitCode !== 0) log.warn({ herd: herdId, job: name, pane: job.pane }, "herd: pane close failed; marking closed anyway");
-      }
+      if (job.pane) await closePane(herd.herdrSocket, job.pane, { herd: herdId, job: name });
       store.setJobStatus(herdId, name, "closed");
       return { ok: true, data: { job: name, status: "closed" } };
     },
