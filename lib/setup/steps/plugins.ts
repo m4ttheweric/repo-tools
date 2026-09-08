@@ -191,9 +191,6 @@ async function pluginsInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
     const installedBefore = listed.code === 0 ? parsePluginList(listed.stdout) : null;
     // Guessing "nothing is installed" here would send every plugin down the
     // install path, and install re-enables a pack the member disabled.
-    // Consequence worth knowing: a `claude` too old for `plugin list --json`
-    // now fails this step where it used to install. RETRY_REMEDY's "open Claude
-    // Code once" is the wrong advice for that, hence a remedy of its own.
     if (!installedBefore) {
       return {
         state: "failed",
@@ -210,7 +207,9 @@ async function pluginsInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
       // flip a deliberately disabled pack back on.
       if (byId.has(plugin)) {
         const updated = await runner.run(["plugin", "update", plugin, "-y"], PACK_EXEC_TIMEOUT_MS);
-        if (updated.code !== 0 && !isNotFoundResult(updated)) {
+        // A claude without `plugin update` must fall through to the settlement,
+        // not fail the step with a remedy that cannot help.
+        if (updated.code !== 0 && !isNotFoundResult(updated) && !isUnknownSubcommand(updated)) {
           return { state: "failed", detail: `claude plugin update exited ${updated.code}`, remedy: RETRY_REMEDY };
         }
         if (updated.code === 0) {
@@ -226,7 +225,7 @@ async function pluginsInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
 
       // `settled` accumulates across config dirs, so an id can repeat; the
       // dedupe below is what makes that harmless.
-      const outcome = await settlePack(runner, plugin, { teamAuthored });
+      const outcome = await settlePack(runner, plugin, { teamAuthored, timeoutMs: PLUGIN_EXEC_TIMEOUT_MS });
 
       // Every trusted enable goes through here, both the fresh install
       // (`installed`) and the pack that turned out to be already present
@@ -238,9 +237,8 @@ async function pluginsInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
         await enableTrusted(runner, plugin, dir);
       }
       if (outcome.kind === "failed") {
-        // The install-stage wording is the contract's documented example
-        // (docs/superpowers/specs/2026-08-21-rt-setup-contract.md) and an
-        // existing test asserts it verbatim.
+        // The install-stage wording is the setup contract's detail string for a
+        // failed install and must stay byte-identical.
         const detail = outcome.stage === "install" ? `claude plugin install exited ${outcome.code}` : `claude plugin ${plugin}: ${outcome.detail}`;
         return { state: "failed", detail, remedy: RETRY_REMEDY };
       }

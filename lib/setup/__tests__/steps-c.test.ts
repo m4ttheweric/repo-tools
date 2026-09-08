@@ -424,6 +424,116 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
 
       expect(readSetupState(p).plugins).not.toContain("acme-skills@acme-market");
     });
+
+    test("a fresh trusted install is enabled by the step, since the install itself leaves it off", async () => {
+      const teamDir = join(home, ".mattstack", "teams", "acme");
+      const marketplacePath = join(teamDir, ".claude-plugin", "marketplace.json");
+      // `install` deliberately does not touch `enabled`, so only an explicit
+      // `enable` can flip one on.
+      const enabled: Record<string, boolean> = {};
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin", [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills" }] }) },
+        exec: async (argv) => {
+          const [, , verb, id] = argv;
+          if (verb === "list") return ok("[]");
+          if (verb === "enable") {
+            enabled[id!] = true;
+            return ok("");
+          }
+          if (verb === "disable") {
+            enabled[id!] = false;
+            return ok("");
+          }
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { team: { slug: "acme", name: "Acme", mode: "none" } });
+
+      const outcome = await pluginsInstallStep.run(ctx);
+
+      expect(outcome.state).toBe("done");
+      for (const base of BASE_PLUGINS) expect(enabled[base]).toBe(true);
+      expect(enabled["acme-skills@acme-market"]).toBe(false);
+    });
+
+    test("a trusted plugin missing from the listing whose install reports already-installed still gets its enable", async () => {
+      const teamDir = join(home, ".mattstack", "teams", "acme");
+      const marketplacePath = join(teamDir, ".claude-plugin", "marketplace.json");
+      // The `current` route: installed at another scope, so possibly disabled
+      // there, and settlePack returns without ever enabling it.
+      const enabled: Record<string, boolean> = {};
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin", [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills" }] }) },
+        exec: async (argv) => {
+          const [, , verb, id] = argv;
+          if (verb === "list") return ok("[]");
+          if (verb === "install") return { code: 1, stdout: "", stderr: "plugin already installed" };
+          if (verb === "enable") {
+            enabled[id!] = true;
+            return ok("");
+          }
+          if (verb === "disable") {
+            enabled[id!] = false;
+            return ok("");
+          }
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { team: { slug: "acme", name: "Acme", mode: "none" } });
+
+      const outcome = await pluginsInstallStep.run(ctx);
+
+      expect(outcome.state).toBe("done");
+      for (const base of BASE_PLUGINS) expect(enabled[base]).toBe(true);
+      expect("acme-skills@acme-market" in enabled).toBe(false);
+    });
+
+    test("the settlement runs at the step's own 60s timeout, not the converge budget's 30s", async () => {
+      const execCalls: { argv: string[]; timeoutMs?: number }[] = [];
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin" },
+        exec: async (argv, opts) => {
+          execCalls.push({ argv, timeoutMs: opts?.timeoutMs });
+          return argv[2] === "list" ? ok("[]") : ok("");
+        },
+      });
+      const { ctx } = makeCtx(p);
+
+      expect((await pluginsInstallStep.run(ctx)).state).toBe("done");
+
+      const installs = execCalls.filter((c) => c.argv[2] === "install");
+      expect(installs.length).toBe(BASE_PLUGINS.length);
+      expect(installs.every((c) => c.timeoutMs === 60_000)).toBe(true);
+    });
+
+    test("a claude without `plugin update` settles the installed plugin instead of failing the step", async () => {
+      const installed = BASE_PLUGINS.map((id) => ({ id, version: "1.0.0", enabled: true }));
+      const execCalls: string[][] = [];
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin" },
+        exec: async (argv) => {
+          execCalls.push(argv);
+          if (argv[2] === "list") return ok(JSON.stringify(installed));
+          if (argv[2] === "update") return { code: 1, stdout: "", stderr: "error: unknown subcommand 'update'" };
+          if (argv[2] === "install") return { code: 1, stdout: "", stderr: "plugin already installed" };
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p);
+
+      const outcome = await pluginsInstallStep.run(ctx);
+
+      expect(outcome.state).toBe("done");
+      expect(execCalls.some((a) => a[2] === "install")).toBe(true);
+    });
   });
 
   // ─── git.identity ───────────────────────────────────────────────────────

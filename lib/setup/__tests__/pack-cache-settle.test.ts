@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { settlePack, type ClaudeRunner } from "../pack-cache.ts";
+import { settlePack, SETTLE_EXEC_TIMEOUT_MS, type ClaudeRunner } from "../pack-cache.ts";
 import type { ExecResult } from "../probes.ts";
 
 const ok: ExecResult = { code: 0, stdout: "", stderr: "" };
@@ -86,5 +86,29 @@ describe("settlePack", () => {
     const r = runner({ install: ok, disable: fail("boom"), uninstall: ok });
     expect(await settlePack(r, "p@m", { teamAuthored: false })).toEqual({ kind: "installed", id: "p@m" });
     expect(r.verbs).not.toContain("uninstall");
+  });
+
+  test("with no timeout given, every exec keeps the converge budget's SETTLE_EXEC_TIMEOUT_MS", async () => {
+    const timeouts: number[] = [];
+    const r: ClaudeRunner = {
+      async run(_args: string[], timeoutMs: number): Promise<ExecResult> {
+        timeouts.push(timeoutMs);
+        return ok;
+      },
+    };
+    await settlePack(r, "p@m", { teamAuthored: true });
+    expect(timeouts).toEqual([SETTLE_EXEC_TIMEOUT_MS, SETTLE_EXEC_TIMEOUT_MS]);
+  });
+
+  test("a caller with no budget of its own sets the timeout for every settlement exec", async () => {
+    const timeouts: number[] = [];
+    const r: ClaudeRunner = {
+      async run(args: string[], timeoutMs: number): Promise<ExecResult> {
+        timeouts.push(timeoutMs);
+        return args[1] === "disable" ? fail("boom") : ok;
+      },
+    };
+    await settlePack(r, "p@m", { teamAuthored: true, timeoutMs: 60_000 });
+    expect(timeouts).toEqual([60_000, 60_000, 60_000]);
   });
 });

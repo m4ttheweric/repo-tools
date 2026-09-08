@@ -149,8 +149,11 @@ function isAlreadyGone(res: ExecResult): boolean {
  * invariant every branch preserves: on return the pack is installed-and-settled
  * or not installed, never installed-and-enabled for a team-authored pack.
  */
-export async function settlePack(runner: ClaudeRunner, id: string, opts: { teamAuthored: boolean }): Promise<SettleOutcome> {
-  const install = await runner.run(["plugin", "install", id], SETTLE_EXEC_TIMEOUT_MS);
+export async function settlePack(runner: ClaudeRunner, id: string, opts: { teamAuthored: boolean; timeoutMs?: number }): Promise<SettleOutcome> {
+  // SETTLE_EXEC_TIMEOUT_MS is the converge budget's arithmetic, not a property
+  // of the sequence: a caller with no budget of its own passes its own timeout.
+  const timeoutMs = opts.timeoutMs ?? SETTLE_EXEC_TIMEOUT_MS;
+  const install = await runner.run(["plugin", "install", id], timeoutMs);
 
   if (install.code !== 0) {
     // A pack that already exists appeared underneath this run, so rt did not
@@ -159,7 +162,7 @@ export async function settlePack(runner: ClaudeRunner, id: string, opts: { teamA
     // SIGKILL can land after the install wrote its records, so a timeout cannot
     // be read as "nothing happened"; undo it before reporting failure.
     if (install.code === 124) {
-      const undo = await runner.run(["plugin", "uninstall", id], SETTLE_EXEC_TIMEOUT_MS);
+      const undo = await runner.run(["plugin", "uninstall", id], timeoutMs);
       const detail = `install timed out; rollback ${undo.code === 0 || isAlreadyGone(undo) ? "ok" : `failed: ${undo.stderr.trim()}`}`;
       return { kind: "failed", id, detail, stage: "install", code: install.code };
     }
@@ -171,10 +174,10 @@ export async function settlePack(runner: ClaudeRunner, id: string, opts: { teamA
   // function is "install a pack and make sure it is not left enabled".
   if (!opts.teamAuthored) return { kind: "installed", id };
 
-  const disable = await runner.run(["plugin", "disable", id], SETTLE_EXEC_TIMEOUT_MS);
+  const disable = await runner.run(["plugin", "disable", id], timeoutMs);
   if (disable.code === 0 || isAlreadyDisabled(disable)) return { kind: "installed", id };
 
-  const undo = await runner.run(["plugin", "uninstall", id], SETTLE_EXEC_TIMEOUT_MS);
+  const undo = await runner.run(["plugin", "uninstall", id], timeoutMs);
   const why = disable.stderr.trim() || `disable exited ${disable.code}`;
   if (undo.code === 0 || isAlreadyGone(undo)) return { kind: "rolledBack", id, detail: why };
   return { kind: "failed", id, detail: `${why}; rollback failed: ${undo.stderr.trim()}`, stage: "rollback", code: undo.code };
