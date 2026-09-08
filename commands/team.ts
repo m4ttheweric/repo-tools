@@ -235,6 +235,8 @@ export async function teamInvite(args: string[], _ctx: CommandContext = {}, deps
       return;
     }
 
+    deps.print(result.link);
+    deps.print("");
     deps.print(result.pasteBlock);
     if (result.forgeAccess !== "granted") {
       deps.print("");

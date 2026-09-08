@@ -30,12 +30,38 @@ export const INVITE_TTL_DAYS = 7;
 /** Forge usernames only (letters, digits, `.`, `_`, `-`; must start alphanumeric) — this handle also becomes a `board.members` entry and a mint-record key, so it is checked before anything downstream trusts it. */
 const HANDLE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,38}$/;
 
-export function pasteBlock(code: string, downloadUrl = "https://github.com/m4ttstack/rt/releases/latest"): string {
-  return `Install mattstack from ${downloadUrl}, then open mattstack://join/${code} or paste the code into Setup → Join a team.\n\nInvite code:\n${code}`;
+export const DEFAULT_JOIN_BASE_URL = "https://mattstack.dev/join";
+
+/** Mirrors DEFAULT_INVITE_RELAY_URL/RT_INVITE_RELAY_URL in relay-client.ts: same class of value, read only by rt, and the VM harness needs to point it elsewhere without a team store. */
+export function joinLinkBase(env: Record<string, string | undefined>): string {
+  return env.RT_JOIN_BASE_URL || DEFAULT_JOIN_BASE_URL;
+}
+
+/** The code lives in the fragment, so it never reaches the page's server. */
+export function joinLink(base: string, code: string): string {
+  return `${base}#${code}`;
+}
+
+export function pasteBlock(code: string, opts: { link: string; teamName: string; downloadUrl?: string }): string {
+  const downloadUrl = opts.downloadUrl ?? "https://github.com/m4ttstack/rt/releases/latest";
+  return [
+    `You have been invited to the ${opts.teamName} mattstack team.`,
+    "",
+    `  ${opts.link}`,
+    "",
+    "That page installs mattstack and hands the invite to the app.",
+    `Already have mattstack? Open mattstack://join/${code}, or paste this code`,
+    "into Setup -> Join a team:",
+    "",
+    code,
+    "",
+    `Download by hand: ${downloadUrl}`,
+  ].join("\n");
 }
 
 export interface InviteResult {
   code: string;
+  link: string;
   expiresAt: string;
   pasteBlock: string;
   forgeAccess: ForgeAccess;
@@ -184,5 +210,6 @@ export async function mintInvite(p: Probes, relay: RelayClient, opts: MintInvite
     }
   }
 
-  return { code, expiresAt, pasteBlock: pasteBlock(code), forgeAccess, manualSteps };
+  const link = joinLink(joinLinkBase(p.env), code);
+  return { code, link, expiresAt, pasteBlock: pasteBlock(code, { link, teamName: pointer.name }), forgeAccess, manualSteps };
 }

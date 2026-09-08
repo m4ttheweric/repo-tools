@@ -7,7 +7,7 @@ import { fakeProbes } from "../../lib/setup/__tests__/fakes.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../lib/home/age-key.ts";
 import type { ExecScript } from "../../lib/setup/__tests__/fakes.ts";
 import type { Probes } from "../../lib/setup/probes.ts";
-import { pasteBlock } from "../../lib/team/invite.ts";
+import { joinLink, joinLinkBase, pasteBlock } from "../../lib/team/invite.ts";
 
 const FAKE_PUBLIC_KEY = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 const FAKE_PRIVATE_KEY = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ";
@@ -245,19 +245,20 @@ describe("teamInvite", () => {
 
     expect(deps.lines).toHaveLength(1);
     const parsed = JSON.parse(deps.lines[0]!);
-    expect(Object.keys(parsed).sort()).toEqual(["at", "code", "contract", "expiresAt", "forgeAccess", "manualSteps", "pasteBlock"]);
+    expect(Object.keys(parsed).sort()).toEqual(["at", "code", "contract", "expiresAt", "forgeAccess", "link", "manualSteps", "pasteBlock"]);
     expect(typeof parsed.at).toBe("string");
     // `code` is a fresh random secret every mint — every other field is exact, and pasteBlock is exact once code is known.
     expect(typeof parsed.code).toBe("string");
     expect(parsed.contract).toBe(1);
     expect(parsed.expiresAt).toBe("2026-01-08T00:00:00.000Z");
+    expect(parsed.link).toBe(joinLink(joinLinkBase({}), parsed.code));
     // "skipped" is the default shape since MAT-387: rt does not administer
     // membership on a team repo unless explicitly permitted. The value is one
     // the contract and the app already accept ("granted"|"manual"|"skipped").
     expect(parsed.forgeAccess).toBe("skipped");
     expect(parsed.manualSteps).toHaveLength(1);
     expect((parsed.manualSteps as string[])[0]).toContain("Ask whoever administers");
-    expect(parsed.pasteBlock).toBe(pasteBlock(parsed.code));
+    expect(parsed.pasteBlock).toBe(pasteBlock(parsed.code, { link: parsed.link, teamName: "Acme Team" }));
   });
 
   test("missing --handle, --json: exits 2 with the usage envelope", async () => {
@@ -278,12 +279,20 @@ describe("teamInvite", () => {
     expect(deps.lines[0]).toContain("usage:");
   });
 
+  test("team invite prints the join link on its own line", async () => {
+    const deps = inviteDeps();
+    await teamInvite(["--handle", "bob"], {}, deps);
+
+    expect(deps.lines[0]).toMatch(/^https:\/\/mattstack\.dev\/join#/);
+  });
+
   test("human output names who to ask, since rt does not manage membership", async () => {
     const deps = inviteDeps({ exec: ghExec({ code: 127, stdout: "", stderr: "ENOENT: gh" }) });
     await teamInvite(["--handle", "zaphod"], {}, deps);
 
-    expect(deps.lines[0]).toContain("mattstack://join/");
+    expect(deps.lines[0]).toMatch(/^https:\/\/mattstack\.dev\/join#/);
     const rest = deps.lines.slice(1).join("\n");
+    expect(rest).toContain("mattstack://join/");
     expect(rest).toContain("forge access is skipped");
     expect(rest).toContain("Ask whoever administers");
     expect(rest).toContain("zaphod");
