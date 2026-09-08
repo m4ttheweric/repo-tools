@@ -183,9 +183,11 @@ export interface ConvergeResult {
  *  a SetupState-backed one. Both implementations also expose a read-only view of
  *  the other store, which is what makes read-both / write-own possible. */
 export interface PendingDisableStore {
-  read(): string[];
-  readForeign(): string[];
-  write(ids: string[]): void;
+  /** Ids this side owns, plus the confirmations it has written. */
+  read(): { ids: string[]; confirmed: string[] };
+  /** The other side's, best-effort; an absent store reads as empty. */
+  readForeign(): { ids: string[]; confirmed: string[] };
+  write(next: { ids: string[]; confirmed: string[] }): void;
 }
 export async function convergePackCache(p: Probes, slug: string, store: PendingDisableStore, log: Logger): Promise<ConvergeResult>
 ```
@@ -244,8 +246,9 @@ path, which by design leaves enablement alone. That is precisely the ruling
 violation this spec exists to prevent, so it may not be left to a log line.
 
 An id is recorded when this run installed the pack and its `disable` did not
-confirm, and every converge and every `plugins.install` begins by retrying the
-ids it already holds.
+confirm, and every converge and every `plugins.install` begins by retrying every
+id in the union of both stores (see "read both, write own" below), minus the
+ones a confirmation has retired.
 
 **The retry has bounded exits, which the probes above determine.** `disable`
 exits 1 both when the pack is already disabled and when it is not installed at
@@ -286,15 +289,45 @@ converge only ever read its own kv, nothing would heal it until a human happened
 to re-run setup, which may never happen. The converge therefore retries CLI-owned
 ids too, and simply does not write that store.
 
-Clearing across stores needs no cross-writes, because the clearing rule is a
-fact about the world rather than a message between writers. Once the converge
-has disabled a CLI-owned pack, the id left in `SetupState` is stale, and the next
-`plugins.install` clears it under the same listing rule in the table above: the
-listing shows the pack present with `enabled: false`, so the id is dropped
-without a `disable` call. The status row applies that identical listing check, so
-a stale id never renders `needs-you` for a pack that is in fact already disabled.
+**A healed foreign id must be retired explicitly, or read-both becomes a stomp
+loop.** The listing rule alone does not close this. The converge disables a
+CLI-owned pack but cannot remove the id from `SetupState`, so the id stays in the
+union; if the member then deliberately enables that pack, the listing shows
+`enabled: true`, the "already disabled" clear branch does not fire, and the next
+converge disables it again... every interval, until the member happens to run
+`rt setup apply`. That is rt overriding a deliberate enable on a loop, under a
+row that wrongly says it could not disable anything.
+
+So a successful disable of a *foreign* id writes a confirmation into the
+disabling side's own store, `confirmed:<id>@<time>`, and the three rules below
+retire it:
+
+- the retry union is `(own ids + foreign ids)` minus every id confirmed in
+  either store, so a confirmed id is never retried again by anyone;
+- the owning side drops its own id as soon as it observes a confirmation for it
+  in the foreign store;
+- the confirming side drops its marker once the owning store no longer lists
+  that id, so markers cannot accumulate.
+
+That handshake terminates in two runs: the converge disables and confirms, the
+next `plugins.install` drops the id, the next converge drops the marker. After
+it, the pack is absent from the union permanently, the row clears, and a
+deliberate enable is never touched again... which is what makes the promise
+above ("enabling after that row clears is never overridden") actually true.
+
+An id a side owns *itself* needs no confirmation: it drops the id directly.
 
 No lock is needed anywhere: writes stay single-owner, and reads are advisory.
+
+**How each side reaches the other's store.** The CLI reads the daemon's kv
+through `getStateDb("daemon")`, and must do so lazily and best-effort, for the
+reason `home-snapshot.ts:374-381` documents: state.db must not be opened before
+`startDaemon()` has opened it daemon-flavored, and on a machine where the daemon
+has never run there is no db at all. An unreadable or absent db yields an empty
+foreign list, never an error and never a created db. The daemon reads
+`SetupState` through the existing `readSetupState(probes)`, which already returns
+`EMPTY_STATE` for a missing file. The status row uses these same two accessors,
+so all three call sites agree about what "either store" means.
 
 **The dedicated key is not a detail.** `persistState` writes the whole
 `HOME_SNAPSHOT_KEY` (`"state"`) row wholesale on every cycle
@@ -413,11 +446,16 @@ pack yields exactly one row:
 | installed, versions match, enabled | `ready` | `<v> installed and enabled`, plus the restart caveat |
 | installed, versions differ | `needs-you` | `installed <a>, team serves <b>` |
 | either version unknown | `ready` | `<v> installed, served version unknown` |
-| id is in either pendingDisable store | `needs-you` | `rt could not disable this pack; retrying` |
+| id is in the retry union (in either store, not confirmed in either) **and** the listing does not already show the pack disabled | `needs-you` | `rt could not disable this pack; retrying` |
 
 The pending row takes precedence over the `ready` rows above it. Without it a
 pending pack would render as `installed and enabled`, which is the opposite of
 both rt's intent and what is about to happen to it.
+
+Both qualifications in that condition are required, and each matches a test. The
+confirmation check keeps a healed-but-not-yet-retired id from showing a retry
+that will never run; the listing check keeps a stale id from claiming rt could
+not disable a pack that is sitting there disabled.
 
 **The restart caveat sits on the converged row, not the stale one.** On a stale
 row the cache itself still holds the old version, so a restart changes nothing
@@ -500,8 +538,10 @@ rather than retrying forever; an unknown-subcommand `disable` clears the id as
 terminal; a listing showing the pack already disabled clears it with no
 `disable` call; repeated failures never grow the stored array (the dedupe case);
 a failed disable recorded by `plugins.install` is retried and cleared by the
-daemon converge, which never writes `SetupState`, and the stale CLI-side id then
-self-clears on the next `plugins.install` under the listing rule; a pending id
+daemon converge, which never writes `SetupState`; the confirmation handshake
+retires that foreign id in two runs and the markers do not accumulate; a member
+who enables a healed pack is **not** disabled again on the next converge (the
+stomp-loop regression test); a pending id
 whose pack the listing shows already disabled renders no `needs-you` row; the
 pending list survives a snapshot cycle (the dedicated kv key, not the wholesale-
 overwritten state row); the retry preamble stops at its cap and leaves the rest
