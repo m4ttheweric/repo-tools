@@ -11,6 +11,7 @@ import { JoinKeyExchangeError, joinDryRun, joinRedeem, type JoinRedeemSeams } fr
 import type { RelayClient } from "../relay-client.ts";
 import type { SecretsSeams } from "../../secrets/store.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
+import { readTeamLocal } from "../team-local.ts";
 
 const HOME = "/home";
 const ID_HEX = "0102030405060708090a0b0c0d0e0f10";
@@ -486,6 +487,23 @@ describe("joinRedeem", () => {
 
     await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
     expect(p.calls.writes[intentPath(HOME)]).toBeDefined();
+  });
+
+  test("records joinedByRt BEFORE the clone runs, so the daemon watcher cannot race it", async () => {
+    const seen: string[] = [];
+    const p = redeemProbes({
+      exec: (argv) => {
+        if (argv[1] === "clone") seen.push(readTeamLocal(p, POINTER.team).joinedByRt ? "flag-first" : "clone-first");
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams();
+
+    await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+
+    expect(seen).toEqual(["flag-first"]);
+    expect(readTeamLocal(p, POINTER.team).joinedByRt).toBe(true);
   });
 
   test("switchboard url + a readable admin token → peering applied, POSTs /peer/join with the joiner's forge login", async () => {

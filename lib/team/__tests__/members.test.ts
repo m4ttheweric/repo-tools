@@ -170,7 +170,7 @@ function fakeMembersSeams(overrides: Partial<MembersSeams> = {}): { seams: Membe
       if (key === "board.members" || key === "mattstack.roster") store = { ...store, [key]: value };
     }) as MembersSeams["writeSetting"],
     revokeRead: async () => ({ access: "revoked", manualSteps: [] }),
-    readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
+    readTeamLocal: () => ({ createdByRt: true, joinedByRt: false, rtMayManageMembership: true }),
     forgeToken: async () => null,
     warn: () => {},
     ...overrides,
@@ -532,7 +532,7 @@ describe("membersRemove", () => {
     const revokeCalls: unknown[] = [];
     const { seams } = fakeMembersSeams({
       readTeamStore: () => ({ "board.members": [{ username: "matt" }, { username: "alice", agePublicKey: ALICE_PUBLIC_KEY }] }),
-      readTeamLocal: () => ({ createdByRt: false, rtMayManageMembership: false }),
+      readTeamLocal: () => ({ createdByRt: false, joinedByRt: false, rtMayManageMembership: false }),
       revokeRead: async (...args) => {
         revokeCalls.push(args);
         return { access: "revoked", manualSteps: [] };
@@ -562,7 +562,7 @@ describe("membersRemove", () => {
     const revokeCalls: { remote: string; handle: string; token: string | null | undefined }[] = [];
     const { seams, writes } = fakeMembersSeams({
       readTeamStore: () => ({ "board.members": [{ username: "matt" }, { username: "alice", agePublicKey: ALICE_PUBLIC_KEY }] }),
-      readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
+      readTeamLocal: () => ({ createdByRt: true, joinedByRt: false, rtMayManageMembership: true }),
       forgeToken: async () => "ghp-secret",
       revokeRead: async (_p, r, h, token) => {
         revokeCalls.push({ remote: r, handle: h, token });
@@ -710,7 +710,7 @@ describe("membersRemove", () => {
       const { seams, writes } = fakeMembersSeams({
         // Simulates the roster having already recorded the owner's key under "alice" — the exact end state the echo attack (defense i) exists to prevent, tested here in isolation so defense ii is proven to hold even if defense i were bypassed.
         readTeamStore: () => ({ "board.members": [{ username: "alice", agePublicKey: OWNER_PUBLIC_KEY }] }),
-        readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
+        readTeamLocal: () => ({ createdByRt: true, joinedByRt: false, rtMayManageMembership: true }),
         revokeRead: async (...args) => {
           revokeCalls.push(args);
           return { access: "revoked", manualSteps: [] };

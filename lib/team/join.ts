@@ -37,6 +37,7 @@ import { AUTH_FAILURE_PATTERN } from "./publish.ts";
 import { withoutUrls } from "./redact.ts";
 import type { RelayClient } from "./relay-client.ts";
 import { storedForgeToken } from "./stored-forge-token.ts";
+import { updateTeamLocal } from "./team-local.ts";
 
 export interface JoinResult {
   team: { slug: string; name: string; owner: string };
@@ -342,6 +343,12 @@ export async function joinRedeem(
   writeIntent(p, { v: 1, at: p.now().toISOString(), mode: "join", join: { id: idHex, keyB64: Buffer.from(key).toString("base64"), pointer } });
 
   const dir = join(p.home, ".mattstack", "teams", pointer.team);
+
+  // Ordering is the point: the clone creates ~/.mattstack/teams/<slug>, which
+  // is what the daemon's teams/ watcher fires on. Recording after the clone
+  // races that watcher for the mode of the engine it starts.
+  updateTeamLocal(p, pointer.team, { joinedByRt: true });
+
   const token = await seams.forgeToken(p, pointer.remote);
   const existingOrigin = p.exists(dir) ? readOrigin(p, dir) : null;
   let alreadyCloned = false;

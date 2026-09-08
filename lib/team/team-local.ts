@@ -25,6 +25,14 @@ export interface TeamLocalRecord {
    */
   createdByRt: boolean;
   /**
+   * This machine's clone arrived by redeeming an invite. Provenance, like
+   * `createdByRt`, and confers nothing on its own: it decides only that this
+   * machine's snapshot engine is pull-only, because members do not push the
+   * team repo. Absent means false, so a clone that predates this field keeps
+   * pushing rather than silently going inert.
+   */
+  joinedByRt: boolean;
+  /**
    * The operator has asked rt to add and remove people on this team's remote
    * when teammates are added or removed.
    *
@@ -41,7 +49,7 @@ export function teamLocalPath(home: string, slug: string): string {
   return join(home, ".mattstack", "rt", "teams", `${slug}.json`);
 }
 
-const EMPTY: TeamLocalRecord = { createdByRt: false, rtMayManageMembership: false };
+const EMPTY: TeamLocalRecord = { createdByRt: false, joinedByRt: false, rtMayManageMembership: false };
 
 /** Unreadable, absent, or malformed all yield the same all-false record: a machine that cannot prove it holds a permission does not hold it. */
 export function readTeamLocal(p: Pick<Probes, "readFile" | "home">, slug: string): TeamLocalRecord {
@@ -51,6 +59,7 @@ export function readTeamLocal(p: Pick<Probes, "readFile" | "home">, slug: string
     const parsed = JSON.parse(raw) as Partial<TeamLocalRecord>;
     return {
       createdByRt: parsed.createdByRt === true,
+      joinedByRt: parsed.joinedByRt === true,
       rtMayManageMembership: parsed.rtMayManageMembership === true,
     };
   } catch {
