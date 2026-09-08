@@ -45,6 +45,11 @@ protocol FileOps {
     func copyItem(from: URL, to: URL) throws
     func write(_ contents: String, to path: URL) throws
     func rename(from: URL, to: URL) throws
+    /// Same-filesystem move that atomically REPLACES an existing regular-file
+    /// destination (POSIX rename(2)), where `rename`/moveItem throws on one that
+    /// exists. The single-file installs (plist, sudoers) rename a sibling stage
+    /// over the live file, so re-install and upgrade must clobber, not refuse.
+    func replaceFile(from: URL, to: URL) throws
     func removeTree(_ path: URL) throws
     /// Set before the rename into place: what launchd and sudo read must never
     /// have been readable or writable at looser terms, even briefly.
@@ -145,6 +150,12 @@ struct RealFileOps: FileOps {
     }
 
     func rename(from: URL, to: URL) throws { try fm.moveItem(at: from, to: to) }
+
+    func replaceFile(from: URL, to: URL) throws {
+        guard Darwin.rename(from.path, to.path) == 0 else {
+            throw ProxyInstallError("rename(\(from.path) -> \(to.path)): \(String(cString: strerror(errno)))")
+        }
+    }
 
     func removeTree(_ path: URL) throws {
         guard try stat(path) != nil else { return }

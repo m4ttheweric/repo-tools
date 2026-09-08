@@ -66,11 +66,19 @@ struct InstallOp {
         }
         Report.step("copy: ok")
 
-        let plist = URL(fileURLWithPath: LaunchdPlist.path)
+        // Trust before any privileged write: it installs the CA with the copied
+        // portless and touches neither launchd nor sudoers, so a keychain hiccup
+        // (portless's own docs warn securityd can wedge) leaves a previous
+        // install exactly as it was, with nothing to undo.
+        let trust = runCommand([ProxyPaths.node, ProxyPaths.cli, "trust"], env: portlessEnvironment)
+        guard trust.status == 0 else {
+            Report.step("trust failed (\(trust.status)): \(condensed(trust.output))")
+            return ExitCode.osErr
+        }
+        Report.step("trust: ok")
+
         let plistStage = URL(fileURLWithPath: LaunchdPlist.stagePath)
-        var plistPreexisted = false
         do {
-            plistPreexisted = try fs.stat(plist) != nil
             // launchd creates the log FILE but not its directory, and CopyStep's
             // rename replaces the whole tree, so this runs after the copy.
             try fs.mkdir(URL(fileURLWithPath: ProxyPaths.logDir))
@@ -84,7 +92,10 @@ struct InstallOp {
                 to: plistStage)
             try fs.setMode(plistStage, 0o644)
             try fs.setOwner(plistStage, uid: 0, gid: 0)
-            try fs.rename(from: plistStage, to: plist)
+            // Atomic clobber: rename(2) replaces the live plist in one step, so
+            // re-install and upgrade succeed where moveItem refuses an existing
+            // destination. A failed rename leaves the old plist in place.
+            try fs.replaceFile(from: plistStage, to: URL(fileURLWithPath: LaunchdPlist.path))
         } catch {
             Report.step("plist failed: \(error)")
             discard(plistStage)
@@ -92,17 +103,7 @@ struct InstallOp {
         }
         Report.step("plist: ok")
 
-        let trust = runCommand([ProxyPaths.node, ProxyPaths.cli, "trust"], env: portlessEnvironment)
-        guard trust.status == 0 else {
-            Report.step("trust failed (\(trust.status)): \(condensed(trust.output))")
-            rollbackPlist(preexisted: plistPreexisted)
-            return ExitCode.osErr
-        }
-        Report.step("trust: ok")
-
         let sudoersStage = URL(fileURLWithPath: Sudoers.stagePath)
-        // One cleanup path for the whole step: a candidate rule that is not
-        // going to be installed must never outlive the run that wrote it.
         var sudoersFailure = ExitCode.software
         do {
             try fs.write(Sudoers.render(user: user.name), to: sudoersStage)
@@ -113,22 +114,23 @@ struct InstallOp {
                 sudoersFailure = ExitCode.dataErr
                 throw ProxyInstallError("rejected by visudo (\(check.status)): \(condensed(check.output))")
             }
-            try fs.rename(from: sudoersStage, to: URL(fileURLWithPath: Sudoers.path))
+            try fs.replaceFile(from: sudoersStage, to: URL(fileURLWithPath: Sudoers.path))
         } catch {
             Report.step("sudoers failed: \(error)")
             discard(sudoersStage)
-            rollbackPlist(preexisted: plistPreexisted)
+            teardown()
             return sudoersFailure
         }
         Report.step("sudoers: ok")
 
         // A first install has no service to tear down, so bootout's failure is
-        // the normal case; re-install is the update path, and there it matters.
+        // the normal case; on a re-install it drops the running daemon so
+        // bootstrap can load the replaced plist.
         _ = runCommand(["/bin/launchctl", "bootout", "system/" + LaunchdPlist.label])
         let bootstrap = runCommand(["/bin/launchctl", "bootstrap", "system", LaunchdPlist.path])
         guard bootstrap.status == 0 else {
             Report.step("bootstrap failed (\(bootstrap.status)): \(condensed(bootstrap.output))")
-            rollbackPlist(preexisted: plistPreexisted)
+            teardown()
             return ExitCode.osErr
         }
         Report.step("bootstrap: ok")
@@ -158,14 +160,16 @@ struct InstallOp {
         }
     }
 
-    /// lib/setup/steps/services.ts reads the plist's mere presence as "already
-    /// installed" and skips, so a plist this run wrote and then failed behind
-    /// would make every later Install report done over a proxy that was never
-    /// bootstrapped. One that was already there is the previous, working install
-    /// and outlives a failed upgrade.
-    private func rollbackPlist(preexisted: Bool) {
-        guard !preexisted else { return }
+    /// A mid-sequence failure must leave no partial privileged state: no
+    /// sudoers rule pointing at a daemon that is not running, and no plist for a
+    /// daemon that never bootstrapped (services.ts reads a lone plist as
+    /// "already installed" and skips). Every failure past the plist write
+    /// therefore drops the daemon and both files, reaching the clean
+    /// not-installed state a re-run installs from cleanly.
+    private func teardown() {
+        _ = runCommand(["/bin/launchctl", "bootout", "system/" + LaunchdPlist.label])
         discard(URL(fileURLWithPath: LaunchdPlist.path))
+        discard(URL(fileURLWithPath: Sudoers.path))
     }
 
     private func discard(_ path: URL) {

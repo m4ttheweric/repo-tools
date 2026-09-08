@@ -40,6 +40,9 @@ final class FakeFileOps: FileOps {
     private(set) var renames: [(from: String, to: String)] = []
     private(set) var removed: [String] = []
     private(set) var treeHashedPath: URL?
+    // Models moveItem's non-clobber semantics: rename onto a path in here throws,
+    // so a CopyStep test cannot pass against a rename RealFileOps would refuse.
+    private var livePaths: Set<String> = []
 
     var renamedIntoPlace: Bool { renames.contains { $0.to == target.path } }
     var stagedSiblingOfTarget: Bool {
@@ -65,6 +68,7 @@ final class FakeFileOps: FileOps {
         self.targetAlreadyInstalled = targetAlreadyInstalled
         self.stagedNodeIsSymlink = stagedNodeIsSymlink
         self.stagedPortlessIsSymlink = stagedPortlessIsSymlink
+        if targetAlreadyInstalled { livePaths = [target.path] }
     }
 
     func list(_ root: URL) throws -> [String] { [] }
@@ -119,11 +123,25 @@ final class FakeFileOps: FileOps {
     }
 
     func rename(from: URL, to: URL) throws {
+        if livePaths.contains(to.path) {
+            throw ProxyInstallError("moveItem: \(to.path) already exists")
+        }
+        livePaths.remove(from.path)
+        livePaths.insert(to.path)
         log.append("rename \(from.lastPathComponent)")
         renames.append((from: from.path, to: to.path))
     }
 
+    // CopyStep moves directory trees, never single files, so it never calls this.
+    func replaceFile(from: URL, to: URL) throws {
+        livePaths.remove(from.path)
+        livePaths.insert(to.path)
+        log.append("replace \(to.lastPathComponent)")
+        renames.append((from: from.path, to: to.path))
+    }
+
     func removeTree(_ path: URL) throws {
+        livePaths.remove(path.path)
         log.append("remove \(path.lastPathComponent)")
         removed.append(path.path)
     }
