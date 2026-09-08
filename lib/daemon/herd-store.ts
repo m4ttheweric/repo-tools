@@ -21,6 +21,7 @@ export interface HerdRow {
 
 export interface HerdJobRow {
   herd: string; name: string; worktree: string; branch: string | null;
+  /** Registry tree name from provision (a pool slot name, not the branch); what `worktree:dispose` keys on. Null for `--dir` jobs. */
   tree: string | null;
   pane: string | null; agentSession: string | null; agentId: string | null;
   handle: string; status: HerdJobStatus; disposable: boolean;
@@ -171,7 +172,7 @@ export function createHerdStore(opts: { dbPath: string; log: Logger }): HerdStor
       } else {
         db.run(
           "UPDATE herd_jobs SET worktree = ?, branch = ?, tree = ?, pane = ?, agentSession = ?, agentId = ?, handle = ?, status = ?, disposable = ?, updatedAt = ? WHERE herd = ? AND name = ?",
-          [input.worktree, input.branch ?? existing.branch, input.tree ?? existing.tree, input.pane ?? existing.pane, input.agentSession ?? existing.agentSession, input.agentId ?? existing.agentId, input.handle, input.status, input.disposable === undefined ? existing.disposable : (input.disposable ? 1 : 0), now, input.herd, input.name],
+          [input.worktree, input.branch !== undefined ? input.branch : existing.branch, input.tree !== undefined ? input.tree : existing.tree, input.pane !== undefined ? input.pane : existing.pane, input.agentSession !== undefined ? input.agentSession : existing.agentSession, input.agentId !== undefined ? input.agentId : existing.agentId, input.handle, input.status, input.disposable === undefined ? existing.disposable : (input.disposable ? 1 : 0), now, input.herd, input.name],
         );
       }
       return toJob(getJobStmt.get(input.herd, input.name) as JobColumns);
