@@ -427,10 +427,11 @@ function isAlreadyGone(res: ExecResult): boolean {
 }
 
 /**
- * Installs a pack and settles its enable state, undoing the install rather than
- * leaving a team pack enabled. The invariant every branch preserves: on return
- * the pack is installed-and-settled or not installed, never installed-and-enabled
- * for a team-authored pack.
+ * Installs a pack and, for a team-authored one, settles its enable state by
+ * undoing the install rather than leaving the pack enabled. A trusted pack is
+ * installed and handed straight back; its enable belongs to the caller. The
+ * invariant every branch preserves: on return the pack is installed-and-settled
+ * or not installed, never installed-and-enabled for a team-authored pack.
  */
 export async function settlePack(runner: ClaudeRunner, id: string, opts: { teamAuthored: boolean }): Promise<SettleOutcome> {
   const install = await runner.run(["plugin", "install", id], SETTLE_EXEC_TIMEOUT_MS);
@@ -1267,7 +1268,9 @@ when the outcome is wrong, which is exactly how the current defect stayed green:
       expect(enables.map((c) => c.argv.at(-1))).not.toContain("acme-skills@acme-market");
 ```
 
-Delete those two lines and put nothing in their place. That test's exec keeps no
+Delete those two lines and put nothing in their place, along with the
+`const enables = execCalls.filter(...)` binding above them, which has no
+consumers left once they go. That test's exec keeps no
 enablement record, and Step 4's rule for it is to change only the `list` reply,
 so there is nothing there to assert against. The coverage those lines were
 standing in for is asserted literally by the first new test below, which is the
