@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import pino from "pino";
@@ -271,5 +271,89 @@ describe("worker verbs", () => {
     expect(res.ok).toBe(true);
     expect(herdrCalls).toContainEqual(["pane", "close", "w9:p7"]);
     expect(store.getJob(herd, "review-cv-1")!.status).toBe("closed");
+  });
+});
+
+describe("herd:spawn", () => {
+  async function started() {
+    const hx = harness();
+    const s = await hx.h["herd:start"](START);
+    if (!s.ok) throw new Error(s.error);
+    return { ...hx, herd: s.data.herd, room: s.data.room };
+  }
+
+  test("provisions, starts the agent in the herd workspace with env and handle, signs the pane in, records the job", async () => {
+    const { h, store, agentCalls, worktreeCalls, chatCalls, herd, room, dir } = await started();
+    const res = await h["herd:spawn"]({ herd, job: "cv-1", brief: "# job\ndo the thing", model: "opus", account: "2" });
+    if (!res.ok) throw new Error(res.error);
+    expect(worktreeCalls[0]).toMatchObject({ verb: "provision", p: { repoName: "gh:m4ttstack/rt", branch: "cv-1", disposal: "job" } });
+    expect(agentCalls[0]).toMatchObject({
+      repo: "gh:m4ttstack/rt", cwd: "/w/cv-1", surface: "herdr", model: "opus", account: "2",
+      workspace: `herd: ${herd}`, tab: "cv-1", label: "cv-1", caller: `herd:${herd}`, handle: "cv-1",
+      env: { HERD_ID: herd, HERD_JOB: "cv-1", HERD_ROOM: room },
+    });
+    expect(agentCalls[0].prompt).toContain("do the thing");
+    expect(agentCalls[0].herdrSocket).toBeUndefined();
+    const signIn = chatCalls.filter((c) => c.verb === "sign-in")[1]!;
+    expect(signIn.payload).toMatchObject({ sessionId: "sess-w1", baseHandle: "cv-1", pane: "w9:p1", noRoom: true });
+    expect(chatCalls.filter((c) => c.verb === "join")[1]!.payload).toMatchObject({ room, handle: "cv-1", pane: "w9:p1" });
+    expect(store.getJob(herd, "cv-1")).toMatchObject({ worktree: "/w/cv-1", branch: "cv-1", tree: "cv-1", pane: "w9:p1", agentSession: "sess-w1", agentId: "ag-1", handle: "cv-1", status: "spawning", disposable: false });
+    expect(res.data).toMatchObject({ pane: "w9:p1", worktree: "/w/cv-1", tree: "cv-1", sessionId: "sess-w1" });
+    expect(readFileSync(join(dir, "herds", herd, "cv-1", "job.md"), "utf8")).toContain("do the thing");
+  });
+
+  test("--dir skips provisioning; a respawn closes the old pane first and reuses the stored job.md", async () => {
+    const { h, store, agentCalls, worktreeCalls, herdrCalls, herd } = await started();
+    const first = await h["herd:spawn"]({ herd, job: "cv-1", brief: "the brief", dir: "/existing/tree" });
+    if (!first.ok) throw new Error(first.error);
+    expect(worktreeCalls).toEqual([]);
+    expect(store.getJob(herd, "cv-1")!.tree).toBeNull();
+    expect(herdrCalls).toEqual([]);
+    const again = await h["herd:spawn"]({ herd, job: "cv-1", dir: "/existing/tree" });
+    if (!again.ok) throw new Error(again.error);
+    expect(herdrCalls).toContainEqual(["pane", "close", "w9:p1"]);
+    expect(agentCalls[1].prompt).toContain("the brief");
+    expect(agentCalls[1].cwd).toBe("/existing/tree");
+  });
+
+  test("--disposable is recorded on the job row", async () => {
+    const { h, store, herd } = await started();
+    const res = await h["herd:spawn"]({ herd, job: "review-cv-1", brief: "review it", dir: "/w/cv-1", disposable: true });
+    expect(res.ok).toBe(true);
+    expect(store.getJob(herd, "review-cv-1")!.disposable).toBe(true);
+  });
+
+  test("a hidden herd passes its socket to agent:start", async () => {
+    const hx = harness();
+    const s = await hx.h["herd:start"]({ ...START, hidden: true });
+    if (!s.ok) throw new Error(s.error);
+    const res = await hx.h["herd:spawn"]({ herd: s.data.herd, job: "cv-1", brief: "b", dir: "/t" });
+    expect(res.ok).toBe(true);
+    expect(hx.agentCalls[0].herdrSocket).toBe("/tmp/hidden.sock");
+  });
+
+  test("refuses a bad job name, a new job with no brief, and an unknown herd", async () => {
+    const { h, herd } = await started();
+    expect((await h["herd:spawn"]({ herd, job: "Bad", brief: "b" })).ok).toBe(false);
+    expect((await h["herd:spawn"]({ herd, job: "cv-2" })).ok).toBe(false);
+    expect((await h["herd:spawn"]({ herd: "nope", job: "cv-1", brief: "b" })).ok).toBe(false);
+  });
+});
+
+describe("herd:gates", () => {
+  test("lists herd-prefixed gates plus run gates whose worktree matches a job", async () => {
+    const hx = harness({ runWorktree: (id) => (id === "run-1" ? "/w/cv-1" : id === "run-2" ? "/elsewhere" : null) });
+    const s = await hx.h["herd:start"](START);
+    if (!s.ok) throw new Error(s.error);
+    const herd = s.data.herd;
+    hx.store.upsertJob({ herd, name: "cv-1", worktree: "/w/cv-1", handle: "cv-1", status: "active" });
+    const Q = [{ id: "q", label: "?", multi: false, options: ["a"] }];
+    const g1 = hx.gateStore.open({ subject: `herd:${herd}/cv-1`, kind: "question", questions: Q }).row.id;
+    const g2 = hx.gateStore.open({ subject: "run:run-1", kind: "clarify", questions: Q }).row.id;
+    hx.gateStore.open({ subject: "run:run-2", kind: "clarify", questions: Q });
+    hx.gateStore.open({ subject: "run:run-3", kind: "clarify", questions: Q });
+    const res = await hx.h["herd:gates"]({ herd });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data.gates.map((g) => g.id).sort()).toEqual([g1, g2].sort());
   });
 });

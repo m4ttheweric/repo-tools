@@ -3,12 +3,13 @@
  * existing handlers (gate, chat, agent, worktree) so the herd owns no
  * delivery, CAS, or spawn semantics of its own.
  */
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { Logger } from "pino";
 import type { Commands, GateRow, HerdStatusData } from "../../../packages/rt-client/src/commands.ts";
 import type { CommandResult } from "./types.ts";
 import type { HerdStore, HerdJobRow } from "../herd-store.ts";
-import { herdSubject, mintHerdId } from "../herd-store.ts";
+import { herdSubject, isValidJobName, mintHerdId } from "../herd-store.ts";
 import type { GatesStore } from "../gates-store.ts";
 import type { createGateHandlers } from "./gate.ts";
 import type { createChatHandlers } from "./chat.ts";
@@ -180,6 +181,70 @@ export function createHerdHandlers(deps: HerdDeps) {
       if (job.pane) await closePane(herd.herdrSocket, job.pane, { herd: herdId, job: name });
       store.setJobStatus(herdId, name, "closed");
       return { ok: true, data: { job: name, status: "closed" } };
+    },
+
+    "herd:spawn": async (raw: unknown): Promise<CommandResult<"herd:spawn">> => {
+      const p = raw as Commands["herd:spawn"]["payload"] | undefined;
+      const herdId = str(p?.herd); const name = str(p?.job);
+      if (!herdId || !name) return { ok: false, error: "herd and job are required" };
+      if (!isValidJobName(name)) return { ok: false, error: `invalid job name "${name}" (must match ^[a-z][a-z0-9_-]{0,31}$)` };
+      const herd = store.get(herdId);
+      if (!herd) return { ok: false, error: `unknown herd "${herdId}"` };
+
+      const dir = jobDir(deps.jobsRoot, herdId, name);
+      const briefPath = join(dir, "job.md");
+      let brief = str(p?.brief);
+      if (brief) { mkdirSync(dir, { recursive: true }); writeFileSync(briefPath, brief); }
+      else if (existsSync(briefPath)) brief = readFileSync(briefPath, "utf8");
+      else return { ok: false, error: `no brief: pass --brief <file> (none stored at ${briefPath})` };
+
+      const prior = store.getJob(herdId, name);
+      // agent:start dedups on the tab label and would focus the dead tab
+      // instead of launching; the old pane goes first.
+      if (prior?.pane) await closePane(herd.herdrSocket, prior.pane, { herd: herdId, job: name });
+
+      let worktree = str(p?.dir); let branch: string | null = prior?.branch ?? null; let tree: string | null = prior?.tree ?? null;
+      if (!worktree) {
+        const prov = await deps.worktree["worktree:provision"]({ repoName: herd.repo, branch: name, disposal: "job", owner: `herd:${herdId}` });
+        if (!prov.ok) return { ok: false, error: `provision failed: ${prov.error}` };
+        worktree = prov.data.path as string; branch = prov.data.branch as string; tree = prov.data.tree as string;
+      }
+      const disposable = p?.disposable === true;
+
+      store.upsertJob({ herd: herdId, name, worktree, branch, tree, handle: name, status: "spawning", disposable });
+      const started = await deps.agent["agent:start"]({
+        repo: herd.repo, cwd: worktree, prompt: brief, surface: "herdr",
+        ...(str(p?.model) && { model: p!.model }), ...(str(p?.effort) && { effort: p!.effort }), ...(str(p?.account) && { account: p!.account }),
+        label: name, caller: `herd:${herdId}`, workspace: herd.workspace, tab: name, handle: name,
+        env: { HERD_ID: herdId, HERD_JOB: name, HERD_ROOM: herd.room },
+        ...(herd.herdrSocket && { herdrSocket: herd.herdrSocket }),
+      });
+      if (!started.ok) return started;
+      const rec = started.data;
+      store.upsertJob({ herd: herdId, name, worktree, branch, tree, handle: name, status: "spawning", pane: rec.paneId ?? null, agentSession: rec.sessionId, agentId: rec.id });
+
+      const signIn = await deps.chat["chat:sign-in"]({ sessionId: rec.sessionId, baseHandle: name, pane: rec.paneId, cwd: worktree, noRoom: true });
+      if (!signIn.ok) log.warn({ herd: herdId, job: name, error: signIn.error }, "herd: worker chat sign-in failed; reports will not deliver until it signs in");
+      const handle = signIn.ok ? signIn.data.handle : name;
+      const joined = await deps.chat["chat:join"]({ room: herd.room, handle, pane: rec.paneId, cwd: worktree });
+      if (!joined.ok) log.warn({ herd: herdId, job: name, error: joined.error }, "herd: worker room join failed");
+      if (handle !== name) store.upsertJob({ herd: herdId, name, worktree, branch, tree, handle, status: "spawning" });
+
+      return { ok: true, data: { herd: herdId, job: name, pane: rec.paneId ?? "", worktree, branch, tree, agentId: rec.id, sessionId: rec.sessionId, handle } };
+    },
+
+    "herd:gates": async (raw: unknown): Promise<CommandResult<"herd:gates">> => {
+      const herdId = str((raw as { herd?: unknown } | undefined)?.herd);
+      if (!herdId) return { ok: false, error: "herd is required" };
+      if (!store.get(herdId)) return { ok: false, error: `unknown herd "${herdId}"` };
+      const own = await openHerdGates(herdId);
+      const runs = await deps.gate["gate:list"]({ open: true, subjectPrefix: "run:" });
+      const trees = new Set(store.jobs(herdId).map((j) => j.worktree));
+      const matched = runs.ok ? runs.data.gates.filter((g) => {
+        const wt = deps.runWorktree(g.subject.slice("run:".length));
+        return wt !== null && trees.has(wt);
+      }) : [];
+      return { ok: true, data: { gates: [...own, ...matched] } };
     },
 
     "herd:ask": async (raw: unknown): Promise<CommandResult<"herd:ask">> => {

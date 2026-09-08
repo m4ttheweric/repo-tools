@@ -630,6 +630,9 @@ export interface Commands {
   "herd:resume": { payload: { herd: string; session: string }; data: { subscription: string; gates: GateRow[]; unread: number; status: HerdStatusData } };
   "herd:status": { payload: { herd: string }; data: HerdStatusData };
   "herd:close":  { payload: { herd: string; job: string }; data: { job: string; status: "closed" } };
+  /** `brief` is the brief TEXT, not a path: the CLI reads the file. It is stored at `<jobsRoot>/<herd>/<job>/job.md`, so a respawn with `dir` and no `brief` reads it back. */
+  "herd:spawn":  { payload: { herd: string; job: string; brief?: string; dir?: string; model?: string; effort?: string; account?: string; disposable?: boolean }; data: { herd: string; job: string; pane: string; worktree: string; branch: string | null; tree: string | null; agentId: string; sessionId: string; handle: string } };
+  "herd:gates":  { payload: { herd: string }; data: { gates: GateRow[] } };
   "herd:ask":       { payload: { herd: string; job: string; session: string; pane?: string; questions: GateQuestion[]; context?: string }; data: { gate: string } };
   "herd:milestone": { payload: { herd: string; job: string; session: string; pane?: string; artifact: string; summary?: string }; data: { gate: string; message: number } };
   "herd:answer":    { payload: { gate: string }; data: { gate: string; status: GateStatus; answer: GateAnswer | null; closedReason: GateRow["closedReason"] } };
@@ -742,6 +745,8 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "herd:resume",
   "herd:status",
   "herd:close",
+  "herd:spawn",
+  "herd:gates",
   "herd:ask",
   "herd:milestone",
   "herd:answer",
