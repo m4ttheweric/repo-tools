@@ -432,7 +432,7 @@ describe("mintInvite", () => {
 // ─── membership permission (MAT-387) ─────────────────────────────────────────
 
 describe("mintInvite: forge membership is not rt's to grant", () => {
-  test("default (permission absent): never calls the forge, and says who to ask", async () => {
+  test("permission absent on a repo rt created: never calls the forge, and points at the opt-in verb", async () => {
     const grantCalls: string[] = [];
     const { seams } = baseSeams({
       readTeamLocal: () => ({ createdByRt: true, joinedByRt: false, rtMayManageMembership: false }),
@@ -447,7 +447,7 @@ describe("mintInvite: forge membership is not rt's to grant", () => {
 
     expect(grantCalls).toEqual([]);
     expect(result.forgeAccess).toBe("skipped");
-    expect(result.manualSteps.join(" ")).toContain("Ask whoever administers");
+    expect(result.manualSteps.join(" ")).toContain("rt team manage-membership on --team acme");
     expect(result.manualSteps.join(" ")).toContain("alice");
   });
 
@@ -490,5 +490,42 @@ describe("mintInvite: forge membership is not rt's to grant", () => {
     const result = await mintInvite(probesWithRemote(REMOTE), relay.client, { slug: SLUG, handle: "alice", now: NOW }, seams);
     expect(relay.createCalls.length).toBe(1);
     expect(result.code.length).toBeGreaterThan(0);
+  });
+
+  test("createdByRt without the permission points at the opt-in verb, and still never calls the forge", async () => {
+    let called = false;
+    const { seams } = baseSeams({
+      readTeamLocal: () => ({ createdByRt: true, joinedByRt: false, rtMayManageMembership: false }),
+      grantRead: async () => { called = true; return { access: "granted" as const, manualSteps: [] }; },
+    });
+    const relay = fakeRelayClient();
+    const result = await mintInvite(probesWithRemote(REMOTE), relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
+
+    expect(called).toBe(false);
+    expect(result.forgeAccess).toBe("skipped");
+    expect(result.manualSteps[0]).toContain("rt team manage-membership on --team acme");
+    expect(result.manualSteps).toContain("Open https://github.com/acme/widgets/settings/access");
+  });
+
+  test("the permission alone does not grant on a repo rt did not create", async () => {
+    let called = false;
+    const { seams } = baseSeams({
+      readTeamLocal: () => ({ createdByRt: false, joinedByRt: false, rtMayManageMembership: true }),
+      grantRead: async () => { called = true; return { access: "granted" as const, manualSteps: [] }; },
+    });
+    const relay = fakeRelayClient();
+    const result = await mintInvite(probesWithRemote(REMOTE), relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
+
+    expect(called).toBe(false);
+    expect(result.forgeAccess).toBe("skipped");
+  });
+
+  test("an unparseable remote still gets the admin sentence, never an empty steps list", async () => {
+    const { seams } = baseSeams({ readTeamLocal: () => ({ createdByRt: false, joinedByRt: false, rtMayManageMembership: false }) });
+    const relay = fakeRelayClient();
+    const result = await mintInvite(probesWithRemote("weird://host/thing"), relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
+
+    expect(result.manualSteps.length).toBeGreaterThan(0);
+    expect(result.manualSteps.at(-1)).toContain("Ask whoever administers");
   });
 });
