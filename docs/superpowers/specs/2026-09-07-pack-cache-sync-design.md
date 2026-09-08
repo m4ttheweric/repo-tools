@@ -38,7 +38,8 @@ enablement back to `true`.
 ## Evidence
 
 claude 2.1.263, isolated HOME, fixture directory marketplace with a one-skill
-pack:
+pack. Re-verified on 2.1.265 during implementation, which is where the wording
+change in the update-not-installed row was caught:
 
 | Probe | Result |
 | --- | --- |
@@ -47,7 +48,7 @@ pack:
 | `claude plugin update` with no prior `claude plugin marketplace update` | picks up the new version; a directory source needs no refresh step |
 | `claude plugin install` on an installed-but-stale plugin | version moves **and** enablement flips back to `true` |
 | `claude plugin update` when already current | exit 0, "already at the latest version" |
-| `claude plugin update` for a plugin that is not installed | exit 1, stderr `Plugin "<name>" not found` |
+| `claude plugin update` for a plugin that is not installed | exit 1. The wording is version-dependent: 2.1.263 said `Plugin "<name>" not found`, 2.1.265 says `Plugin "<name>" is not installed`. |
 | `claude plugin list --json --available` after a source bump | `available: []`, so it cannot detect the newer version |
 | `claude plugin disable <id>` on an enabled pack | exit 0 |
 | `claude plugin disable <id>` on an already-disabled pack | exit 1, stderr `is already disabled` |
@@ -244,7 +245,7 @@ per pack:
   listed, installed version is null      -> skipped      ("version unknown")
   otherwise (differs, or not listed)     -> update <id> -y
         exit 0                  -> updated. Enable state untouched.
-        exit != 0, "not found"  -> absent: install, then settle enablement
+        exit != 0, absent       -> install, then settle enablement
         exit != 0, otherwise    -> failed, recorded with stderr
 ```
 
@@ -258,6 +259,14 @@ skipped. A pack with no entry at all **and a readable served version** is not
 installed, and takes the update-then-install branch. Collapsing the two would
 drop the ruling that a pack added after a member joined installs on the next
 converging pull, because every such pack arrives with no listing entry.
+
+**The absence match must accept both of the CLI's phrasings.** 2.1.263 said
+`not found` and 2.1.265 says `is not installed` for the same condition, so the
+matcher tests for either, which is the tolerance `isAlreadyGone` already carries
+in the same module. Pinning one spelling turns every absent pack into a `failed`
+record and silently disables the post-join install path with the whole unit
+suite still green, because every unit test scripts whichever string was current
+when it was written. Only the opt-in real-binary test can catch that.
 
 **Cost of the absence probe:** on a fresh machine every pack is absent, so each
 costs one deliberately-failing `update` per config dir before its `install`. That
@@ -522,7 +531,7 @@ Cases that must be covered because the design turns on them:
   records `failed` and warns;
 - a claude build with no `disable` subcommand rolls back rather than leaving a
   pack enabled;
-- an `update` failure that is not "not found" never reaches `install`;
+- an `update` failure that does not mean absence never reaches `install`;
 - a failed `install` records `failed` and never reaches `disable`, so it cannot
   be recorded as installed by way of "already disabled";
 - a timed-out `install` (exit 124) attempts `uninstall` before recording
@@ -542,7 +551,7 @@ Cases that must be covered because the design turns on them:
 against a fixture directory marketplace in an isolated HOME and asserts the
 behaviors the design rests on: install enables, disable then update preserves
 disabled, update moves the version from a directory source, update on an
-uninstalled plugin exits non-zero with "not found", disable on an
+uninstalled plugin exits non-zero with wording the absence matcher accepts, disable on an
 already-disabled pack exits 1 with "already disabled", uninstall on an installed
 pack exits 0 and clears its `enabledPlugins` entry, and uninstall on an absent
 pack exits 1 with phrasing `isAlreadyGone` still matches. The rollback verb is
