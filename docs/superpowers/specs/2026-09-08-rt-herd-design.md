@@ -87,9 +87,10 @@ stays out of the `SCHEMA_VERSION` claim race documented in CLAUDE.md.
 | field | meaning |
 |---|---|
 | `herd`, `name` | key; `name` fits herdr's agent-name grammar (`[a-z][a-z0-9_-]{0,31}`), rejected loudly otherwise |
-| `worktree`, `branch` | from provision (or `--dir`) |
+| `worktree`, `branch`, `tree` | from provision (or `--dir`); `tree` is the registry tree name `rt worktree dispose` keys on, which for a pool tree is the slot name, not the branch |
 | `pane`, `agentSession` | from `rt agent start` |
-| `handle` | chat handle, equals `name` |
+| `handle` | the chat handle sign-in returned (`name`, suffixed on collision) |
+| `disposable` | true for reviewer jobs; the daemon closes the pane on their report |
 | `status` | `spawning`, `active`, `at-gate`, `at-milestone`, `done`, `closed`, `crashed` |
 | `lastGate`, `lastReport` | ids, for `status` rendering |
 
@@ -98,27 +99,36 @@ stays out of the `SCHEMA_VERSION` claim race documented in CLAUDE.md.
 Every verb records what it did. There is no separate bookkeeping verb.
 
 - `rt herd start --name <n> [--repo <path>] [--hidden] [--json]` mints the
-  id, creates the room, creates the herdr workspace `herd: <id>` (unfocused,
-  on the visible server or the hidden session's), signs the caller's
-  session in as `shepherd` (keeping an existing handle if signed in
-  already) and joins the room, registers `gate subscribe --subject-prefix
-  herd:<id>` for the caller's session, records the herdr socket (see Hidden
-  mode), and prints `{herd, room, workspace, subscription}`. One workspace
-  per run is the whole containment rule: every pane the herd creates is a
-  tab there, never in the workspace the human is looking at. The caller's session id is `CLAUDE_CODE_SESSION_ID`;
+  id (suffixing `-2`, `-3` on a same-second collision), creates the room,
+  records the workspace label `herd: <id>` (the first `spawn` creates the
+  workspace through agent start's find-or-create, so its root tab is
+  adopted rather than left blank), signs the caller's session in as
+  `shepherd` when the session has no presence row and keeps its existing
+  handle when it does, joins the room, registers `gate subscribe
+  --subject-prefix herd:<id>` for the caller's session, records the herdr
+  socket (see Hidden mode), and prints `{herd, room, workspace,
+  subscription, handle}`. One workspace per run is the whole containment
+  rule: every pane the herd creates is a tab there, never in the workspace
+  the human is looking at. The caller's session id is `CLAUDE_CODE_SESSION_ID`;
   outside a Claude session the verb refuses with a one-line reason.
 - `rt herd spawn --herd <id> --job <name> --brief <file> [--model M]
   [--effort E] [--account A] [--dir <worktree>] [--json]` provisions a tree
   through `rt worktree provision --branch <job> --disposal job` unless
   `--dir` names one; runs `rt agent start` in it with the brief as prompt,
   `--workspace "herd: <id>" --tab <job>` (agent start's find-or-create by
-  label, so a respawn lands in the same workspace), `--name <job>`,
+  label, so a respawn lands in the same workspace), the job name as the
+  session's `--name` (agent start's pool-handle reservation is bypassed
+  for herd jobs, so chat and the registry agree on the name), the hidden
+  session's socket as a per-call parameter when the herd is hidden,
   `crossSessionInbound: accept` in the passed settings, and env `HERD_ID`,
-  `HERD_JOB`, `HERD_ROOM`; signs the pane in as `<job>` and
-  joins the room (daemon-side, zero worker turns); inserts the job row as
-  `spawning`, flipping to `active` on herdr's `pane.agent_detected`. The
+  `HERD_JOB`, `HERD_ROOM`; signs the pane in as `<job>` and joins the room
+  (daemon-side, zero worker turns); inserts the job row as `spawning`,
+  flipping to `active` on herdr's `pane.agent_detected`. The
   fresh-worktree trust dialog is accepted as `spawn-agent.sh` does today.
-  `--dir` on an existing job name reuses the row with a new pane (respawn).
+  `--dir` on an existing job name is a respawn: the row's previous pane is
+  closed first (agent start dedups on the tab label and would otherwise
+  focus the dead tab instead of launching), then the row is reused with the
+  new pane. `--disposable` marks a reviewer job.
 - `rt herd ask --questions <json> [--context <text>] [--json]` (worker;
   herd and job from env) opens a gate: subject `herd:<id>/<job>`, kind
   `question`, `--agent <job> --pane <pane>`, `--nudge {session: <own>}`,
@@ -134,7 +144,9 @@ Every verb records what it did. There is no separate bookkeeping verb.
   each question's chosen value and its `note`. A thin read over the
   registry; it is the one thing a nudged worker runs.
 - `rt herd report [--file <path>]` (worker; body on stdin otherwise) posts
-  to the room mentioning the shepherd's handle and sets the job `done`.
+  to the room mentioning the shepherd's handle and sets the job `done`. A
+  `disposable` job's pane is closed by the daemon in the same call and the
+  job set `closed`, so a reviewer needs no follow-up from the shepherd.
 - `rt herd gates [--herd <id>] [--json]` (shepherd) lists open gates for
   the herd: every `herd:<id>/*` subject, plus every `run:` gate whose run's
   `worktree` field is byte-identical to a job's worktree. The match runs
@@ -177,21 +189,27 @@ backoff. For panes in `herd_jobs`:
 | `agent_detected` | `spawning` | set `active` |
 | `agent_status_changed` to `blocked`, still blocked 30s later | any but `closed` | room post `<job> blocked` from the system handle `herdr`, mentioning the shepherd |
 | `agent_status_changed` working/idle | any | nothing; these are the flips that trained neglect in SKILLS-35 |
-| `closed` or `exited` | `active`, `at-gate`, `at-milestone` | set `crashed`; room post `<job> exited` mentioning the shepherd; close any open gate on `herd:<id>/<job>` with reason `abandoned` |
+| `closed` or `exited` | `spawning`, `active`, `at-gate`, `at-milestone` | set `crashed`; room post `<job> exited` mentioning the shepherd; close any open gate on `herd:<id>/<job>` with reason `abandoned` |
 | `closed` or `exited` | `done`, `closed` | set `closed` silently |
 
 Posts from the system handle ride `postAndNotify` like any post; the handle
 has no presence row and no inbox, so it never receives deliveries.
 
-**Gate answer coupling.** `gate:answer` on a `herd:` subject sets the job
-back to `active`. A `gate:close` on one does the same.
+**Gate answer coupling.** `gate:answer` or `gate:close` on a `herd:`
+subject sets the job back to `active` only when it is `at-gate` or
+`at-milestone`; a `crashed` or `closed` job stays as it is (the crash path
+closes the job's gate after marking it crashed).
 
 **Nudge reliability.** The gate pane push (`pushToPane` in `gate-push.ts`)
-gains the chat delivery's retry with backoff and its periodic sweep on
-`dead-pane`, so a worker's wake is as reliable as a chat message. A gate
-that stays `dead-pane` after the sweep renders in `rt herd status` as
-"answered, worker not woken"; the shepherd DMs the worker, which is the
-only manual step and is prompted by the status line.
+gains the chat delivery's retry with backoff and a 30s sweep that re-pushes
+`answered` gates whose last push was `dead-pane` (never closed ones: a
+closed gate has nothing for the pane to act on), so a worker's wake is as
+reliable as a chat message. A gate that stays `dead-pane` after the sweep
+renders in `rt herd status` as "answered, worker not woken"; the shepherd
+DMs the worker, which is the only manual step and is prompted by the
+status line. `status` also shows the shepherd's own subscription row (id,
+last delivery outcome, dead flag) so a quiet shepherd can be diagnosed from
+any session.
 
 **Room wake policy.** The room is created with the default `wake_on
 mention`. Workers mention the shepherd on reports; the shepherd DMs workers;
@@ -204,8 +222,11 @@ tells the human that a question for the shepherd is a DM to it.
 named `herd` exactly as `herd-session.sh start` does today, records its
 socket path on the herd row, and every herdr call the daemon makes for this
 herd (spawn, lifecycle subscription, peek, close, attend) targets that
-socket. `rt agent start` already takes its socket from `HERDR_SOCKET_PATH`
-in the env it is invoked with, so spawn sets it per call. The invariant
+socket. The daemon's herdr runner reads the daemon's own environment, not
+the caller's, so `agent:start` takes the socket as a per-call parameter and
+`spawn` passes the herd's. The server is started through `nohup` in a
+shell with job control on, so it lands in its own process group and
+survives the daemon being restarted under launchd. The invariant
 `herd-session.sh` documents survives: a hidden session is a separate server
 and panes never move between servers; `attend` is a terminal attach from a
 visible tab, not a move. `rt herd status` shows the hidden session's pane
@@ -288,9 +309,10 @@ The milestone gate's three options are fixed by the verb. The human answers
 through the shepherd's form. **Revise** carries the feedback in the note
 (the shepherd asks for it in the same form when the option is chosen).
 **Spawn a reviewer** makes the shepherd run `rt herd spawn --job
-review-<job> --dir <job's worktree>` with a brief that reads the artifact,
-DMs findings to `<job>`, and reports a verdict; the reviewer is closed on
-its report. The job revises and runs `rt herd milestone` again, which opens
+review-<job> --dir <job's worktree> --disposable` with a brief that reads
+the artifact, DMs findings to `<job>`, and reports a verdict; the daemon
+closes the reviewer's pane on that report because the job is disposable.
+The job revises and runs `rt herd milestone` again, which opens
 a fresh gate; the supersede rule closes any stale open one of the same kind
 on the same subject. Every round is gate, DM, gate: on the record in the
 room and the registry, and the daemon flips the job between `at-milestone`
@@ -304,6 +326,7 @@ and `active` on its own.
   subscriptions are re-established with backoff; until they are,
   `rt herd status` says lifecycle forwarding is off.
 - **Worker respawn:** `rt herd spawn --job <same> --dir <worktree>`; the
+  verb closes the row's old pane first, reuses the stored brief, and the
   brief's resume text is unchanged.
 - **Dead nudge:** retry and sweep as above; the residual case is a status
   line, not a lost answer.
