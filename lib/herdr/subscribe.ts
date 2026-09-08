@@ -51,6 +51,8 @@ export function subscribeHerdrEvents(opts: {
   };
 
   const scheduleReconnect = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
     if (stopped) return;
     timer = setTimeout(connect, delay);
     delay = Math.min(max, delay * 2);
@@ -60,17 +62,36 @@ export function subscribeHerdrEvents(opts: {
     if (stopped) return;
     if (!existsSync(opts.sockPath)) { scheduleReconnect(); return; }
     const id = `rt:sub:${process.pid}:${++seq}`;
+    // A multibyte UTF-8 character can straddle a socket chunk boundary;
+    // decoding each chunk on its own turns each half into its own U+FFFD, and
+    // JSON.parse still succeeds on the corrupted text. One streaming decoder
+    // per connection holds the trailing bytes until the rest arrives.
+    const decoder = new TextDecoder();
     let buf = "";
     let acked = false;
+    // A failed attempt can surface as a rejected connect, an error then a
+    // close, or a bare close; only the first of those schedules the retry.
+    let settled = false;
+    const retry = () => {
+      setConnected(false);
+      if (settled) return;
+      settled = true;
+      scheduleReconnect();
+    };
     Bun.connect({
       unix: opts.sockPath,
       socket: {
         open(socket) {
+          if (stopped) {
+            try { socket.end(); } catch { /* already closed */ }
+            return;
+          }
           current = socket;
           socket.write(JSON.stringify({ id, method: "events.subscribe", params: { subscriptions: opts.subscriptions } }) + "\n");
         },
         data(_socket, chunk) {
-          buf += chunk.toString();
+          if (stopped) return;
+          buf += decoder.decode(chunk, { stream: true });
           let nl: number;
           while ((nl = buf.indexOf("\n")) >= 0) {
             const line = buf.slice(0, nl).trim();
@@ -98,8 +119,7 @@ export function subscribeHerdrEvents(opts: {
         },
         close() {
           current = undefined;
-          setConnected(false);
-          scheduleReconnect();
+          retry();
         },
         error(_socket, err) {
           opts.log.debug({ err: err.message, sockPath: opts.sockPath }, "herdr subscribe: socket error");
@@ -107,8 +127,7 @@ export function subscribeHerdrEvents(opts: {
       },
     }).catch((err: unknown) => {
       opts.log.debug({ err: err instanceof Error ? err.message : String(err) }, "herdr subscribe: connect failed");
-      setConnected(false);
-      scheduleReconnect();
+      retry();
     });
   }
 
