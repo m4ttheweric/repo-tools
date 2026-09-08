@@ -17,6 +17,7 @@ import type { createAgentHandlers } from "./agent.ts";
 import type { herdrRequest } from "../../herdr/client.ts";
 import type { HerdrRunner } from "../../agent-herdr.ts";
 import { slugifyChatName } from "../../chat-room-name.ts";
+import { HIDDEN_SESSION } from "../herd-session.ts";
 
 export interface HerdDeps {
   store: HerdStore;
@@ -307,6 +308,41 @@ export function createHerdHandlers(deps: HerdDeps) {
         store.setJobStatus(herdId, name, "closed");
       }
       return { ok: true, data: { message: posted.data.id } };
+    },
+
+    "herd:attend": async (raw: unknown): Promise<CommandResult<"herd:attend">> => {
+      const p = raw as Commands["herd:attend"]["payload"] | undefined;
+      const herdId = str(p?.herd); const name = str(p?.job); const callerWorkspace = str(p?.callerWorkspace);
+      if (!herdId || !name || !callerWorkspace) return { ok: false, error: "herd, job, and callerWorkspace (HERDR_WORKSPACE_ID) are required" };
+      const herd = store.get(herdId); const job = herd ? store.getJob(herdId, name) : null;
+      if (!herd || !job) return { ok: false, error: `unknown job "${name}" in herd "${herdId}"` };
+      if (!herd.hidden || !herd.herdrSocket) return { ok: false, error: "herd is not hidden; focus the pane directly" };
+      if (!job.pane) return { ok: false, error: `job "${name}" has no pane` };
+      const hiddenRunner = deps.herdrRunnerFor(herd.herdrSocket);
+      const got = await hiddenRunner(["pane", "get", job.pane]);
+      if (got.exitCode !== 0) return { ok: false, error: `herdr pane get failed: ${got.stdout.slice(0, 200)}` };
+      let termId: string | undefined;
+      try {
+        const parsed = JSON.parse(got.stdout)?.result;
+        termId = parsed?.pane?.terminal_id ?? parsed?.terminal_id;
+      } catch { /* handled below */ }
+      if (!termId) return { ok: false, error: "hidden pane reported no terminal id" };
+      const visible = deps.herdrRunnerFor(null);
+      const tab = await visible(["tab", "create", "--workspace", callerWorkspace, "--label", `attend: ${name}`, "--focus"]);
+      if (tab.exitCode !== 0) return { ok: false, error: `herdr tab create failed: ${tab.stdout.slice(0, 200)}` };
+      const root = JSON.parse(tab.stdout)?.result?.root_pane;
+      if (!root?.pane_id) return { ok: false, error: "herdr tab create returned no root pane" };
+      const attach = `env -u HERDR_SOCKET_PATH HERDR_SESSION=${HIDDEN_SESSION} herdr terminal attach ${termId} --takeover`;
+      const ran = await visible(["pane", "run", root.pane_id, attach]);
+      if (ran.exitCode !== 0) return { ok: false, error: `herdr pane run failed: ${ran.stdout.slice(0, 200)}` };
+      return { ok: true, data: { tab: root.tab_id, pane: job.pane } };
+    },
+
+    "herd:stop-hidden": async (_payload: unknown): Promise<CommandResult<"herd:stop-hidden">> => {
+      const active = store.list({ status: "active" }).filter((h) => h.hidden);
+      if (active.length > 0) return { ok: false, error: `hidden herd(s) still active: ${active.map((h) => h.id).join(", ")}; wrap them up first` };
+      await deps.hidden.stop();
+      return { ok: true, data: { stopped: true } };
     },
   };
 }

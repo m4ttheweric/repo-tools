@@ -393,3 +393,51 @@ describe("herd:gates", () => {
     expect(res.data.gates.map((g) => g.id).sort()).toEqual([g1, g2].sort());
   });
 });
+
+describe("hidden verbs", () => {
+  test("attend resolves the hidden pane's terminal and opens an attached tab in the caller's workspace", async () => {
+    const hx = harness({
+      herdrRunnerFor: (socket) => async (args) => {
+        hx.herdrCalls.push([socket ?? "default", ...args]);
+        if (args[0] === "pane" && args[1] === "get") return { stdout: JSON.stringify({ result: { pane: { terminal_id: "term-7" } } }), exitCode: 0 };
+        if (args[0] === "tab" && args[1] === "create") return { stdout: JSON.stringify({ result: { root_pane: { pane_id: "wv:p9", tab_id: "wv:t9", workspace_id: "wv" } } }), exitCode: 0 };
+        return { stdout: "{}", exitCode: 0 };
+      },
+    });
+    const s = await hx.h["herd:start"]({ ...START, hidden: true });
+    if (!s.ok) throw new Error(s.error);
+    hx.store.upsertJob({ herd: s.data.herd, name: "cv-1", worktree: "/w", handle: "cv-1", status: "active", pane: "wh:p1" });
+    const res = await hx.h["herd:attend"]({ herd: s.data.herd, job: "cv-1", callerWorkspace: "wv" });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data).toEqual({ tab: "wv:t9", pane: "wh:p1" });
+    expect(hx.herdrCalls).toContainEqual(["/tmp/hidden.sock", "pane", "get", "wh:p1"]);
+    expect(hx.herdrCalls).toContainEqual(["default", "tab", "create", "--workspace", "wv", "--label", "attend: cv-1", "--focus"]);
+    const run = hx.herdrCalls.find((c) => c[1] === "pane" && c[2] === "run")!;
+    expect(run[3]).toBe("wv:p9");
+    expect(run[4]).toContain("terminal attach term-7 --takeover");
+    expect(run[4]).toContain("HERDR_SESSION=herd");
+  });
+
+  test("attend on a visible herd is a no-op with a message", async () => {
+    const hx = harness();
+    const s = await hx.h["herd:start"](START);
+    if (!s.ok) throw new Error(s.error);
+    hx.store.upsertJob({ herd: s.data.herd, name: "cv-1", worktree: "/w", handle: "cv-1", status: "active", pane: "w9:p1" });
+    const res = await hx.h["herd:attend"]({ herd: s.data.herd, job: "cv-1", callerWorkspace: "wv" });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.error).toMatch(/not hidden/);
+  });
+
+  test("stop-hidden refuses while an active hidden herd exists, then stops", async () => {
+    let stopped = 0;
+    const hx = harness({ hidden: { socketPath: () => "/tmp/hidden.sock", ensure: async () => "/tmp/hidden.sock", up: async () => true, stop: async () => { stopped++; } } });
+    const s = await hx.h["herd:start"]({ ...START, hidden: true });
+    if (!s.ok) throw new Error(s.error);
+    expect((await hx.h["herd:stop-hidden"]({})).ok).toBe(false);
+    hx.store.setHerdStatus(s.data.herd, "wrapped");
+    const res = await hx.h["herd:stop-hidden"]({});
+    expect(res.ok).toBe(true);
+    expect(stopped).toBe(1);
+  });
+});

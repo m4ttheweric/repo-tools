@@ -92,7 +92,7 @@ import { createEventsBus, type EventsBus } from "./daemon/events-bus.ts";
 import { createGatesStore, type GatesStore } from "./daemon/gates-store.ts";
 import { createHerdStore, type HerdStore } from "./daemon/herd-store.ts";
 import { createHerdLifecycle, type HerdLifecycle } from "./daemon/herd-lifecycle.ts";
-import { hiddenSocketPath } from "./daemon/herd-session.ts";
+import { createHiddenSession } from "./daemon/herd-session.ts";
 import { createGatePush, type GatePush } from "./daemon/gate-push.ts";
 import { createEscapeInjector } from "./daemon/gate-escape.ts";
 import { deliverToInbox } from "./daemon/inbox.ts";
@@ -886,15 +886,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
             connected: (socket) => herdLifecycle?.connected(socket) ?? false,
             watch: (socket) => herdLifecycle?.watch(socket),
           },
-          // No hidden herdr server exists yet, so `ensure` throws rather than
-          // handing back a socket path nothing serves: `herd:start --hidden`
-          // must fail loudly instead of registering an undeliverable herd.
-          herdHidden: {
-            socketPath: () => hiddenSocketPath(),
-            ensure: async () => { throw new Error("hidden mode not wired yet"); },
-            up: async () => false,
-            stop: async () => {},
-          },
+          herdHidden: createHiddenSession({ log }),
           herdJobsRoot: join(RT_DIR, "herds"),
           homeSnapshot,
           teamSnapshots,
