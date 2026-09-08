@@ -76,7 +76,10 @@ A directory-source install is a local copy, so it scales with pack size rather
 than with the network, and the largest real pack lands in under a second. The
 30 s settlement timeout below is derived from that number: roughly 35x the
 measured worst case, which absorbs a much larger pack or a loaded machine while
-still leaving the budget arithmetic intact.
+still leaving the budget arithmetic intact. That derivation holds **only for
+directory sources**, which is why a pack rt cannot read a version for (every
+object-form source among them) is excluded from the converge rather than being
+installed on a constant that was never measured for it.
 
 Three consequences drive the design. The converge verb is `update`, never
 `install`, because only `update` preserves the disabled state. The served version
@@ -234,9 +237,12 @@ listing = claude plugin list --json          (read-only, once per config dir)
   failed or unparsable -> every pack recorded `failed`, NO write of any kind
 
 per pack:
-  listed, both versions known and equal  -> current      (no exec at all)
-  listed, either version unknown         -> skipped      ("version unknown")
-  otherwise                              -> update <id> -y
+  servedVersion is null                  -> skipped      ("version unknown")
+                                            ALWAYS, listed or not. No update,
+                                            no install. See the rule below.
+  listed, installed version equals it    -> current      (no exec at all)
+  listed, installed version is null      -> skipped      ("version unknown")
+  otherwise (differs, or not listed)     -> update <id> -y
         exit 0                  -> updated. Enable state untouched.
         exit != 0, "not found"  -> absent: install, then settle enablement
         exit != 0, otherwise    -> failed, recorded with stderr
@@ -248,10 +254,10 @@ read-only, so it gates writes without ever authorizing one.
 
 **"Version unknown" and "absent" are different states and must not be
 conflated.** A pack the listing carries with a null version is installed, and is
-skipped. A pack with no entry at all is not installed, and takes the
-update-then-install branch. Collapsing the two would drop the ruling that a pack
-added after a member joined installs on the next converging pull, because every
-such pack arrives with no listing entry.
+skipped. A pack with no entry at all **and a readable served version** is not
+installed, and takes the update-then-install branch. Collapsing the two would
+drop the ruling that a pack added after a member joined installs on the next
+converging pull, because every such pack arrives with no listing entry.
 
 **Cost of the absence probe:** on a fresh machine every pack is absent, so each
 costs one deliberately-failing `update` per config dir before its `install`. That
@@ -368,9 +374,23 @@ entry, the `plugin.json` at its `source`:
 | entry `source` is object-form (github, url) | pack listed, `servedVersion: null`. |
 | `plugin.json` missing or unparsable | pack listed, `servedVersion: null`. |
 
-**Null-version comparison is defined:** a pack whose served or installed version
-is null is never treated as stale and never triggers an update. Unknown is not a
-mismatch. It renders as `version unknown` and the converge records it `skipped`.
+**A pack whose served version rt cannot read is outside the converge entirely.**
+This is structural, not a consequence of whether the pack happens to appear in
+the listing: such a pack is never installed by the converge and never updated by
+it, whether it is present or absent, and its row says `version unknown`. Unknown
+is not a mismatch, so it is never stale either.
+
+That rule is what keeps object-form sources out. An object-form pack's install
+would be a network fetch, while the 30 s settlement constant was measured against
+a local directory copy; a slow fetch would time out, take the exit-124 path,
+uninstall, record `failed`, and repeat on every pull forever. It also removes the
+opposite oddity: an object-form pack that did get installed would carry a null
+served version permanently, so every later converge would skip it as unknown,
+leaving it installed once and never updated.
+
+The rule is stated here rather than left implied by the `listed` guard in the
+sequence above, because the two readings describe the same pack and only agree
+when it is written down once.
 
 ### The parser, shared not duplicated
 
@@ -498,6 +518,8 @@ Cases that must be covered because the design turns on them:
   `failed`, so a half-written install cannot survive as installed-and-enabled;
 - an `isAlready` install records `current` and issues no `disable`, leaving a
   pre-existing pack's enablement untouched;
+- a pack with a null served version is skipped whether or not it appears in the
+  listing, and is never installed or updated by the converge;
 - a rolled-back pack is absent from `SetupState.plugins`;
 - a per-exec timeout records `failed` and never `not installed`;
 - a settlement that does not fit the remaining budget is skipped whole, leaving
@@ -551,4 +573,7 @@ That work stays in MAT-402's lane.
 The enable verb and the Done-screen line from R1 (this ships the row and the
 command text, not a one-shot verb), the VM fixture and its assertions (MAT-402),
 reconciling the daemon's `CLAUDE_CONFIG_DIR` with the shell's, automatic recovery
-from a failed rollback, and any change to how packs are published.
+from a failed rollback, object-form team pack sources (github, url), which the
+converge neither installs nor updates because their version cannot be read from
+the clone and their fetch cost was never measured, and any change to how packs
+are published.
