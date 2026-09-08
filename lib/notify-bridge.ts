@@ -7,8 +7,7 @@
  * is interpolated the same way as title/message and carried onto the event
  * for the tray's click routing. The paneId used for both focus lookup and
  * the event falls back to `payload.origin.paneId` when the payload has no
- * top-level `paneId`, since engine-opened gates only carry the pane id
- * inside `origin`.
+ * top-level `paneId` (see resolvePaneId).
  *
  * Rules are re-read per event (deps.rules()), not cached at subscribe time,
  * so a settings edit to rt.notify.eventBridges takes effect on the next

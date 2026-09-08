@@ -85,7 +85,7 @@ export const REGISTRY: readonly SettingDef[] = [
     scopes: ["user"],
     default: [],
     merge: "replace",
-    description: "Event-bus glob rules that raise a desktop notification: [{pattern, category, title, message, subjectPrefix?}]. pattern is matched against the events-bus topic (Bun.Glob semantics); title/message may interpolate `{field}` from the event payload, plus the computed `{question}` field (the event payload's first question label, `payload.questions[0].label`, empty string when absent); optional subjectPrefix matches the event payload's subject as a prefix. A fresh key, not an ownership-latch port, so a default is fine here.",
+    description: "Event-bus glob rules that raise a desktop notification: [{pattern, category, title, message, subjectPrefix?, url?}]. pattern is matched against the events-bus topic (Bun.Glob semantics); title/message may interpolate `{field}` from the event payload, plus the computed `{question}` field (the event payload's first question label, `payload.questions[0].label`, empty string when absent); optional subjectPrefix matches the event payload's subject as a prefix. The optional url is interpolated the same way as title/message and becomes the notification's Open target; a gate rule should set it. A fresh key, not an ownership-latch port, so a default is fine here.",
   },
   {
     key: "rt.cron",

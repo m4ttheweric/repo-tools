@@ -337,6 +337,54 @@ describe("startNotifyBridge", () => {
     expect(paneFocusedCalls).toEqual(["w1:p1"]);
   });
 
+  test("an empty-string payload.paneId falls back to payload.origin.paneId", async () => {
+    const bus = fakeBus();
+    const enqueued: NotificationEvent[] = [];
+    const paneFocusedCalls: string[] = [];
+
+    startNotifyBridge({
+      onBroadcast: bus.onBroadcast,
+      rules: () => [GATE_RULE],
+      enqueue: (e) => { enqueued.push(e); },
+      paneFocused: async (paneId) => { paneFocusedCalls.push(paneId); return false; },
+    });
+
+    await bus.emit("event", {
+      id: 15,
+      topic: "board/gate/opened/g15",
+      payload: { iid: 7, mrUrl: "x", paneId: "", origin: { paneId: "w1:p9" } },
+      emittedAt: Date.now(),
+    });
+
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.paneId).toBe("w1:p9");
+    expect(paneFocusedCalls).toEqual(["w1:p9"]);
+  });
+
+  test("a non-object origin with no paneId enqueues without a paneId and never calls paneFocused", async () => {
+    const bus = fakeBus();
+    const enqueued: NotificationEvent[] = [];
+    const paneFocusedCalls: string[] = [];
+
+    startNotifyBridge({
+      onBroadcast: bus.onBroadcast,
+      rules: () => [GATE_RULE],
+      enqueue: (e) => { enqueued.push(e); },
+      paneFocused: async (paneId) => { paneFocusedCalls.push(paneId); return false; },
+    });
+
+    await bus.emit("event", {
+      id: 16,
+      topic: "board/gate/opened/g16",
+      payload: { iid: 7, mrUrl: "x", origin: "x" },
+      emittedAt: Date.now(),
+    });
+
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.paneId).toBeUndefined();
+    expect(paneFocusedCalls).toEqual([]);
+  });
+
   test("a rule with url interpolates it and enqueues event.url", async () => {
     const bus = fakeBus();
     const enqueued: NotificationEvent[] = [];

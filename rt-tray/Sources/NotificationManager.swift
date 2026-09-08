@@ -387,6 +387,8 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         case "OPEN_SURFACE":
             if let urlStr = url, let urlObj = URL(string: urlStr) {
                 NSWorkspace.shared.open(urlObj)
+            } else if let paneId = userInfo["paneId"] as? String, !paneId.isEmpty {
+                _ = HerdrBridge.shared.focusPaneById(paneId)
             }
 
         case UNNotificationDefaultActionIdentifier:
