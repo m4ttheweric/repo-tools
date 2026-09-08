@@ -346,7 +346,10 @@ export async function joinRedeem(
 
   // Ordering is the point: the clone creates ~/.mattstack/teams/<slug>, which
   // is what the daemon's teams/ watcher fires on. Recording after the clone
-  // races that watcher for the mode of the engine it starts.
+  // races that watcher for the mode of the engine it starts. Every exit below
+  // that leaves this call without a usable clone at `dir` clears it back to
+  // false, so a failed or refused join cannot leave this machine asserting
+  // membership in a team it never actually joined.
   updateTeamLocal(p, pointer.team, { joinedByRt: true });
 
   const token = await seams.forgeToken(p, pointer.remote);
@@ -355,6 +358,7 @@ export async function joinRedeem(
 
   if (existingOrigin !== null) {
     if (stripUserinfo(existingOrigin) !== stripUserinfo(pointer.remote)) {
+      updateTeamLocal(p, pointer.team, { joinedByRt: false });
       throw new UserActionableError(
         "team-remote-mismatch",
         `"${pointer.team}" is already cloned at ${dir} with a different remote — remove it to rejoin, or resolve by hand`,
@@ -365,7 +369,10 @@ export async function joinRedeem(
     p.mkdirp(join(p.home, ".mattstack", "teams"));
     const git = gitWithToken(["clone", pointer.remote, dir], token, GIT_ENV);
     const clone = await p.exec(git.argv, { env: git.env });
-    if (clone.code !== 0) return gitAccessResult(pointer, clone);
+    if (clone.code !== 0) {
+      updateTeamLocal(p, pointer.team, { joinedByRt: false });
+      return gitAccessResult(pointer, clone);
+    }
   }
 
   // Identity resolution runs BEFORE relay.redeem, deliberately: this is the

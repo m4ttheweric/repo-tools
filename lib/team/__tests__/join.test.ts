@@ -581,6 +581,16 @@ describe("joinRedeem", () => {
     expect(relay.redeemCalls).toHaveLength(0);
   });
 
+  test("a failed clone attempt clears joinedByRt back to false, not asserting membership in a team never cloned", async () => {
+    const p = redeemProbes({ exec: () => ({ code: 128, stdout: "", stderr: "fatal: Authentication failed" }) });
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams();
+
+    await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+
+    expect(readTeamLocal(p, POINTER.team).joinedByRt).toBe(false);
+  });
+
   describe("clone failures are classified honestly — 'check your network' only when it IS the network", () => {
     test("a non-auth, non-network clone failure does not blame the network", async () => {
       const p = redeemProbes({ exec: () => ({ code: 128, stdout: "", stderr: "fatal: destination path already exists and is not an empty directory" }) });
@@ -662,6 +672,19 @@ describe("joinRedeem", () => {
     const { seams } = baseJoinRedeemSeams();
 
     await expect(joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams)).rejects.toMatchObject({ code: "team-remote-mismatch" });
+  });
+
+  test("a remote-mismatch refusal clears joinedByRt back to false too", async () => {
+    const p = redeemProbes({
+      dirs: { [TEAM_DIR]: [".git"] },
+      files: { [pathJoin(TEAM_DIR, ".git", "config")]: gitConfigWithRemote("git@github.com:someone-else/other.git") },
+    });
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams();
+
+    await expect(joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams)).rejects.toMatchObject({ code: "team-remote-mismatch" });
+
+    expect(readTeamLocal(p, POINTER.team).joinedByRt).toBe(false);
   });
 
   test("no code and no saved intent throws no-join-intent", async () => {

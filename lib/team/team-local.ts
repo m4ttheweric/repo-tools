@@ -26,7 +26,7 @@ export interface TeamLocalRecord {
   createdByRt: boolean;
   /**
    * This machine's clone arrived by redeeming an invite. Provenance, like
-   * `createdByRt`, and confers nothing on its own: it decides only that this
+   * `createdByRt`, confers nothing on its own: it only decides that this
    * machine's snapshot engine is pull-only, because members do not push the
    * team repo. Absent means false, so a clone that predates this field keeps
    * pushing rather than silently going inert.
