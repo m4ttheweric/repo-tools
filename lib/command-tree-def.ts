@@ -157,6 +157,158 @@ const gateSubcommands: Record<string, CommandNode> = {
   },
 };
 
+const herdSubcommands: Record<string, CommandNode> = {
+  start: {
+    description: "Start a herd: registry row, chat room, herdr workspace, gate subscription",
+    module: "./commands/herd.ts",
+    fn: "start",
+    omitBehavior: { exempt: "the herd name is free-form; nothing to enumerate" },
+    args: [
+      { name: "Name", flag: "--name", type: "text", placeholder: "cv-1483", hint: "Herd name; seeds the room and workspace labels" },
+      { name: "Repo", flag: "--repo", type: "text", placeholder: "~/Documents/GitHub/x", hint: "Repo the herd works (default: the current repo)" },
+      { name: "Hidden", flag: "--hidden", type: "boolean", default: false, hint: "Run the workspace in a hidden herdr session" },
+      { name: "Session", flag: "--session", type: "text", placeholder: "abc123", hint: "Shepherd session id (default: CLAUDE_CODE_SESSION_ID)" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the herd record as JSON" },
+    ],
+  },
+  spawn: {
+    description: "Spawn a worker job: worktree, herdr pane, Claude agent",
+    module: "./commands/herd.ts",
+    fn: "spawn",
+    omitBehavior: { exempt: "agent-facing; the shepherd names the herd and job it is spawning" },
+    args: [
+      { name: "Herd", flag: "--herd", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd id (default: HERD_ID)" },
+      { name: "Job", flag: "--job", type: "text", placeholder: "cv-1483-facts", hint: "Job name; also the worktree and handle stem" },
+      { name: "Brief", flag: "--brief", type: "text", placeholder: "brief.md", hint: "File whose text becomes the job brief" },
+      { name: "Dir", flag: "--dir", type: "text", placeholder: "~/Documents/GitHub/x", hint: "Existing directory to run in instead of a fresh worktree" },
+      { name: "Model", flag: "--model", type: "text", placeholder: "opus", hint: "Override agent.model for this worker" },
+      { name: "Effort", flag: "--effort", type: "text", placeholder: "high", hint: "Override agent.effort for this worker" },
+      { name: "Account", flag: "--account", type: "text", placeholder: "me@example.com", hint: "cswap account for this worker" },
+      { name: "Disposable", flag: "--disposable", type: "boolean", default: false, hint: "Wrap-up may dispose this job's worktree" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the spawn record as JSON" },
+    ],
+  },
+  ask: {
+    description: "Worker: open a gate on the shepherd and hold for the answer",
+    module: "./commands/herd.ts",
+    fn: "ask",
+    omitBehavior: { exempt: "agent-facing; the worker writes its own questions" },
+    args: [
+      { name: "Questions", flag: "--questions", type: "text", placeholder: "[{\"id\":\"q1\",\"label\":\"...\",\"multi\":false,\"options\":[\"yes\",\"no\"]}]", hint: "JSON array of questions" },
+      { name: "Context", flag: "--context", type: "text", placeholder: "the fixture has two owners", hint: "Optional prose the shepherd sees with the questions" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the gate id as JSON" },
+    ],
+  },
+  milestone: {
+    description: "Worker: hand an artifact to the shepherd and hold for review",
+    module: "./commands/herd.ts",
+    fn: "milestone",
+    omitBehavior: { exempt: "agent-facing; the worker names the artifact it just wrote" },
+    args: [
+      { name: "Artifact", flag: "--artifact", type: "text", placeholder: "plan.md", hint: "Path the shepherd reviews" },
+      { name: "Summary", flag: "--summary", type: "text", placeholder: "plan is 6 tasks", hint: "Optional one-line summary posted with the artifact" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the gate id as JSON" },
+    ],
+  },
+  answer: {
+    description: "Worker: read the answer to a gate this job is holding at",
+    module: "./commands/herd.ts",
+    fn: "answer",
+    omitBehavior: { exempt: "agent-facing; the gate id arrives in the worker's nudge" },
+    args: [
+      { name: "Gate", type: "text", placeholder: "gt-1a2b3c4d", hint: "Gate id from the nudge" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the gate row as JSON" },
+    ],
+  },
+  report: {
+    description: "Worker: post a progress report into the herd room",
+    module: "./commands/herd.ts",
+    fn: "report",
+    omitBehavior: { exempt: "agent-facing; the body is free-form prose on stdin" },
+    args: [
+      { name: "Body file", flag: "--file", type: "text", placeholder: "report.md", hint: "Read the body from a file instead of stdin" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the message id as JSON" },
+    ],
+  },
+  gates: {
+    description: "Open gates across a herd's workers",
+    module: "./commands/herd.ts",
+    fn: "gates",
+    omitBehavior: "list",
+    args: [
+      { name: "Herd", flag: "--herd", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd id (default: HERD_ID)" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the gate rows as JSON" },
+    ],
+  },
+  status: {
+    description: "One herd: jobs, panes, gates, subscription, unread",
+    module: "./commands/herd.ts",
+    fn: "status",
+    omitBehavior: "list",
+    args: [
+      { name: "Herd", flag: "--herd", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd id (default: HERD_ID)" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the status as JSON" },
+    ],
+  },
+  resume: {
+    description: "Re-point a herd's gate subscription at this session and catch up",
+    module: "./commands/herd.ts",
+    fn: "resume",
+    omitBehavior: { exempt: "agent-facing; the shepherd names the herd it started" },
+    args: [
+      { name: "Herd id", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd to resume" },
+      { name: "Session", flag: "--session", type: "text", placeholder: "abc123", hint: "Shepherd session id (default: CLAUDE_CODE_SESSION_ID)" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the resume record as JSON" },
+    ],
+  },
+  close: {
+    description: "Close a worker job (the pane stays; the row stops being live)",
+    module: "./commands/herd.ts",
+    fn: "close",
+    omitBehavior: { exempt: "agent-facing; the shepherd names the job" },
+    args: [
+      { name: "Job", type: "text", placeholder: "cv-1483-facts", hint: "Job name" },
+      { name: "Herd", flag: "--herd", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd id (default: HERD_ID)" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the close record as JSON" },
+    ],
+  },
+  attend: {
+    description: "Attach a worker's pane in a tab of your own workspace",
+    module: "./commands/herd.ts",
+    fn: "attend",
+    omitBehavior: { exempt: "agent-facing; the shepherd names the job" },
+    args: [
+      { name: "Job", type: "text", placeholder: "cv-1483-facts", hint: "Job name" },
+      { name: "Herd", flag: "--herd", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd id (default: HERD_ID)" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the tab and pane as JSON" },
+    ],
+  },
+  "wrap-up": {
+    description: "Wind a herd down: panes, worktrees, job dirs, room",
+    module: "./commands/herd.ts",
+    fn: "wrapUp",
+    omitBehavior: { exempt: "agent-facing; driven by the wrap-up form's answers" },
+    args: [
+      { name: "Herd id", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd to wind down" },
+      { name: "Close panes", flag: "--close-panes", type: "boolean", default: false, hint: "Close every worker pane and the workspace" },
+      { name: "Dispose", flag: "--dispose", type: "text", placeholder: "cv-1483-facts", hint: "Dispose this job's worktree; repeat per job" },
+      { name: "Delete job dirs", flag: "--delete-job-dirs", type: "boolean", default: false, hint: "Delete the briefs and reports under the jobs root" },
+      { name: "Archive room", flag: "--archive-room", type: "boolean", default: false, hint: "Archive the herd's chat room" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the wrap-up record as JSON" },
+    ],
+  },
+  stop: {
+    description: "Stop the hidden herdr session that hidden herds run in",
+    module: "./commands/herd.ts",
+    fn: "stop",
+    omitBehavior: { exempt: "there is one hidden session; --hidden is the whole surface" },
+    args: [
+      { name: "Hidden", flag: "--hidden", type: "boolean", default: false, hint: "Required: names the hidden session as the target" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the stop record as JSON" },
+    ],
+  },
+};
+
 const runsSubcommands: Record<string, CommandNode> = {
   show: {
     description: "One run: stages, fields, decisions",
@@ -993,6 +1145,11 @@ export const TREE: Record<string, CommandNode> = {
   gate: {
     description: "Human-decision gates: pause a subject until answered, parked, or closed",
     subcommands: gateSubcommands,
+  },
+
+  herd: {
+    description: "Run a herd: registry, worker questions as gates, chat room, lifecycle",
+    subcommands: herdSubcommands,
   },
 
   // Self-dispatching leaf: agent() routes its own verbs (start/resume/show/list).

@@ -54,6 +54,19 @@ export {
   gateSubscribe,
   gateUnsubscribe,
   gateSubscriptions,
+  herdStart,
+  herdSpawn,
+  herdAsk,
+  herdMilestone,
+  herdAnswer,
+  herdReport,
+  herdGates,
+  herdStatus,
+  herdResume,
+  herdClose,
+  herdAttend,
+  herdWrapUp,
+  herdStopHidden,
 } from "./client.ts";
 
 export { COMMAND_NAMES, GATE_BY_PANE, gateOptionValue, gateOptionLabel } from "./commands.ts";
@@ -100,6 +113,9 @@ export type {
   GateAnswer,
   GateRow,
   GateSubscription,
+  HerdInfo,
+  HerdJobInfo,
+  HerdStatusData,
 } from "./commands.ts";
 
 export { subscribe, createRelay, DEFAULT_WS_URL } from "./relay.ts";
