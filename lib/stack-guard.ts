@@ -154,11 +154,17 @@ function failure(prefix: string, r: { code: number; stdout: string; stderr: stri
   return { ok: false, error: `${prefix}: ${detail}` };
 }
 
+function isForgeMr(mr: ForgeMr): boolean {
+  return Number.isInteger(mr.iid) && typeof mr.source === "string" && typeof mr.target === "string" && typeof mr.url === "string";
+}
+
 function parseListing<T>(stdout: string, map: (row: T) => ForgeMr): ForgeListing {
   try {
     const rows = JSON.parse(stdout) as unknown;
     if (!Array.isArray(rows)) return { ok: false, error: "forge listing was not a JSON array" };
-    return { ok: true, mrs: (rows as T[]).map(map) };
+    const mrs = (rows as T[]).map(map);
+    if (!mrs.every(isForgeMr)) return { ok: false, error: "forge listing contained a record without iid, source, target, and url" };
+    return { ok: true, mrs };
   } catch {
     return { ok: false, error: "forge listing was not JSON" };
   }

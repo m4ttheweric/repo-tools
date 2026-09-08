@@ -272,6 +272,18 @@ describe("createStackGuardRunners", () => {
     expect(res.ok).toBe(false);
   });
 
+  test("forgeOpenMrs on GitHub rejects a record missing its head branch instead of ignoring it", async () => {
+    const p = fakeProbes({ exec: scripted(GITHUB, () => ok(JSON.stringify([{ number: 5, baseRefName: "main", url: "u" }]))) });
+    const res = await createStackGuardRunners(p).forgeOpenMrs("/wt");
+    expect(res.ok).toBe(false);
+  });
+
+  test("forgeOpenMrs on GitLab rejects a record whose iid is not an integer", async () => {
+    const p = fakeProbes({ exec: scripted(GITLAB, () => ok(JSON.stringify([{ iid: "9", source_branch: "a", target_branch: "b", web_url: "u" }]))) });
+    const res = await createStackGuardRunners(p).forgeOpenMrs("/wt");
+    expect(res.ok).toBe(false);
+  });
+
   test("gitq and forge calls carry a timeout so a hung CLI cannot block the sync", async () => {
     const timeouts: Record<string, number | undefined> = {};
     const p = fakeProbes({
