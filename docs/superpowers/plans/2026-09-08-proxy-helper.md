@@ -43,7 +43,7 @@ test("portless is pinned and the helper row is first-party (absent)", () => {
   expect(portless?.url).toMatch(/^https:\/\/registry\.npmjs\.org\/portless\/-\/portless-\d+\.\d+\.\d+\.tgz$/);
   expect(portless?.sha256).toMatch(/^[0-9a-f]{64}$/);
   expect(portless?.bundlePath).toBe("Contents/Helpers/portless-dist");
-  expect(portless?.exec).toEqual([]);
+  expect(portless?.exec).toEqual(["Contents/Helpers/node/bin/node", "Contents/Helpers/portless-dist/dist/cli.js"]);
   expect(lock.tools.find((t) => t.name === "mattstack-proxy-install")).toBeUndefined();
 });
 ```
@@ -62,11 +62,23 @@ Edit deps.lock: delete the `mattstack-proxy-install` row; add (matching the file
 { "name": "portless", "version": "0.15.6", "license": "MIT",
   "url": "https://registry.npmjs.org/portless/-/portless-0.15.6.tgz",
   "sha256": "<the shasum from above>",
-  "archive": "tar.gz", "extract": "package", "bundlePath": "Contents/Helpers/portless-dist", "exec": [],
+  "archive": "npm", "extract": "package", "bundlePath": "Contents/Helpers/portless-dist", "exec": ["Contents/Helpers/node/bin/node", "Contents/Helpers/portless-dist/dist/cli.js"],
   "exposeByDefault": false, "entitlements": "none", "status": "bundled", "kind": "helper" },
 ```
 
-An empty `exec` matters: check-bundle's run-smoke loop iterates `exec` argv arrays, and a JS tree has nothing to exec directly. If `parseDepsLock` rejects an empty `exec` (`bun test lib/__tests__/bundle-layout.test.ts` will say so), instead use `"exec": ["Contents/Helpers/node", "Contents/Helpers/portless-dist/dist/cli.js", "--version"]` so the smoke runs portless under the bundled node.
+The `exec` shape is forced by the schema: `parseDepsLock` rejects an empty
+`exec` (bundle-layout.ts:112) and every entry must be a `Contents/Helpers/`
+path, no flags (bundle-layout.ts:118; fast-browser precedent) — so the argv
+prefix is the bundled node's real binary (`Contents/Helpers/node/bin/node`,
+a directory row's inner bin) running portless's `dist/cli.js` (its
+package.json `bin`; zero runtime deps, verified). `archive: "npm"` matches
+the fast-browser registry-tarball precedent (fetch-deps treats it like
+tar.gz).
+
+Also in this task, `rt-tray/check-bundle.sh:341-352`'s per-row smoke runs
+`$bundlePath --version` and skips directory helpers via a hardcoded
+`node|fast-browser` case — add `portless` to that case in the same commit,
+or any intermediate check-bundle run fails on the directory bundlePath.
 - [ ] **Step 4: Run** `bun test lib/__tests__/deps-lock-live.test.ts lib/__tests__/bundle-layout.test.ts lib/__tests__/deps-lock-file.test.ts` → PASS; then `bash scripts/fetch-deps.sh` → portless downloads, verifies, unpacks.
 - [ ] **Step 5: Commit** — `git add rt-tray/deps.lock lib/__tests__/deps-lock-live.test.ts && git commit -m "deps.lock: pin portless, retire the pending helper row"`.
 
@@ -175,12 +187,19 @@ enum HelperVersion { static let value = "0.0.0" }
 
 ```bash
 # ─── Build + embed the privileged proxy helper ────────────────────────────────
-( cd "$REPO_DIR/rt-tray/proxy-helper" && swift build -c release --disable-sandbox )
-PROXY_HELPER_BIN="$REPO_DIR/rt-tray/proxy-helper/.build/release/ProxyInstall"
-cp "$PROXY_HELPER_BIN" "$CONTENTS/Helpers/mattstack-proxy-install"; chmod +x "$CONTENTS/Helpers/mattstack-proxy-install"
-xattr -cr "$CONTENTS/Helpers/mattstack-proxy-install" 2>/dev/null || true
-HELPER_ENTITLEMENTS+=("$CONTENTS/Helpers/mattstack-proxy-install	none")
+# Mirrors rt-ui exactly, including the prod-only gate: the dev bundle ships
+# without it and check-bundle's assertions are mattstack-gated to match.
+if [ "$IS_DEV" != true ]; then
+    ( cd "$REPO_DIR/rt-tray/proxy-helper" && swift build -c release --disable-sandbox )
+    PROXY_HELPER_BIN="$REPO_DIR/rt-tray/proxy-helper/.build/release/ProxyInstall"
+    cp "$PROXY_HELPER_BIN" "$CONTENTS/Helpers/mattstack-proxy-install"; chmod +x "$CONTENTS/Helpers/mattstack-proxy-install"
+    xattr -cr "$CONTENTS/Helpers/mattstack-proxy-install" 2>/dev/null || true
+    HELPER_ENTITLEMENTS+=("$CONTENTS/Helpers/mattstack-proxy-install	none")
+fi
 ```
+
+(Confirm rt-ui's own gate variable name at build.sh:285 and reuse it
+verbatim.)
 
 Then a scratch build proves it: run the build target the repo documents for scratch bundles and confirm `Contents/Helpers/mattstack-proxy-install --version` answers from the output tree. Never touch `/Applications/mattstack.app` or `rt-tray/mattstack-dev.app`.
 - [ ] **Step 6: Commit** — `git add rt-tray/proxy-helper rt-tray/build.sh && git commit -m "proxy-helper: skeleton with MATTSTACK_EXIT contract, built into Helpers"`.
@@ -192,39 +211,41 @@ Then a scratch build proves it: run the build target the repo documents for scra
 - Modify: `rt-tray/build.sh` (call gen-pins.sh before the helper's swift build), `rt-tray/proxy-helper/Sources/ProxyInstall/HelperVersion.swift` (becomes generated; add to .gitignore as `Sources/ProxyInstall/Pins.generated.swift`)
 
 **Interfaces:**
-- Produces: `Pins` (generated): `Pins.portlessVersion: String`, `Pins.portlessTarballSha256: String`, `Pins.appVersion: String`. `CopyStep.run(bundleRoot: URL, targetRoot: URL, fs: FileOps) throws` — verifies then stage+renames `Helpers/portless-dist` and `Helpers/node` into `targetRoot`; writes `targetRoot/VERSION` = `Pins.portlessVersion`. `FileOps` is a seam protocol (list/read/hash/stat/rename/mkdir) with a `RealFileOps` and a test fake.
+- Produces: `PinsValues` (plain struct: `portlessVersion`, `portlessTarballSha256`, `portlessTreeSha256`, `appVersion`, all String) and the generated `Pins.current: PinsValues`. `CopyStep.run(bundleRoot: URL, targetRoot: URL, fs: FileOps, pins: PinsValues) throws` — verifies then stage+renames `Helpers/portless-dist` and `Helpers/node` into `targetRoot`; writes `targetRoot/VERSION` = `pins.portlessVersion`. Production call sites pass `Pins.current`; tests pass a fixture `PinsValues` whose tree hash matches (or mismatches) the fake's, which is what makes the happy-path and swapped-tree tests deterministic. `FileOps` is a seam protocol (list/read/hash/stat/rename/mkdir) with a `RealFileOps` and a test fake. gen-pins.sh must run before ANY `swift build` or `swift test` (the executable target does not compile without the generated file); the test target still compiles no fixture Pins — fixtures are plain `PinsValues` literals inside the tests.
 - Consumes: `Report` from Task 2.
 
 - [ ] **Step 1: Write failing tests** — `CopyStepTests.swift` (against the fake `FileOps`):
 
 ```swift
 func testRefusesSwappedTreeWithValidLayout() {
-    let fs = FakeFileOps(treeHash: "deadbeef") // mismatches Pins fixture
-    XCTAssertThrowsError(try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs)) {
+    let pins = PinsValues.fixture(treeSha256: "cafe")
+    let fs = FakeFileOps(treeHash: "deadbeef")
+    XCTAssertThrowsError(try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs, pins: pins)) {
         XCTAssertTrue("\($0)".contains("hash mismatch"))
     }
     XCTAssertFalse(fs.renamedIntoPlace)
 }
 func testRefusesNonRootOwnedTargetSegment() {
     let fs = FakeFileOps(targetSegmentOwner: 501)
-    XCTAssertThrowsError(try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs))
+    XCTAssertThrowsError(try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs, pins: .fixture()))
 }
 func testRefusesSymlinkTargetSegment() {
     let fs = FakeFileOps(targetSegmentIsSymlink: true)
-    XCTAssertThrowsError(try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs))
+    XCTAssertThrowsError(try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs, pins: .fixture()))
 }
 func testHappyPathStagesThenRenamesAndWritesVersion() {
-    let fs = FakeFileOps() // hashes match the test Pins
-    try! CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs)
+    let pins = PinsValues.fixture(treeSha256: "cafe", portlessVersion: "9.9.9")
+    let fs = FakeFileOps(treeHash: "cafe")
+    try! CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs, pins: pins)
     XCTAssertTrue(fs.renamedIntoPlace)
     XCTAssertTrue(fs.stagedSiblingOfTarget)
-    XCTAssertEqual(fs.written["VERSION"], Pins.portlessVersion)
+    XCTAssertEqual(fs.written["VERSION"], "9.9.9")
 }
 ```
 
 The tree-hash definition the fake and real ops share: sha256 over each file's `(relative path, sha256(content))` pairs sorted by path — deterministic, layout-and-content binding. For the tarball-level check, hashing the shipped `portless-dist` tree directly is the verification (the tarball sha in Pins guards fetch time; the tree hash, also emitted by gen-pins.sh into `Pins.portlessTreeSha256`, guards install time).
 - [ ] **Step 2: Run** `swift test` → FAIL (types missing).
-- [ ] **Step 3: Implement.** `gen-pins.sh` (bash, run by build.sh before the helper compile): reads `rt-tray/deps.lock` with the bundled jq or python3, reads the app version from the build's version source (the same variable build.sh stamps into Info.plist — read it from the environment variable build.sh already exports, or accept it as `$1`), computes the tree hash of the FETCHED `rt-tray/deps/arm64/portless-dist` (fetch-deps output; fail loudly if absent), and writes `Sources/ProxyInstall/Pins.generated.swift`:
+- [ ] **Step 3: Implement.** `gen-pins.sh` (bash, run by build.sh before the helper compile): reads `rt-tray/deps.lock` with the bundled jq or python3, accepts the app version as `$1` (build.sh normalizes its version only at ~line 336, AFTER the embed block's position, so the embed block passes the value explicitly rather than reading a not-yet-set variable — hoist the version stanza or pass the raw value, and say which in the code), computes the tree hash of the FETCHED `rt-tray/deps/arm64/portless-dist` (fetch-deps output; fail loudly if absent), and writes `Sources/ProxyInstall/Pins.generated.swift`:
 
 ```swift
 enum Pins {
@@ -236,7 +257,7 @@ enum Pins {
 enum HelperVersion { static let value = Pins.appVersion }
 ```
 
-Delete the placeholder `HelperVersion.swift`; add a committed `Pins.fixture.swift` under `Tests/` so `swift test` runs without the build (test target compiles the fixture, executable target compiles the generated file; gen-pins.sh writes the generated file and `swift build` fails loudly without it, which is correct: the helper must never build with unpinned values).
+Delete the placeholder `HelperVersion.swift`. `Pins.generated.swift` defines `Pins.current: PinsValues` (and `HelperVersion.value = Pins.current.appVersion`); gen-pins.sh writes it and every `swift build`/`swift test` fails loudly without it, which is correct: the helper must never build with unpinned values. Tests never touch `Pins.current` — they construct `PinsValues` fixtures inline (`PinsValues.fixture(...)` is a test-only convenience initializer in the test target).
 
 `CopyStep.swift` implements: resolve `bundleRoot/Helpers/portless-dist` and `bundleRoot/Helpers/node`; `fs.treeHash(portlessDist) == Pins.portlessTreeSha256` else throw `hash mismatch`; walk each ancestor segment of `targetRoot` that exists: `fs.stat` must be root-owned (uid 0) and not a symlink, else throw; stage into `targetRoot.deletingLastPathComponent()/.proxy-stage-<pid>`; `fs.rename` over `targetRoot`; write `VERSION`.
 - [ ] **Step 4: Run** `swift test` → PASS. Wire `bash rt-tray/proxy-helper/scripts/gen-pins.sh` into build.sh immediately before the helper's swift build; scratch-build to prove the generated pins compile.
@@ -339,6 +360,13 @@ Plus validator truth-table tests for the four row outcomes (fake probes seed the
 
 - [ ] **Step 1: Add the assertion block** (mirror rt-ui's):
 
+First, the stowaway sweep: `check-bundle.sh:370` builds
+`allowed=" rt-ui skills "` plus deps.lock bundlePath segments, and fails any
+undeclared top-level Helpers entry — with the lock row gone the helper is a
+stowaway, so extend that literal to `" rt-ui skills mattstack-proxy-install "`.
+Then the assertion block, gated `[ "$exe" = mattstack ]` like rt-ui's
+(the dev bundle ships without the helper per Task 2's embed gate):
+
 ```bash
 local pxy="$app/Contents/Helpers/mattstack-proxy-install"
 if [ -f "$pxy" ]; then
@@ -375,7 +403,7 @@ curl -fsS --max-time 10 "https://deck.mattstack" >/dev/null 2>&1 && ok "deck ans
 ```
 
 (`sudo -n` works in the guest via the harness's admin user; if the tester user lacks sudo, replace the loaded-check with `launchctl print system/sh.portless.proxy` run through the existing admin-exec path the harness uses elsewhere — check `install-app.sh` for the precedent.)
-- [ ] **Step 2: Run the leg**: `bash rt-tray/vm/run/walkthrough.sh --ver 26 --app rt-tray/mattstack.app --scenario create --fresh-team-repo --no-graphics` with a scratch-built DMG carrying Tasks 1-7 (`--dmg <scratch>/mattstack.dmg`). Expected: `proxy.install: done` and all four new assertions `ok`. Iterate here until green; this is the release-gate proof (RT-106's verification section).
+- [ ] **Step 2: Run the leg**: `bash rt-tray/vm/run/walkthrough.sh --ver 26 --dmg <scratch>/mattstack.dmg --scenario create --fresh-team-repo --no-graphics` where `<scratch>/mattstack.dmg` is a scratch-built DMG carrying Tasks 1-7 — never `--app rt-tray/mattstack.app`, the blessed bundle the repo rules forbid touching. Expected: `proxy.install: done` and all four new assertions `ok`. Iterate here until green; this is the release-gate proof (RT-106's verification section).
 - [ ] **Step 3: Commit** — `git commit -am "vm: assert the proxy installs, loads, and serves .mattstack"`.
 
 ### Task 9: Docs + gates
