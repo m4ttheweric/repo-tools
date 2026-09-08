@@ -510,22 +510,24 @@ export async function teamSyncRow(
       problems.push(`${slug}: rebase conflict: ${e.conflicted.detail}; rebase and rt team publish by hand`);
       continue;
     }
-    // A pull-only clone (joined, not created) never pushes, so it has no push to fail; judging
-    // it on lastPushError below would blame it for a mode it was never in. `=== true` rather than
-    // truthy: a fixture or a pre-Task-6 entry missing the field must read as a pushing clone, not
-    // silently skip every check that follows. The one failure mode a pull-only clone can have of
-    // its own is a fast-forward it refused; rt never resets that for the user (see the comment on
-    // `lastPullSkipped` in home-snapshot.ts), it only names the clone so the user can.
-    if (e.pullOnly === true) {
-      if (e.lastPullSkipped) {
-        problems.push(`${slug}: pull-only clone cannot fast-forward (${e.lastPullSkipped}); reset it to origin or ask the team's owner`);
-      }
+    // A pull-only clone's own failure mode: a fast-forward it refused. rt never resets that for
+    // the user (see the comment on `lastPullSkipped` in home-snapshot.ts), it only names the
+    // clone so the user can. `=== true` rather than truthy: a fixture or a pre-Task-6 entry
+    // missing the field must read as a pushing clone, not a silent pull-only skip.
+    if (e.pullOnly === true && e.lastPullSkipped) {
+      problems.push(`${slug}: pull-only clone cannot fast-forward (${e.lastPullSkipped}); reset it to origin or ask the team's owner`);
       continue;
     }
     // Both fields come off the same redactCredentials(stderr) shape in the
     // engine, so "" is reachable for either; tested against null/undefined,
     // never a truthiness check `""` would fail past.
-    if (e.lastPushError != null) {
+    //
+    // A pull-only clone (joined, not created) never pushes, so it has no push to fail; skip only
+    // THIS check for it. Every check below (fetch failure, never-pulled, staleness) still applies
+    // to a pull-only clone exactly as much as a pushing one: it fetches on the same timer, and a
+    // broken fetch (expired token, revoked access) must not read as "ready" just because the
+    // clone never pushes.
+    if (e.pullOnly !== true && e.lastPushError != null) {
       problems.push(`${slug}: push failing: ${e.lastPushError || "push failed"}`);
       continue;
     }

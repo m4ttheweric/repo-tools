@@ -904,13 +904,76 @@ describe("teamSyncRow", () => {
     const r = await teamSyncRow(
       ["acme"],
       async () => [
-        { slug: "acme", lastPullAt: 900_000, lastPushError: "some stale push error", conflicted: null, pullOnly: true, lastPullSkipped: null } as never,
+        {
+          slug: "acme",
+          lastPullAt: 900_000,
+          lastPushError: "some stale push error",
+          lastPullError: null,
+          conflicted: null,
+          pullOnly: true,
+          lastPullSkipped: null,
+        } as never,
       ],
       now,
       300,
     );
     expect(r?.status).toBe("ready");
     expect(r?.detail).not.toContain("push failing");
+  });
+
+  test("a pull-only clone that is fetch-failing is needs-you, not silenced by the push-check skip", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        {
+          slug: "acme",
+          lastPullAt: 900_000,
+          lastPushError: null,
+          lastPullError: "remote: HTTP Basic: Access denied",
+          conflicted: null,
+          pullOnly: true,
+          lastPullSkipped: null,
+        } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("fetch failing");
+  });
+
+  test("a pull-only clone that has never pulled is needs-you, not silenced by the push-check skip", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        { slug: "acme", lastPullAt: 0, lastPushError: null, lastPullError: null, conflicted: null, pullOnly: true, lastPullSkipped: null } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("acme");
+  });
+
+  test("a pull-only clone whose last pull is stale is needs-you, not silenced by the push-check skip", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        {
+          slug: "acme",
+          lastPullAt: now() - 86_400_000,
+          lastPushError: null,
+          lastPullError: null,
+          conflicted: null,
+          pullOnly: true,
+          lastPullSkipped: null,
+        } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("last pull");
   });
 
   test("a pull-only clone that cannot fast-forward is needs-you, and is never reset", async () => {
