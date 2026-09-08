@@ -212,13 +212,14 @@ ax_wait_status_not() {  # <rowId> <status-to-leave> <timeout-s>
 # and the click lands on another. Both branches below resolve their own window
 # by what it says, never by index.
 #
-# The trust branch is a safety net for a prompt the product should not raise at
-# all. `com.apple.trust-settings.admin` is `entitled` OR `authenticate-admin`,
-# and `authenticate-admin` carries `timeout 0`, so its credential is never
-# cached: every trust-settings write asks again, no matter who calls it. Typing
-# rather than writing the value is what got it accepted when it was driven on
-# its own; under a live Install it still re-presents, which is a product
-# question, not a driver one.
+# The trust prompt is a product fact, not a defect to route around:
+# `com.apple.trust-settings.admin` is `entitled` OR `authenticate-admin`, and
+# `authenticate-admin` carries `timeout 0`, so its credential is never cached
+# and every trust-settings write asks again, no matter who calls it. Typing
+# rather than writing the value is what gets that dialog accepted.
+#
+# AX_TRUST_DECLINE=1 cancels it instead, which is the second scenario's whole
+# point: the install must survive a user who says no to the certificate.
 ax_admin_auth_once() {
   local u p windows trust other; u=$(ax_esc "$VM_ADMIN_USER"); p=$(ax_esc "$VM_ADMIN_PASS")
   # One probe answers "is a dialog up, and which window is which": the
@@ -239,6 +240,12 @@ ax_admin_auth_once() {
     return (t as text) & "," & (e as text)
   end tell' 2>/dev/null | tr -d ' \n')
   trust="${windows%%,*}"; other="${windows##*,}"
+  if [ "${trust:-0}" -gt 0 ] 2>/dev/null && [ "${AX_TRUST_DECLINE:-0}" = 1 ]; then
+    ax_osa "tell application \"System Events\" to tell process \"SecurityAgent\"
+      set frontmost to true
+      tell window $trust to click (first button whose name is \"Cancel\")
+    end tell" >/dev/null && { ax_log "admin auth declined (SecurityAgent: certificate trust)"; return 0; }
+  fi
   if [ "${trust:-0}" -gt 0 ] 2>/dev/null; then
     ax_osa "tell application \"System Events\" to tell process \"SecurityAgent\"
       set frontmost to true

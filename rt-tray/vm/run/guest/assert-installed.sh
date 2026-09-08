@@ -1,11 +1,15 @@
 #!/bin/bash
 # Assert the installed state in the guest, through rt and tray.sock (never UI text).
-# Usage: assert-installed.sh [--expect-version <v>] [--headless]
+# Usage: assert-installed.sh [--expect-version <v>] [--headless] [--expect-untrusted]
+#
+# --expect-untrusted is the declined-certificate scenario: the install ran, the
+# user said no to macOS's trust prompt, and the claim under test is that the
+# proxy still serves, the checklist says so, and the trust verb clears it.
 set -uo pipefail
 GUEST_RUN="${GUEST_RUN:-/Volumes/My Shared Files/run}"; LOGS="$GUEST_RUN/logs"
 mkdir -p "$LOGS" || { echo "assert-installed.sh: cannot write $LOGS" >&2; exit 2; }
-EXPECT=""; HEADLESS=0
-while [ $# -gt 0 ]; do case "$1" in --expect-version) [ -n "${2:-}" ] || { echo "assert-installed.sh: --expect-version needs a value" >&2; exit 2; }; EXPECT="$2"; shift 2;; --headless) HEADLESS=1; shift;; *) shift;; esac; done
+EXPECT=""; HEADLESS=0; UNTRUSTED=0
+while [ $# -gt 0 ]; do case "$1" in --expect-version) [ -n "${2:-}" ] || { echo "assert-installed.sh: --expect-version needs a value" >&2; exit 2; }; EXPECT="$2"; shift 2;; --headless) HEADLESS=1; shift;; --expect-untrusted) UNTRUSTED=1; shift;; *) shift;; esac; done
 export PATH="$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 fails=0
 ok()   { echo "ASSERT ok   $1"; }
@@ -97,14 +101,28 @@ if [ "$HEADLESS" = 0 ]; then
   # `setup status --json` is a Plan (groups/rows), not a step ledger: apply's
   # step states are streamed as NDJSON and never persisted. tool.proxy is the
   # row that reads back what proxy.install left behind: `ready` only when the
-  # plist is there AND the deployed VERSION matches the bundle's pin.
-  rt setup status --json 2>/dev/null | tail -1 > "$LOGS/setup-status.json"
-  proxy_row=$([ -x "$JQ" ] && "$JQ" -r '.groups[].rows[]|select(.id=="tool.proxy")|.status + ": " + (.detail // "")' < "$LOGS/setup-status.json" 2>/dev/null)
-  case "$proxy_row" in
-    ready:*) ok "proxy installed: tool.proxy $proxy_row";;
-    "")      bad "no tool.proxy row in rt setup status --json (see logs/setup-status.json)";;
-    *)       bad "proxy not installed: tool.proxy $proxy_row";;
-  esac
+  # plist is there, the deployed VERSION matches the bundle's pin, and the CA
+  # is trusted.
+  proxy_row() {  # <log basename>
+    rt setup status --json 2>/dev/null | tail -1 > "$LOGS/$1.json"
+    [ -x "$JQ" ] && "$JQ" -r '.groups[].rows[]|select(.id=="tool.proxy")|.status + ": " + (.detail // "")' < "$LOGS/$1.json" 2>/dev/null
+  }
+  row=$(proxy_row setup-status)
+  if [ "$UNTRUSTED" = 1 ]; then
+    # The whole point of the scenario: declining the certificate leaves a
+    # working proxy and a row that says what is missing, not a failed install.
+    case "$row" in
+      needs-you:*certificate*) ok "certificate declined, and the row says so: tool.proxy $row";;
+      "")                      bad "no tool.proxy row in rt setup status --json (see logs/setup-status.json)";;
+      *)                       bad "expected the untrusted-certificate row: tool.proxy $row";;
+    esac
+  else
+    case "$row" in
+      ready:*) ok "proxy installed: tool.proxy $row";;
+      "")      bad "no tool.proxy row in rt setup status --json (see logs/setup-status.json)";;
+      *)       bad "proxy not installed: tool.proxy $row";;
+    esac
+  fi
   [ -f /Library/LaunchDaemons/sh.portless.proxy.plist ] && ok "portless LaunchDaemon plist present" || bad "portless plist missing"
   # `launchctl print system/<label>` answers a standard user with "Could not
   # find service" whether the service is absent or merely unreadable, and the
@@ -131,10 +149,47 @@ if [ "$HEADLESS" = 0 ]; then
   served=$([ -x "$JQ" ] && "$JQ" -r '.[].hostname | select(endswith(".mattstack"))' < "$LOGS/proxy-routes.json" 2>/dev/null | head -1)
   if [ -z "$served" ]; then
     bad "no .mattstack route in ~/.portless/routes.json for the proxy to serve"
+  elif [ "$UNTRUSTED" = 1 ]; then
+    # Serving and being trusted are separate claims, and this scenario needs
+    # both halves proven: the proxy answers, and the CA is genuinely not
+    # trusted (curl without --insecure is the same trust store a browser uses).
+    curl -fsS --insecure --max-time 10 "https://$served" >/dev/null 2>&1 \
+      && ok "$served answers over https through the untrusted proxy" \
+      || bad "$served is routed but does not answer through the proxy"
+    curl -fsS --max-time 10 "https://$served" >/dev/null 2>&1 \
+      && bad "$served verified against the system trust store, so the certificate was not declined" \
+      || ok "$served is not trusted yet, as the declined scenario expects"
   elif curl -fsS --max-time 10 "https://$served" >/dev/null 2>&1; then
     ok "$served answers over https through the proxy"
   else
     bad "$served is routed but does not answer through the proxy"
+  fi
+
+  # The remedy the row offers, exercised end to end: the tray's own escalator
+  # runs the helper's trust verb, both dialogs get answered, and the row that
+  # asked for it clears.
+  if [ "$UNTRUSTED" = 1 ] && [ -S "$SOCK" ]; then
+    AX_TRUST_DECLINE=0
+    source "$(cd "$(dirname "$0")" && pwd)/ax.sh"
+    curl -sS -X POST --max-time 300 --unix-socket "$SOCK" http://localhost/privileged/proxy-trust > "$LOGS/proxy-trust.json" 2>&1 &
+    trust_pid=$!
+    n=90
+    while kill -0 "$trust_pid" 2>/dev/null && [ "$n" -gt 0 ]; do ax_admin_auth_once >/dev/null 2>&1; sleep 2; n=$((n-1)); done
+    wait "$trust_pid"
+    grep -q '"ok":true' "$LOGS/proxy-trust.json" 2>/dev/null \
+      && ok "the trust verb ran through /privileged/proxy-trust" \
+      || bad "/privileged/proxy-trust: $(tr -d '\n' < "$LOGS/proxy-trust.json" 2>/dev/null | cut -c1-200)"
+    grep -q 'MATTSTACK_TRUST=ok' "$LOGS/proxy-trust.json" 2>/dev/null \
+      && ok "the helper reported MATTSTACK_TRUST=ok" \
+      || bad "the helper did not report MATTSTACK_TRUST=ok"
+    row=$(proxy_row setup-status-after-trust)
+    case "$row" in
+      ready:*) ok "the certificate row cleared: tool.proxy $row";;
+      *)       bad "tool.proxy did not clear after the trust verb: ${row:-no row}";;
+    esac
+    curl -fsS --max-time 10 "https://$served" >/dev/null 2>&1 \
+      && ok "$served now answers with a trusted certificate" \
+      || bad "$served still fails against the system trust store after trusting"
   fi
 
   # Evidence for the proxy assertions above, whether they passed or failed:

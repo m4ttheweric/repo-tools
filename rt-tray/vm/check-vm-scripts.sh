@@ -49,6 +49,14 @@ t "drive-setup.sh rejects unknown scenario"       bash -c '! (env GUEST_RUN=/tmp
 t "drive-setup.sh rejects unknown forge"          bash -c '! (env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x bash run/guest/drive-setup.sh create --forge bitbucket >/dev/null 2>&1)'
 t "drive-setup.sh derives gitlab from the remote" bash -c 'env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x TEAM_REMOTE=https://gitlab.com/g/r.git bash run/guest/drive-setup.sh create 2>&1 | grep -q "forge=gitlab"'
 t "drive-setup.sh rejects unknown flag"           bash -c '! (env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x bash run/guest/drive-setup.sh create --nope >/dev/null 2>&1)'
+t "walkthrough --decline-trust --dry-run"         env VM_ARTIFACTS=/tmp/vmcheck-art bash run/walkthrough.sh --ver 26 --app ../mattstack.app --decline-trust --dry-run
+t "walkthrough --decline-trust refuses headless"  bash -c \
+  '! env VM_ARTIFACTS=/tmp/vmcheck-art bash run/walkthrough.sh --ver 26 --app ../mattstack.app --scenario headless --decline-trust --dry-run >/dev/null 2>&1'
+# The declining branch must be as fast as the answering one: screen_install
+# polls this every couple of seconds for the whole install.
+t "ax_admin_auth_once returns fast when declining" env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x AX_TRUST_DECLINE=1 bash -c 'source run/guest/ax.sh; s=$SECONDS; ax_admin_auth_once; rc=$?; [ "$rc" -eq 1 ] && [ $((SECONDS-s)) -le 3 ]'
+t "assert-installed.sh takes --expect-untrusted"  bash -c 'grep -q -- "--expect-untrusted" run/guest/assert-installed.sh'
+
 
 rm -rf /tmp/vmcheck-tu
 mkdir -p /tmp/vmcheck-tu/upd
