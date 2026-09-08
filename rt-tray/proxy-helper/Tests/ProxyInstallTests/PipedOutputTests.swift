@@ -52,6 +52,15 @@ final class PipedOutputTests: XCTestCase {
             "got: \(result.output)")
     }
 
+    // The trust verb refuses the same way install does, so its own exit path
+    // carries the trailer too.
+    func testTrustRefusesUnescalatedAndStillEmitsTheTrailer() throws {
+        try XCTSkipIf(getuid() == 0, "the unescalated refusal path does not exist when the suite runs as root")
+        let result = runPiped(["trust"])
+        XCTAssertEqual(result.reason, .exit)
+        XCTAssertTrue(result.output.hasSuffix("MATTSTACK_EXIT=77\n"), "got: \(result.output)")
+    }
+
     func testUsageTrailerSurvivesPipedStdout() {
         let result = runPiped([])
         XCTAssertEqual(result.reason, .exit)

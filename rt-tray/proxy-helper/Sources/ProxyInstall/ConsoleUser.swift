@@ -14,6 +14,10 @@ struct ConsoleUser: Equatable {
     /// `~/.portless`, which the root daemon reads and writes on their behalf.
     var stateDir: String { URL(fileURLWithPath: home).appendingPathComponent(".portless").path }
 
+    /// The CA the proxy signs its host certificates with. portless mints it
+    /// into the state dir, so it exists only once the daemon has started.
+    var caPath: String { URL(fileURLWithPath: stateDir).appendingPathComponent("ca.pem").path }
+
     /// The sudoers rule is rendered by interpolation, so a name carrying
     /// sudoers syntax rewrites the rule into something `visudo -c` still
     /// accepts. Only a short-name shape gets through.

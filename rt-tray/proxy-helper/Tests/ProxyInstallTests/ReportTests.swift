@@ -11,5 +11,11 @@ final class ReportTests: XCTestCase {
         XCTAssertEqual(ProxyInstallMain.parse(argv: ["x", "--version"]), .version)
         XCTAssertEqual(ProxyInstallMain.parse(argv: ["x", "install"]), .install)
         XCTAssertEqual(ProxyInstallMain.parse(argv: ["x", "remove"]), .remove)
+        XCTAssertEqual(ProxyInstallMain.parse(argv: ["x", "trust"]), .trust)
+    }
+    func testTrustLineShape() {
+        XCTAssertEqual(Report.trustLine(.ok), "MATTSTACK_TRUST=ok")
+        XCTAssertEqual(Report.trustLine(.declined), "MATTSTACK_TRUST=declined")
+        XCTAssertEqual(Report.trustLine(.failed), "MATTSTACK_TRUST=failed")
     }
 }

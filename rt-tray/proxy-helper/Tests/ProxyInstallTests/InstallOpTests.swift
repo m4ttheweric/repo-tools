@@ -75,17 +75,21 @@ final class FakeCommandRunner: CommandRunner {
     var handler: ([String]) -> CommandResult = { _ in CommandResult(status: 0, output: "") }
     private(set) var calls: [[String]] = []
     private(set) var envs: [[String: String]] = []
+    private(set) var timeouts: [TimeInterval?] = []
 
-    func run(_ argv: [String], env: [String: String]) throws -> CommandResult {
+    func run(_ argv: [String], env: [String: String], timeout: TimeInterval?) throws -> CommandResult {
         calls.append(argv)
         envs.append(env)
+        timeouts.append(timeout)
         return handler(argv)
     }
 
     func called(_ needle: String) -> Bool { calls.contains { $0.contains(needle) } }
 }
 
-private let trustArgv = [ProxyPaths.node, ProxyPaths.cli, "trust"]
+let caFixturePath = "/Users/tester/.portless/ca.pem"
+let verifyArgv = TrustStep.verifyArgv(caFixturePath)
+let addTrustArgv = TrustStep.addArgv(caFixturePath)
 private let visudoArgv = ["/usr/sbin/visudo", "-c", "-f", Sudoers.stagePath]
 private let bootoutArgv = ["/bin/launchctl", "bootout", "system/sh.portless.proxy"]
 private let bootstrapArgv = ["/bin/launchctl", "bootstrap", "system", LaunchdPlist.path]
@@ -94,16 +98,33 @@ final class InstallOpTests: XCTestCase {
     private var fs = RecordingFileOps()
     private var runner = FakeCommandRunner()
     private var copiedInto: URL?
+    private var lines: [String] = []
 
     override func setUp() {
         super.setUp()
         fs = RecordingFileOps()
         runner = FakeCommandRunner()
         copiedInto = nil
+        lines = []
+        answer()
     }
 
-    private func makeOp(copyFails: Bool = false) -> InstallOp {
-        InstallOp(
+    /// Untrusted unless a case says otherwise, so the default path exercises
+    /// the trust write rather than the already-trusted short circuit.
+    private func answer(_ overrides: @escaping ([String]) -> CommandResult? = { _ in nil }) {
+        runner.handler = { argv in
+            if let answer = overrides(argv) { return answer }
+            return argv == verifyArgv
+                ? CommandResult(status: 1, output: "not trusted")
+                : CommandResult(status: 0, output: "")
+        }
+    }
+
+    /// The CA exists by default: portless mints it when the daemon starts, and
+    /// every case except the fresh-machine one below runs after that.
+    private func makeOp(copyFails: Bool = false, caPresent: Bool = true) -> InstallOp {
+        if caPresent { fs.existingPaths.insert(caFixturePath) }
+        var op = InstallOp(
             bundleRoot: URL(fileURLWithPath: "/Applications/mattstack.app/Contents"),
             user: .fixture(),
             pins: .fixture(),
@@ -113,12 +134,15 @@ final class InstallOpTests: XCTestCase {
                 if copyFails { throw ProxyInstallError("payload refused") }
                 copiedInto = targetRoot
             })
+        op.emit = { [self] in lines.append($0) }
+        op.caWait = 0
+        return op
     }
 
     func testHappyPathRunsTheStepsInOrder() {
         XCTAssertEqual(makeOp().execute(), 0)
         XCTAssertEqual(copiedInto?.path, ProxyPaths.root)
-        XCTAssertEqual(runner.calls, [trustArgv, visudoArgv, bootoutArgv, bootstrapArgv])
+        XCTAssertEqual(runner.calls, [visudoArgv, bootoutArgv, bootstrapArgv, verifyArgv, addTrustArgv])
         XCTAssertEqual(fs.replaced.map(\.to), [LaunchdPlist.path, Sudoers.path])
         XCTAssertEqual(fs.written[LaunchdPlist.stagePath]?.isEmpty, false)
         XCTAssertEqual(
@@ -144,14 +168,64 @@ final class InstallOpTests: XCTestCase {
         }
     }
 
-    // The trust run and the daemon share an environment: the same state dir, and
-    // the SUDO_* pair portless needs to chown what it writes back to the user.
-    func testTrustRunsAgainstTheConsoleUsersStateDir() {
+    // The whole stdout report, in order: the app parses the last two lines, and
+    // the trust line has to sit immediately before the exit trailer main.swift
+    // adds.
+    func testHappyPathReportsEveryStepAndTheTrustOutcome() {
+        XCTAssertEqual(makeOp().execute(), 0)
+        XCTAssertEqual(lines, ["copy: ok", "plist: ok", "sudoers: ok", "bootstrap: ok", "trust: ok", "MATTSTACK_TRUST=ok"])
+    }
+
+    // Declining the certificate dialog is an answer, not a failure: the install
+    // finishes, the proxy runs untrusted, and the outcome travels on its own
+    // line for the tool.proxy row to turn into a remedy.
+    func testDeclinedTrustStillInstallsAndReportsDeclined() {
+        answer { $0 == addTrustArgv ? CommandResult(status: 1, output: "SecTrustSettingsSetTrustSettings: The authorization was canceled by the user.") : nil }
+        XCTAssertEqual(makeOp().execute(), 0)
+        XCTAssertEqual(lines, [
+            "copy: ok", "plist: ok", "sudoers: ok", "bootstrap: ok",
+            "trust: declined SecTrustSettingsSetTrustSettings: The authorization was canceled by the user.",
+            "MATTSTACK_TRUST=declined",
+        ])
+        XCTAssertTrue(fs.replaced.contains { $0.to == LaunchdPlist.path })
+        XCTAssertFalse(fs.removed.contains(LaunchdPlist.path))
+    }
+
+    func testFailedTrustStillInstallsAndReportsFailed() {
+        answer { $0 == addTrustArgv ? CommandResult(status: 1, output: "SecTrustSettingsSetTrustSettings: The authorization was denied since no user interaction was possible.") : nil }
+        XCTAssertEqual(makeOp().execute(), 0)
+        XCTAssertEqual(lines, [
+            "copy: ok", "plist: ok", "sudoers: ok", "bootstrap: ok",
+            "trust: failed SecTrustSettingsSetTrustSettings: The authorization was denied since no user interaction was possible.",
+            "MATTSTACK_TRUST=failed",
+        ])
+    }
+
+    // The daemon mints the CA at startup, so the trust write is the one step
+    // whose input this op does not produce. When it never appears the run still
+    // succeeds and says so.
+    func testMissingCaAfterBootstrapIsReportedAndNotFatal() {
+        XCTAssertEqual(makeOp(caPresent: false).execute(), 0)
+        XCTAssertEqual(lines.suffix(2), ["trust: failed no CA certificate at \(caFixturePath)", "MATTSTACK_TRUST=failed"])
+        XCTAssertFalse(runner.called("add-trusted-cert"))
+    }
+
+    // An already-trusted CA must not raise the dialog again: without this every
+    // re-install and every version bump would ask for the certificate anew.
+    func testAlreadyTrustedSkipsTheWrite() {
+        answer { $0 == verifyArgv ? CommandResult(status: 0, output: "") : nil }
+        XCTAssertEqual(makeOp().execute(), 0)
+        XCTAssertEqual(lines.suffix(2), ["trust: ok (already trusted)", "MATTSTACK_TRUST=ok"])
+        XCTAssertFalse(runner.called("add-trusted-cert"))
+    }
+
+    // Nobody may ever answer the dialog, and a helper blocked on it holds the
+    // escalated session and the Install behind it.
+    func testTheTrustWriteIsBounded() throws {
         _ = makeOp().execute()
-        let env = runner.envs.first ?? [:]
-        XCTAssertEqual(env["PORTLESS_STATE_DIR"], "/Users/tester/.portless")
-        XCTAssertEqual(env["SUDO_UID"], "501")
-        XCTAssertEqual(env["HOME"], "/Users/tester")
+        let index = try XCTUnwrap(runner.calls.firstIndex(of: addTrustArgv))
+        XCTAssertEqual(runner.timeouts[index], 120)
+        XCTAssertNil(runner.timeouts[0], "launchctl and visudo answer on their own; only a dialog needs a bound")
     }
 
     func testCopyFailureStopsBeforeAnythingPrivilegedRuns() {
@@ -178,25 +252,6 @@ final class InstallOpTests: XCTestCase {
         fs.existingPaths.insert("/x/dest")
         XCTAssertThrowsError(try fs.rename(from: URL(fileURLWithPath: "/x/src"), to: URL(fileURLWithPath: "/x/dest")))
         XCTAssertNoThrow(try fs.replaceFile(from: URL(fileURLWithPath: "/x/src2"), to: URL(fileURLWithPath: "/x/dest")))
-    }
-
-    // Trust runs before any privileged write, so its failure undoes nothing.
-    func testTrustFailureWritesNothingPrivileged() {
-        runner.handler = { $0 == trustArgv ? CommandResult(status: 1, output: "no CA") : CommandResult(status: 0, output: "") }
-        XCTAssertEqual(makeOp().execute(), 71)
-        XCTAssertTrue(fs.written.isEmpty)
-        XCTAssertTrue(fs.replaced.isEmpty)
-        XCTAssertFalse(runner.called("-c"))
-        XCTAssertFalse(runner.called("bootstrap"))
-    }
-
-    func testTrustFailureLeavesAPreviousInstallIntact() {
-        fs.existingPaths.insert(LaunchdPlist.path)
-        fs.existingPaths.insert(Sudoers.path)
-        runner.handler = { $0 == trustArgv ? CommandResult(status: 1, output: "no CA") : CommandResult(status: 0, output: "") }
-        XCTAssertEqual(makeOp().execute(), 71)
-        XCTAssertFalse(fs.removed.contains(LaunchdPlist.path))
-        XCTAssertFalse(fs.removed.contains(Sudoers.path))
     }
 
     func testPlistWriteFailureIsFatalAndLeavesNoCandidate() {

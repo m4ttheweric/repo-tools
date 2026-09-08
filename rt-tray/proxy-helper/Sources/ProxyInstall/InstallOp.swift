@@ -17,6 +17,9 @@ struct InstallOp {
     let fs: FileOps
     let runner: CommandRunner
     var copyPayload: (URL, URL, FileOps, PinsValues) throws -> Void = CopyStep.run
+    var emit: (String) -> Void = Report.step
+    /// How long to give the freshly bootstrapped daemon to mint the CA.
+    var caWait: TimeInterval = 20
 
     static func run() -> Int32 {
         // Everything below assumes root; refusing here keeps an unescalated run
@@ -61,21 +64,10 @@ struct InstallOp {
         do {
             try copyPayload(bundleRoot, URL(fileURLWithPath: ProxyPaths.root), fs, pins)
         } catch {
-            Report.step("copy failed: \(error)")
+            emit("copy failed: \(error)")
             return ExitCode.software
         }
-        Report.step("copy: ok")
-
-        // Trust before any privileged write: it installs the CA with the copied
-        // portless and touches neither launchd nor sudoers, so a keychain hiccup
-        // (portless's own docs warn securityd can wedge) leaves a previous
-        // install exactly as it was, with nothing to undo.
-        let trust = runCommand([ProxyPaths.node, ProxyPaths.cli, "trust"], env: portlessEnvironment)
-        guard trust.status == 0 else {
-            Report.step("trust failed (\(trust.status)): \(condensed(trust.output))")
-            return ExitCode.osErr
-        }
-        Report.step("trust: ok")
+        emit("copy: ok")
 
         let plistStage = URL(fileURLWithPath: LaunchdPlist.stagePath)
         do {
@@ -97,11 +89,11 @@ struct InstallOp {
             // destination. A failed rename leaves the old plist in place.
             try fs.replaceFile(from: plistStage, to: URL(fileURLWithPath: LaunchdPlist.path))
         } catch {
-            Report.step("plist failed: \(error)")
+            emit("plist failed: \(error)")
             discard(plistStage)
             return ExitCode.software
         }
-        Report.step("plist: ok")
+        emit("plist: ok")
 
         let sudoersStage = URL(fileURLWithPath: Sudoers.stagePath)
         var sudoersFailure = ExitCode.software
@@ -116,12 +108,12 @@ struct InstallOp {
             }
             try fs.replaceFile(from: sudoersStage, to: URL(fileURLWithPath: Sudoers.path))
         } catch {
-            Report.step("sudoers failed: \(error)")
+            emit("sudoers failed: \(error)")
             discard(sudoersStage)
             teardown()
             return sudoersFailure
         }
-        Report.step("sudoers: ok")
+        emit("sudoers: ok")
 
         // A first install has no service to tear down, so bootout's failure is
         // the normal case; on a re-install it drops the running daemon so
@@ -129,24 +121,31 @@ struct InstallOp {
         _ = runCommand(["/bin/launchctl", "bootout", "system/" + LaunchdPlist.label])
         let bootstrap = runCommand(["/bin/launchctl", "bootstrap", "system", LaunchdPlist.path])
         guard bootstrap.status == 0 else {
-            Report.step("bootstrap failed (\(bootstrap.status)): \(condensed(bootstrap.output))")
+            emit("bootstrap failed (\(bootstrap.status)): \(condensed(bootstrap.output))")
             teardown()
             return ExitCode.osErr
         }
-        Report.step("bootstrap: ok")
+        emit("bootstrap: ok")
+
+        // Trust runs last because it is the one step whose input this op does
+        // not produce: portless mints the CA when the daemon starts, so on a
+        // fresh machine there is nothing to trust until bootstrap has run. It
+        // is also the one non-fatal step: the proxy serves untrusted, browsers
+        // warn, and the tool.proxy row carries the Retry.
+        waitForCA()
+        let outcome = TrustStep(caPath: user.caPath, fs: fs, runner: runner).run()
+        emit(outcome.line)
+        emit(Report.trustLine(outcome.state))
         return ExitCode.ok
     }
 
-    /// The trust run and the daemon share an environment, so the CA the one
-    /// installs lands in the state dir the other reads, owned by the user.
-    private var portlessEnvironment: [String: String] {
-        [
-            "PORTLESS_STATE_DIR": user.stateDir,
-            "HOME": user.home,
-            "SUDO_UID": String(user.uid),
-            "SUDO_GID": String(user.gid),
-            "PATH": LaunchdPlist.daemonPath,
-        ]
+    private func waitForCA() {
+        let ca = URL(fileURLWithPath: user.caPath)
+        let deadline = Date().addingTimeInterval(caWait)
+        while (try? fs.stat(ca)) == nil {
+            if Date() >= deadline { return }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
     }
 
     /// Children get a stated environment, never this process's: what the
@@ -174,7 +173,7 @@ struct InstallOp {
 
     private func discard(_ path: URL) {
         do { try fs.removeTree(path) } catch {
-            Report.step("could not remove \(path.path): \(error)")
+            emit("could not remove \(path.path): \(error)")
         }
     }
 

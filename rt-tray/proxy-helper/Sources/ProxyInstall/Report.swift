@@ -5,6 +5,9 @@ import Foundation
 // termination path must run through finish().
 enum Report {
     static func trailer(_ code: Int32) -> String { "MATTSTACK_EXIT=\(code)" }
+    /// The trust outcome travels beside the exit code because a declined trust
+    /// is a successful install: the exit code cannot carry both.
+    static func trustLine(_ outcome: TrustOutcome) -> String { "MATTSTACK_TRUST=\(outcome.rawValue)" }
     // synchronizeFile() throws NSFileHandleOperationException when stdout is
     // a pipe (the escalator's shape); fflush is the pipe-safe equivalent.
     static func step(_ line: String) { print(line); fflush(stdout) }
