@@ -957,6 +957,32 @@ describe("teamSyncRow", () => {
     expect(r?.detail).toContain("fetch failing");
   });
 
+  // The engine sets BOTH fields on a failed fetch: the stderr becomes lastPullError and is
+  // returned as a skip, whose detail pullNow copies into lastPullSkipped. A fixture that sets
+  // only lastPullError cannot catch the pull-only branch swallowing the diagnosis.
+  test("a pull-only clone whose fetch failed reports the fetch error, not a refused fast-forward", async () => {
+    const denied = "remote: HTTP Basic: Access denied";
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        {
+          slug: "acme",
+          lastPullAt: 900_000,
+          lastPushError: null,
+          lastPullError: denied,
+          conflicted: null,
+          pullOnly: true,
+          lastPullSkipped: denied,
+        } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("fetch failing");
+    expect(r?.detail).not.toContain("cannot fast-forward");
+  });
+
   test("a pull-only clone that has never pulled is needs-you, not silenced by the push-check skip", async () => {
     const r = await teamSyncRow(
       ["acme"],

@@ -518,7 +518,12 @@ export async function teamSyncRow(
     // the user (see the `pullOnly` field doc in home-snapshot.ts), it only names the
     // clone so the user can. `=== true` rather than truthy: a fixture or a pre-Task-6 entry
     // missing the field must read as a pushing clone, not a silent pull-only skip.
-    if (e.pullOnly === true && e.lastPullSkipped) {
+    //
+    // Gated on lastPullError too, because a failed FETCH sets both fields: the engine stores
+    // the stderr as lastPullError and returns it as a skip, whose detail pullNow then copies
+    // into lastPullSkipped. Without this, a revoked token reads as "cannot fast-forward, reset
+    // it to origin", which is both the wrong diagnosis and advice that cannot help.
+    if (e.pullOnly === true && e.lastPullError == null && e.lastPullSkipped) {
       problems.push(`${slug}: pull-only clone cannot fast-forward (${e.lastPullSkipped}); reset it to origin or ask the team's owner`);
       continue;
     }
