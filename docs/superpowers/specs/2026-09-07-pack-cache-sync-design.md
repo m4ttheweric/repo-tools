@@ -431,11 +431,22 @@ which is how ClaimView gets a row at all.
 | Condition | Status | Detail |
 | --- | --- | --- |
 | marketplace.json unparsable | `error` | `<path> did not parse` |
+| served version unreadable **and** not installed | `skipped` | `version unknown; rt does not manage this source` |
 | not installed | `missing` | installed by Install (plugins.install) |
 | installed, versions match, not enabled | `ready` | `<v> installed, not enabled ... claude plugin enable <id>`, plus the restart caveat |
 | installed, versions match, enabled | `ready` | `<v> installed and enabled`, plus the restart caveat |
 | installed, versions differ | `needs-you` | `installed <a>, team serves <b>` |
 | either version unknown | `ready` | `<v> installed, served version unknown` |
+
+The unreadable-served-version row is placed above `not installed` because it
+takes precedence over it. `readServedPacks` lists an object-form pack with a null
+served version and `packRow` unions served packs into the table, so such a pack
+does get a row; without this line it would read `missing ... installed by
+Install`, promising an action that will never happen for it. The per-pack
+sequence skips a null served version structurally, and `plugins.install` runs
+that same sequence, so neither the converge nor Install will ever install it. An
+object-form pack that is already installed keeps the `version unknown` row below,
+which is honest for the same reason: rt can see it but does not manage it.
 
 **The restart caveat sits on the converged row, not the stale one.** On a stale
 row the cache itself still holds the old version, so a restart changes nothing
