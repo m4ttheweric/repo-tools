@@ -203,6 +203,22 @@ let teamChoiceChecks: [Check] = [
         let err = await m.validateAndPrepare()
         c.expectEqual(err, nil)
         c.expect(await MainActor.run { m.joinWarning?.contains("ask matt") == true })
+        c.expectEqual(await MainActor.run { m.joinSummary }, nil, "a denial must never also render as the green summary")
+    },
+
+    Check("a second attempt renders only its own verdict") { c in
+        let rt = ScriptedRt()
+        rt.answers["team join --dry-run --json"] = (0, #"{"contract":1,"team":{"slug":"acme","name":"Acme","owner":"matt"},"access":"denied","intent":"written","message":"ask matt or your org admin to grant read access"}"#)
+        rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
+        let m = await MainActor.run { TeamChoiceModel(rt: rt, pasteboard: FakePasteboard(nil)) }
+        await MainActor.run { m.choice = .join; m.inviteCode = "ABCD-EFGH" }
+        c.expectEqual(await m.validateAndPrepare(), nil)
+        c.expect(await MainActor.run { m.joinWarning != nil })
+        rt.answers["team join --dry-run --json"] = (0, #"{"contract":1,"team":{"slug":"acme","name":"Acme","owner":"matt"},"access":"ok","intent":"written","message":"Joining Acme (owner matt)"}"#)
+        await MainActor.run { m.inviteCode = "WXYZ-1234" }
+        c.expectEqual(await m.validateAndPrepare(), nil)
+        c.expectEqual(await MainActor.run { m.joinWarning }, nil, "the first code's warning must not survive the second attempt")
+        c.expectEqual(await MainActor.run { m.joinSummary }, "Joining Acme (owner matt)")
     },
 
     Check("an access value this build does not know still lets Continue through") { c in

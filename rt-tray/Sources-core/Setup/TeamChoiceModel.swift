@@ -113,16 +113,28 @@ public final class TeamChoiceModel: ObservableObject {
                 preparedFingerprint = fingerprint
                 return nil
             case .join:
+                // Join never latches, so a Back plus a second code re-runs this:
+                // the previous code's verdict must not outlive its own attempt.
+                joinSummary = nil
+                joinWarning = nil
                 let stdin = try JSONEncoder().encode(["code": normalizedInviteCode])
                 let r = try await rt.run(["team", "join", "--dry-run", "--json"], stdin: stdin)
                 if let e = r.userError(redactStderr: true) { return Self.joinFailureCopy(e, owner: nil, team: nil) }
                 guard r.exitCode == 0, let j = try? r.decode(TeamJoinResult.self) else { return r.failureCopy(verb: "team join", redactStderr: true) }
+                // Dev mode runs an app and a CLI built separately, so a CLI too
+                // old to send `intent` must not wave a joiner past a denial it
+                // did check.
                 let wrote = j.intent.map { $0 == "written" } ?? (j.access == "ok")
                 guard wrote else {
                     return Self.joinFailureCopy(RtUserError(code: j.access == "denied" ? "no-access" : "unreachable", message: j.message ?? ""), owner: j.team?.owner, team: j.team?.name)
                 }
-                joinWarning = j.access == "ok" ? nil : j.message
-                joinSummary = j.message ?? "Joining \(j.team?.name ?? "") (owner \(j.team?.owner ?? ""))"
+                // Exactly one of the two renders, so a non-ok verdict never
+                // reaches the screen under the summary's green checkmark.
+                if j.access == "ok" {
+                    joinSummary = j.message ?? "Joining \(j.team?.name ?? "") (owner \(j.team?.owner ?? ""))"
+                } else {
+                    joinWarning = j.message ?? "rt could not confirm access to the team repo; the checklist re-checks it."
+                }
                 return await homeInitCheck()
             case .restore:
                 // The app runs the real restore at Continue (clone + key
