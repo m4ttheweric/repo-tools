@@ -71,16 +71,26 @@ does not survive into steady state, let alone a daemon restart.
 
 | state | outcome | steps |
 | --- | --- | --- |
-| permission held | `grantRead` as today | whatever it returns |
+| `createdByRt` and permission held | `grantRead` as today | whatever it returns |
 | `createdByRt`, no permission | `skipped` | names the opt-in command |
-| not `createdByRt` | `skipped` | the forge's own member page, plus "your admin gives you access; that decides" |
+| not `createdByRt` (permission irrelevant) | `skipped` | the forge's own member page, plus the admin sentence |
+
+Row 1 requires **both** fields, not the permission alone. The ruling is that rt
+manages access only on repos it created, and a record is a file: requiring both
+means a hand-edited `rtMayManageMembership` on a repo rt did not create still
+grants nothing.
 
 The third case is the common one and the one that must read well: it is Matt's
 own team (an employer repo), every GitLab team, and every pasted remote.
 `forge.ts` already builds those member-page URLs in `githubBaseSteps` /
 `gitlabBaseSteps`; export a `membershipSteps(remote, handle)` that reuses them
-rather than writing the URLs a second time. An unparseable remote yields `[]`,
-matching `grantRead`'s own skipped contract.
+rather than writing the URLs a second time. It yields `[]` for a remote it
+cannot parse, matching `grantRead`'s own skipped contract.
+
+**The admin sentence is appended by the caller, never returned by
+`membershipSteps`.** Otherwise a remote that fails to parse produces an empty
+steps array, and a user who gets one correct line today would get no guidance
+at all. The caller always appends, so the array is never empty in any branch.
 
 ### Two doors to the permission
 
@@ -89,6 +99,12 @@ headless door and the one the needs-you text names. The bare form prints the
 current state and whether the permission is offerable at all. Turning it `on`
 where `createdByRt` is false is refused, not merely ineffective: rt does not
 administer a repo it was pointed at.
+
+Its `on|off` positional is declared `optional: true` in
+`lib/command-tree-def.ts`, because the bare form is a real reading verb rather
+than an omission. `bun run picker:check` fails on a visible leaf with a
+required positional and no `omitBehavior`, so the declaration is a build gate,
+not a nicety.
 
 **A TTY prompt at invite time** is the door an owner actually walks through,
 because that is the moment the question is concrete ("add luke to this repo?")
@@ -134,12 +150,33 @@ the fetch, the boot pull, `schedulePull`, and the conflict marker are untouched.
 
 ### Where it attaches
 
-The decision is computed once per clone in the supervisor
+The decision is computed in the supervisor
 (`lib/daemon/team-snapshots.ts`), which knows the slug, and carried on the spec
 next to `pull` where `teamSnapshotSpec` already decides what kind of repo this
 is (`lib/daemon/home-snapshot.ts:352`). Enforcement sits at the two git-calling
 seams: the commit in `doRun` and the push in `doPushInner` (`:838-868`). Both
 are singular; `doPushInner` has exactly one caller chain.
+
+**Two things make the mode stick, and both are required.**
+
+`joinRedeem` writes `joinedByRt` **before it clones**, not after. The clone
+creates `~/.mattstack/teams/<slug>/`, which is exactly what the supervisor's
+`teams/` watcher fires on (2s debounce). Writing the record afterwards races
+that watcher for the mode of the engine it starts.
+
+And the supervisor **recomputes the mode every rescan and restarts an instance
+whose mode changed**. Today `rescan()` short-circuits on
+`if (instances.has(slug)) continue;` (`team-snapshots.ts:141`), so a spec is
+built once and never revisited: an engine that started in push mode stays in
+push mode until the daemon restarts. That short-circuit becomes a comparison,
+so a clone whose record changed under a running daemon is re-specced on the
+next rescan.
+
+The ordering fix alone would close the common race; the recompute is what
+closes the class, including a hand-edited record and a failed join whose slug
+is later reused by `rt team create`. A member daemon left pushing until someone
+happens to restart the daemon is the precise failure the ruling exists to
+prevent, so this does not rest on one guard.
 
 `SnapshotStatus` exposes the mode so `team.sync` and `rt team status` can say
 "pull-only" instead of leaving a member wondering why nothing pushes.
@@ -179,7 +216,9 @@ which clone exists locally.
 
 | path | writes | verdict |
 | --- | --- | --- |
-| `rt settings set/unset --scope team` (`commands/settings-keys.ts:259,323`) | ~30 registered keys | refuse |
+| `rt settings set --scope team` (`commands/settings-keys.ts:259`) | ~30 registered keys | refuse |
+| `rt settings unset --scope team` (`commands/settings-keys.ts:323`) | same keys, via a **different** resolver | refuse |
+| `rt team invite` (`addToRoster`, `lib/team/invite.ts:95-101`) | `board.members`, `mattstack.roster` | refuse early, see below |
 | settings-kit `POST /set` with `scope:"team"` (`packages/settings-kit/src/server.ts:259,299`) | same keys, from any console/board/deck UI | refuse |
 | `saveVariation` (`lib/variations.ts:96`) | `rt.variations` | degrade, see below |
 | VSCode legacy import (`extensions/vscode/rt-context/src/branchNaming.ts:65`) | `rt.branchNaming` | degrade, see below |
@@ -191,10 +230,17 @@ which clone exists locally.
 
 ### The guards
 
-**One choke point covers four rows.** `resolveStorePath`
-(`packages/rt-client/src/settings/write.ts:212-231`) is where every settings
-write picks a team store: the CLI, the HTTP surface, variations, and the
-extension all funnel through it. The guard goes there.
+**One file covers five rows, but two functions in it.** Team-store selection
+lives in `packages/rt-client/src/settings/write.ts`, and every settings write
+funnels through it: the CLI, the HTTP surface, variations, and the extension.
+But `set` and `unset` do not share a resolver. `setSetting` uses
+`resolveStorePath` (`:212-231`); `unsetSetting` uses a separate
+`resolveStorePathForUnset` (called at `:192`, defined `:240-256`), which exists
+because the two disagree about the no-such-store case.
+
+**Both get the guard.** Guarding only `resolveStorePath` would leave
+`rt settings unset --scope team` open, and an unset is a tracked-file mutation
+exactly like a set: the same jam, reached by a different verb.
 
 rt-client needs to read one field of a record the CLI owns. To keep a single
 source of truth for the location, `teamLocalPath` moves into rt-client's
@@ -204,8 +250,18 @@ its Probes seams. Only the path is shared, and it is shared rather than copied.
 The shared helper must keep taking the home directory explicitly, or the
 Probes-seamed tests that run against a fake home stop working.
 
-**Three explicit guards** for the paths that do not go through settings:
-`rt team publish`, `rt secrets --team`, and `rt team members sync|remove`.
+**Four explicit guards** for the paths that do not go through settings:
+`rt team publish`, `rt secrets --team`, `rt team members sync|remove`, and
+`rt team invite`.
+
+Invite's guard has to be **early**, and that is not a stylistic preference.
+`mintInvite` seals a pointer, POSTs it to the relay, and persists the local
+invite record before it ever calls `addToRoster` (`lib/team/invite.ts:95-101`).
+A guard that fired at the roster write would let a member mint a live relay
+invite and then throw, orphaning a real, redeemable invite on the relay with no
+local record of how to revoke it. The refusal therefore goes in
+`commands/team.ts` before the relay client is even constructed, alongside the
+permission offer, which is the same seam and the same moment.
 
 **Two degrade instead of refusing**, because a refusal there is a regression in
 an unrelated command:
@@ -258,17 +314,33 @@ Existing tests that change deliberately, not around:
 - `lib/team/__tests__/invite.test.ts:434-497`, the "forge membership is not
   rt's to grant" block. Its `!createdByRt` cases keep their meaning exactly;
   the `createdByRt`-without-permission case gains the offer's steps.
-- `commands/__tests__/team.test.ts:248`, which pins the current
-  "Ask whoever administers" string verbatim.
+- `commands/__tests__/team.test.ts`, the `--json` envelope test: it asserts
+  `manualSteps` `toHaveLength(1)` (`:258`) as well as the "Ask whoever
+  administers" substring (`:259`). The three-way gate makes that array two or
+  three entries in the branches that gain the admin sentence, so the length
+  assertion is a deliberate change, not incidental fallout.
 
-New coverage: the three-way gate; `manage-membership` on/off/bare and its
-refusal where `createdByRt` is false; the TTY offer writing the permission and
-the non-TTY path keeping its envelope byte for byte; `joinedByRt` written by
-redeem and absent-means-pushes; a pull-only spec that fetches and
-fast-forwards but never commits or pushes; a pull-only clone that cannot
-fast-forward reporting needs-you rather than resetting; each refusal guard;
-`saveVariation`'s degrade; and the Install secrets step staying green on a
-joined machine.
+New coverage:
+
+- the three-way gate, including `rtMayManageMembership` set without
+  `createdByRt` granting nothing;
+- `membershipSteps` on a remote it cannot parse still producing the admin line,
+  because the caller appends it;
+- `manage-membership` on/off/bare, and its refusal where `createdByRt` is false;
+- the TTY offer writing the permission, and the non-TTY path keeping its
+  envelope byte for byte;
+- `joinedByRt` written by redeem **before** the clone, and absent-means-pushes;
+- a pull-only spec that fetches and fast-forwards but never commits or pushes;
+- the supervisor restarting an instance whose recorded mode changed under a
+  running daemon, which is the regression test for the `instances.has(slug)`
+  short-circuit;
+- a pull-only clone that cannot fast-forward reporting needs-you rather than
+  resetting;
+- every refusal guard, `unset` as well as `set`;
+- `rt team invite` on a joined machine refusing with the relay client never
+  constructed, asserted by the relay seam recording no call;
+- `saveVariation`'s degrade to user scope;
+- the Install secrets step staying green on a joined machine.
 
 e2e gets the `manage-membership` `--json` envelope and usage string, since
 team has almost no e2e coverage and this repo's exact-string assertions live
