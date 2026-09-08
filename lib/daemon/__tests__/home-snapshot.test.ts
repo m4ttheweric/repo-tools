@@ -2687,4 +2687,57 @@ describe("startSnapshot: pull", () => {
     expect([...h.timers.pending.values()].some((t) => t.ms === 300 * 1000)).toBe(true);
     h.handle.stop();
   });
+
+  test("two overlapping pulls converge once, never twice on the same clone", async () => {
+    let hookCalls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { fn } = makeFakeExec([...pullResponders({ behind: 1, ahead: 0 }), ...defaultResponders()]);
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const handle = startSnapshot(
+      { ...teamSpecFor(), pull: { intervalSec: 300, onPulled: async () => { hookCalls += 1; await gate; } } },
+      specDeps,
+    );
+    await handle.ready;
+    await flushAsync();
+    // The boot pull's hook is now open on the gate, and pullInFlight is already
+    // null, so this second pull does its own git work while that hook runs.
+    expect(hookCalls).toBe(1);
+
+    const second = handle.pullNow();
+    await flushAsync();
+    release();
+    expect((await second).outcome).toBe("fast-forwarded");
+    handle.stop();
+
+    expect(hookCalls).toBe(1);
+  });
+
+  test("the inline replay after a rejected push fires no converge either", async () => {
+    const seen: string[] = [];
+    const rejectPush: Responder = (argv) => gitVerb(argv) === "push"
+      ? { stdout: "", stderr: "! [rejected] main -> main (fetch first)", exitCode: 1 }
+      : undefined;
+    const { fn, calls } = makeFakeExec([rejectPush, ...pullResponders({ behind: 1, ahead: 0 }), ...defaultResponders({ statusZ: "?? mattstack/new.jsonc\0" })]);
+    const { deps, timers } = baseDeps({ exec: fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    const handle = startSnapshot(
+      { ...teamSpecFor(), pull: { intervalSec: 300, onPulled: async (o: string) => { seen.push(o); } } },
+      specDeps,
+    );
+    await handle.ready;
+    await flushAsync();
+    seen.length = 0;
+
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+    handle.stop();
+
+    // Two pushes means the rejected one AND the inline replay's retry ran, which
+    // is the only way through the pullNow call this test guards.
+    expect(calls.filter((c) => gitVerb(c) === "push")).toHaveLength(2);
+    expect(seen).toEqual([]);
+  });
 });

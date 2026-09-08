@@ -415,6 +415,8 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
   let pullTimer: ReturnType<typeof setTimeout> | null = null;
   let runInFlight: Promise<SnapshotResult> | null = null;
   let pullInFlight: Promise<PullResult> | null = null;
+  /** The post-pull hook runs outside `pullInFlight`, so without this a second pull starting during one converge would run a second converge on the same clone. */
+  let hookInFlight: Promise<void> | null = null;
 
   let lastPullAt = 0;
   let lastPullError: string | null = null;
@@ -703,9 +705,9 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     if (!spec.pull || blocked || safeReadSettings().enabled === false) {
       return { outcome: "skipped", detail: "pull not enabled for this repo" };
     }
-    // A caller that coalesces onto an in-flight pull inherits that pull's hook
-    // decision: `converge:false` keeps this path from STARTING a converge, not
-    // from waiting on one already running.
+    // A coalescing caller inherits the in-flight pull's git work but not its
+    // hook, which runs past `pullInFlight`; `converge:false` therefore only
+    // keeps this path from starting a converge.
     if (pullInFlight) return pullInFlight;
     const p = withGitLock(() => doPull());
     pullInFlight = p;
@@ -722,7 +724,21 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     const moved = result.outcome === "fast-forwarded" || result.outcome === "rebased";
     if (moved && opts.converge !== false && spec.pull.onPulled) {
       try {
-        await spec.pull.onPulled(result.outcome as "fast-forwarded" | "rebased");
+        // Joining an in-flight hook rather than starting a second one is safe
+        // because the converge is version-gated and idempotent: whatever this
+        // pull brought in that the running converge misses is picked up by the
+        // next one.
+        if (hookInFlight) {
+          await hookInFlight;
+        } else {
+          const hook = spec.pull.onPulled(result.outcome as "fast-forwarded" | "rebased");
+          hookInFlight = hook;
+          try {
+            await hook;
+          } finally {
+            hookInFlight = null;
+          }
+        }
       } catch (err) {
         deps.log.warn({ err, id: spec.id }, `${label}: post-pull hook failed; the pull itself stands`);
       }
