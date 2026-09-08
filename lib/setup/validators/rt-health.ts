@@ -507,11 +507,15 @@ export async function teamSyncRow(
       continue;
     }
     if (e.conflicted) {
-      problems.push(`${slug}: rebase conflict: ${e.conflicted.detail}; rebase and rt team publish by hand`);
+      // A pull-only clone cannot publish, so telling one to "rt team publish by hand" is an
+      // instruction it will refuse (team-pull-only) the moment it tries. `=== true` rather than
+      // truthy: a fixture or a pre-Task-6 entry missing the field must read as a pushing clone.
+      const remedy = e.pullOnly === true ? "reset it to origin or ask the team's owner" : "rebase and rt team publish by hand";
+      problems.push(`${slug}: rebase conflict: ${e.conflicted.detail}; ${remedy}`);
       continue;
     }
     // A pull-only clone's own failure mode: a fast-forward it refused. rt never resets that for
-    // the user (see the comment on `lastPullSkipped` in home-snapshot.ts), it only names the
+    // the user (see the `pullOnly` field doc in home-snapshot.ts), it only names the
     // clone so the user can. `=== true` rather than truthy: a fixture or a pre-Task-6 entry
     // missing the field must read as a pushing clone, not a silent pull-only skip.
     if (e.pullOnly === true && e.lastPullSkipped) {

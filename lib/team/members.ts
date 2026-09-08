@@ -364,7 +364,8 @@ export async function membersRemove(
   // revoke, the caller is told plainly rather than in a footnote. Silence here
   // would read as "removed", and they would still be able to clone.
   const remote = teamRemote(p, slug);
-  const mayManage = seams.readTeamLocal(p, slug).rtMayManageMembership;
+  const local = seams.readTeamLocal(p, slug);
+  const mayManage = local.createdByRt && local.rtMayManageMembership;
   const revoke =
     remote !== null && mayManage
       ? await seams.revokeRead(p, remote, handle, await seams.forgeToken(p, remote))

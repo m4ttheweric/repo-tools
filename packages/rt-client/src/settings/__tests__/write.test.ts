@@ -458,6 +458,11 @@ describe("settings/write: joined-team guard", () => {
     expect(() => setSetting("board.title", "x", "team", {})).toThrow(/pull-only/);
   });
 
+  test("unset's single-local-team resolution branch is guarded too, not just the explicit opts.team branch", () => {
+    seedJoinedTeam("acme");
+    expect(() => unsetSetting("board.title", "team", {})).toThrow(/pull-only/);
+  });
+
   test("the refusal names the future proposal flow so a member knows this is not forbidden forever", () => {
     seedJoinedTeam("acme");
     expect(() => setSetting("board.title", "x", "team", { team: "acme" })).toThrow(/MAT-415/);

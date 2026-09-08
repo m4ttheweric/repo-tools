@@ -353,8 +353,12 @@ export async function joinRedeem(
   // mistyped code resolving to the same slug with a different remote), and
   // that prior join must not be flipped back into push mode by a failure that
   // has nothing to do with it.
-  const priorJoined = readTeamLocal(p, pointer.team).joinedByRt;
-  updateTeamLocal(p, pointer.team, { joinedByRt: true });
+  const priorLocal = readTeamLocal(p, pointer.team);
+  const priorJoined = priorLocal.joinedByRt;
+  // A machine that created this team is redeeming a code for its own repo
+  // (the `alreadyCloned` branch below, matching origin), so it must stay a
+  // pusher, so this stamp is skipped rather than flipping it pull-only.
+  if (!priorLocal.createdByRt) updateTeamLocal(p, pointer.team, { joinedByRt: true });
 
   const token = await seams.forgeToken(p, pointer.remote);
   const existingOrigin = p.exists(dir) ? readOrigin(p, dir) : null;

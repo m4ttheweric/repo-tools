@@ -451,6 +451,22 @@ describe("reencryptTeamSecrets", () => {
     expect(execSeam.calls).toEqual([]);
   });
 
+  test("refuses on a joined clone, including the bare `rt secrets rotate --team` caller which has no guard of its own", async () => {
+    // "joined-clone-guard-team" (not "acme") so the slug's own text can never
+    // satisfy the /pull-only/ assertion by accident.
+    const slug = "joined-clone-guard-team";
+    const execSeam = new FakeTeamExecSeam();
+    execSeam.files.set(teamCloneRootFor(slug), "");
+    const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-X"), execSeam };
+    const probes = fakeProbes({
+      home: "/home/x",
+      files: { [teamLocalPath("/home/x", slug)]: JSON.stringify({ createdByRt: false, joinedByRt: true, rtMayManageMembership: false }) },
+    });
+
+    await expect(reencryptTeamSecrets(slug, seams, probes)).rejects.toThrow(/pull-only/);
+    expect(execSeam.calls).toEqual([]);
+  });
+
   test("a failing updatekeys call propagates as a real error", async () => {
     const execSeam = new FakeTeamExecSeam({ updatekeys: { code: 1, stdout: "", stderr: "sops: no matching creation rule" } });
     execSeam.files.set(teamCloneRootFor("acme"), "");

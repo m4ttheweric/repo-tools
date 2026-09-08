@@ -569,6 +569,33 @@ describe("membersRemove", () => {
     expect(readTeamRecipients(SLUG, secrets)).toEqual([OWNER_PUBLIC_KEY]);
   });
 
+  // Mirrors the mint side's own regression test (MAT-387): the permission
+  // alone must not be enough on a repo rt did not create, since the record
+  // is a file a human can hand-edit.
+  test("the permission alone, without createdByRt, still never calls the forge", async () => {
+    const remote = "git@github.com:acme/widgets.git";
+    const p = fakeProbes({ home: HOME, files: { [join(HOME, ".mattstack", "teams", SLUG, ".git", "config")]: gitConfigWithRemote(remote) } });
+    const { execSeam, secrets } = seamsWithClone();
+    writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY], secrets);
+    execSeam.writeFile(teamSecretsFile(SLUG, "board"), JSON.stringify({ data: "opaque", sops: {} }));
+
+    const revokeCalls: unknown[] = [];
+    const { seams } = fakeMembersSeams({
+      readTeamStore: () => ({ "board.members": [{ username: "matt" }, { username: "alice", agePublicKey: ALICE_PUBLIC_KEY }] }),
+      readTeamLocal: () => ({ createdByRt: false, joinedByRt: false, rtMayManageMembership: true }),
+      revokeRead: async (...args) => {
+        revokeCalls.push(args);
+        return { access: "revoked", manualSteps: [] };
+      },
+    });
+
+    const result = await membersRemove(p, secrets, SLUG, "alice", undefined, seams);
+
+    expect(revokeCalls).toEqual([]);
+    expect(result.forgeAccess).toBe("skipped");
+    expect(result.manualSteps.join(" ")).toContain("still has access");
+  });
+
   test("revokes forge access, writes the roster without the handle, re-encrypts, and returns a non-empty residue note", async () => {
     const remote = "git@github.com:acme/widgets.git";
     const p = fakeProbes({ home: HOME, files: { [join(HOME, ".mattstack", "teams", SLUG, ".git", "config")]: gitConfigWithRemote(remote) } });

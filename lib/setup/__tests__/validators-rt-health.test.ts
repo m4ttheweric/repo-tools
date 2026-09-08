@@ -794,6 +794,21 @@ describe("teamSyncRow", () => {
     expect(r?.detail).toContain("rebase");
   });
 
+  test("a pull-only clone in conflict is told to reset or ask the owner, never to run rt team publish (it would refuse)", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        { slug: "acme", lastPullAt: 900_000, lastPushError: null, conflicted: { at: 1, detail: "CONFLICT settings.team.jsonc" }, pullOnly: true } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("acme");
+    expect(r?.detail).not.toContain("rt team publish");
+    expect(r?.detail).toContain("reset it to origin or ask the team's owner");
+  });
+
   test("a standing fetch error is needs-you even when the last successful pull was recent", async () => {
     const r = await teamSyncRow(
       ["acme"],

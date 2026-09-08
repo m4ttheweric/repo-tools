@@ -663,6 +663,21 @@ describe("joinRedeem", () => {
     expect(p.calls.exec.some((argv) => argv[0] === "git" && argv[1] === "clone")).toBe(false);
   });
 
+  test("an owner redeeming a code for a team they already created and cloned themselves is not stamped joinedByRt, which would flip their own machine pull-only", async () => {
+    const p = redeemProbes({
+      dirs: { [TEAM_DIR]: [".git"] },
+      files: { [pathJoin(TEAM_DIR, ".git", "config")]: gitConfigWithRemote(REMOTE) },
+    });
+    updateTeamLocal(p, POINTER.team, { createdByRt: true });
+    const relay = fakeRelay({ redeem: async () => "already" });
+    const { seams } = baseJoinRedeemSeams();
+
+    const result = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+
+    expect(result.access).toBe("ok");
+    expect(readTeamLocal(p, POINTER.team).joinedByRt).toBe(false);
+  });
+
   test("an existing clone with a DIFFERENT remote throws instead of silently reusing it", async () => {
     const p = redeemProbes({
       dirs: { [TEAM_DIR]: [".git"] },
