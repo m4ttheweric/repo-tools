@@ -9,6 +9,7 @@ import type { EventsBus } from "./events-bus.ts";
 import type { GatesStore } from "./gates-store.ts";
 import type { HerdStore, HerdJobRow } from "./herd-store.ts";
 import { subscribeHerdrEvents as defaultSubscribe, type HerdrEvent, type HerdrSubscription } from "../herdr/subscribe.ts";
+import { safeTimeout } from "./safe-timers.ts";
 import { SYSTEM_HANDLE } from "./handlers/herd.ts";
 
 export interface HerdLifecycle {
@@ -30,9 +31,9 @@ export const WILDCARD_SUBSCRIPTIONS = [
 ];
 export const paneStatusSubscription = (pane: string) => [{ type: "pane.agent_status_changed", pane_id: pane }];
 
-const LIVE: ReadonlySet<string> = new Set(["active", "at-gate", "at-milestone"]);
 const WATCHED: ReadonlySet<string> = new Set(["spawning", "active", "at-gate", "at-milestone"]);
 const RECONCILE_MS = 30_000;
+const TIMER_LABEL = "herd-lifecycle-reconcile";
 
 export function createHerdLifecycle(opts: {
   store: HerdStore;
@@ -49,7 +50,10 @@ export function createHerdLifecycle(opts: {
   const { store, log } = opts;
   const subscribe = opts.subscribe ?? defaultSubscribe;
   const debounceMs = opts.blockedDebounceMs ?? 30_000;
-  const setTimer = opts.setTimer ?? ((fn, ms) => { const t = setTimeout(fn, ms); return { clear: () => clearTimeout(t) }; });
+  // A reconcile tick reads sqlite and opens subscriptions; a synchronous
+  // throw in a bare setTimeout callback is an uncaughtException, which
+  // installCrashHandlers exits the daemon on.
+  const setTimer = opts.setTimer ?? ((fn, ms) => { const t = safeTimeout(fn, ms, TIMER_LABEL, log); return { clear: () => clearTimeout(t) }; });
   const subs = new Map<string, HerdrSubscription>();
   const paneSubs = new Map<string, HerdrSubscription>();
   const blockedTimers = new Map<string, { clear(): void }>();
@@ -59,13 +63,20 @@ export function createHerdLifecycle(opts: {
   const socketKey = (s: string | null) => s ?? opts.defaultSocket;
   const paneKey = (socket: string | null, pane: string) => `${socketKey(socket)}|${pane}`;
 
+  // Every event path is driven from a socket callback or a timer, so an
+  // escaping rejection would be an unhandled rejection, fatal while booting
+  // (installCrashHandlers) since the streams open in a boot stage.
+  const fireAndForget = (p: Promise<void>, context: Record<string, unknown>): void => {
+    p.catch((err) => log.warn({ err, ...context }, "herd lifecycle: event handling failed"));
+  };
+
   function watchPane(socket: string | null, pane: string): void {
     const key = paneKey(socket, pane);
     if (paneSubs.has(key)) return;
     paneSubs.set(key, subscribe({
       sockPath: socketKey(socket),
       subscriptions: paneStatusSubscription(pane),
-      onEvent: (ev) => { void handleEvent(socket, ev); },
+      onEvent: (ev) => { fireAndForget(handleEvent(socket, ev), { socket, pane }); },
       log,
     }));
   }
@@ -93,14 +104,20 @@ export function createHerdLifecycle(opts: {
     reconcileTimer = setTimer(() => { reconcilePanes(); scheduleReconcile(); }, RECONCILE_MS);
   }
 
+  /** A pane id is reused across a herd's lifetime and `jobsByPane` is
+      unordered, so a finished row can shadow the job the event is really
+      about; a watched row always wins over one that is not. */
   function jobFor(socket: string | null, pane: string): { job: HerdJobRow; room: string; shepherd: string } | null {
+    let stale: { job: HerdJobRow; room: string; shepherd: string } | null = null;
     for (const job of store.jobsByPane(pane)) {
       const herd = store.get(job.herd);
       if (!herd || herd.status !== "active") continue;
       if (socketKey(herd.herdrSocket) !== socketKey(socket)) continue;
-      return { job, room: herd.room, shepherd: herd.shepherdHandle };
+      const hit = { job, room: herd.room, shepherd: herd.shepherdHandle };
+      if (WATCHED.has(job.status)) return hit;
+      stale ??= hit;
     }
-    return null;
+    return stale;
   }
 
   async function post(room: string, shepherd: string, body: string): Promise<void> {
@@ -132,10 +149,10 @@ export function createHerdLifecycle(opts: {
     }
     if (ev.type === "pane.agent_status_changed") {
       if (ev.agent_status === "blocked") {
-        if (blockedTimers.has(key) || job.status === "closed") return;
+        if (blockedTimers.has(key) || !WATCHED.has(job.status)) return;
         blockedTimers.set(key, setTimer(() => {
           blockedTimers.delete(key);
-          void post(room, shepherd, `${job.name} blocked (pane ${pane})`);
+          fireAndForget(post(room, shepherd, `${job.name} blocked (pane ${pane})`), { socket, pane });
         }, debounceMs));
       } else {
         blockedTimers.get(key)?.clear();
@@ -147,11 +164,13 @@ export function createHerdLifecycle(opts: {
       blockedTimers.get(key)?.clear();
       blockedTimers.delete(key);
       unwatchPane(socket, pane);
-      if (LIVE.has(job.status) || job.status === "spawning") {
+      if (WATCHED.has(job.status)) {
         store.setJobStatus(job.herd, job.name, "crashed");
         await closeOpenGates(job.herd, job.name);
         await post(room, shepherd, `${job.name} exited (pane ${pane})`);
-      } else if (job.status !== "closed") {
+      } else if (job.status === "done") {
+        // herdr sends exited and closed for one pane teardown; anything but a
+        // clean finish keeps the marker the first of the pair set.
         store.setJobStatus(job.herd, job.name, "closed");
       }
     }
@@ -174,7 +193,7 @@ export function createHerdLifecycle(opts: {
     subs.set(socket, subscribe({
       sockPath: socket,
       subscriptions: WILDCARD_SUBSCRIPTIONS,
-      onEvent: (ev) => { void handleEvent(socket === opts.defaultSocket ? null : socket, ev); },
+      onEvent: (ev) => { fireAndForget(handleEvent(socket === opts.defaultSocket ? null : socket, ev), { socket, pane: ev.pane_id }); },
       onState: (c) => log.debug({ socket, connected: c }, "herd lifecycle: herdr stream state"),
       log,
     }));

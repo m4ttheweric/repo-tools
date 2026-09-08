@@ -14,24 +14,30 @@ let dirs: string[] = [];
 beforeEach(() => { dirs = []; });
 afterEach(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
 
-function fx() {
+function fx(over: { postThrows?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "rt-herd-lc-"));
   dirs.push(dir);
   const store = createHerdStore({ dbPath: join(dir, "herds.db"), log });
   const gateStore = createGatesStore({ dbPath: join(dir, "gates.db"), log });
   const bus = createEventsBus({ dbPath: join(dir, "events.db"), log });
   const gate = createGateHandlers(gateStore, bus, (type, data) => bus.fanOut(type, data), { log });
+  const warns: string[] = [];
+  const lcLog = pino({ level: "warn" }, { write: (line: string) => { warns.push(line); } });
   const posts: any[] = [];
-  const chat = { "chat:post": async (p: any) => { posts.push(p); return { ok: true, data: { id: posts.length, recipients: [], others: 0 } }; } };
+  const chat = { "chat:post": async (p: any) => {
+    if (over.postThrows) throw new Error("chat is down");
+    posts.push(p);
+    return { ok: true, data: { id: posts.length, recipients: [], others: 0 } };
+  } };
   const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = [];
   const setTimer = (fn: () => void, ms: number) => { const t = { fn, ms, cleared: false }; timers.push(t); return { clear() { t.cleared = true; } }; };
   const subs: Array<{ sockPath: string; subscriptions: Array<Record<string, unknown>>; onState?: (c: boolean) => void; stopped: boolean }> = [];
   const subscribe = ((o: any) => { const s = { sockPath: o.sockPath, subscriptions: o.subscriptions, onState: o.onState, stopped: false }; subs.push(s); o.onState?.(true); return { stop() { s.stopped = true; }, connected: () => !s.stopped }; }) as any;
-  const lc = createHerdLifecycle({ store, gate, chat, bus, gateStore, defaultSocket: "/default.sock", subscribe, setTimer, log });
+  const lc = createHerdLifecycle({ store, gate, chat, bus, gateStore, defaultSocket: "/default.sock", subscribe, setTimer, log: lcLog });
   const herd = store.create({ id: "demo-1", repo: "r", room: "herd-demo-1", workspace: "herd: demo-1", shepherdSession: "s", shepherdHandle: "shepherd", herdrSocket: null, hidden: false });
   const wildcard = () => subs.filter((s) => !s.subscriptions.some((e) => "pane_id" in e));
   const paneSubs = () => subs.filter((s) => !s.stopped && s.subscriptions.some((e) => "pane_id" in e));
-  return { store, gateStore, gate, bus, posts, timers, subs, lc, herd, wildcard, paneSubs };
+  return { store, gateStore, gate, bus, posts, warns, timers, subs, lc, herd, wildcard, paneSubs };
 }
 
 describe("herd-lifecycle", () => {
@@ -109,6 +115,37 @@ describe("herd-lifecycle", () => {
     expect(store.getJob(herd.id, "cv-1")!.status).toBe("crashed");
     expect(posts[0].body).toContain("cv-1 exited");
     expect(gateStore.get(g)).toMatchObject({ status: "closed", closedReason: "abandoned" });
+  });
+
+  test("exited then closed for one teardown posts once and keeps the crashed marker", async () => {
+    const { store, lc, herd, posts } = fx();
+    store.upsertJob({ herd: herd.id, name: "cv-1", worktree: "/w", handle: "cv-1", status: "active", pane: "w1:p1" });
+    await lc.handleEvent(null, { type: "pane.exited", pane_id: "w1:p1" });
+    await lc.handleEvent(null, { type: "pane.closed", pane_id: "w1:p1" });
+    expect(posts).toHaveLength(1);
+    expect(store.getJob(herd.id, "cv-1")!.status).toBe("crashed");
+  });
+
+  test("a stale job row sharing the pane never shadows the live one", async () => {
+    const { store, lc, herd } = fx();
+    store.upsertJob({ herd: herd.id, name: "cv-old", worktree: "/w", handle: "cv-old", status: "closed", pane: "w1:p9" });
+    store.upsertJob({ herd: herd.id, name: "cv-new", worktree: "/w2", handle: "cv-new", status: "spawning", pane: "w1:p9" });
+    await lc.handleEvent(null, { type: "pane.agent_detected", pane_id: "w1:p9" });
+    expect(store.getJob(herd.id, "cv-new")!.status).toBe("active");
+    expect(store.getJob(herd.id, "cv-old")!.status).toBe("closed");
+  });
+
+  test("a throwing chat:post is warned, not fatal, and the lifecycle keeps handling events", async () => {
+    const { store, lc, herd, warns, timers } = fx({ postThrows: true });
+    store.upsertJob({ herd: herd.id, name: "cv-1", worktree: "/w", handle: "cv-1", status: "active", pane: "w1:p1" });
+    await lc.handleEvent(null, { type: "pane.agent_status_changed", pane_id: "w1:p1", agent_status: "blocked" });
+    timers.find((t) => t.ms === 30_000)!.fn();
+    await Bun.sleep(0);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("herd lifecycle: event handling failed");
+    store.upsertJob({ herd: herd.id, name: "cv-2", worktree: "/w2", handle: "cv-2", status: "spawning", pane: "w1:p2" });
+    await lc.handleEvent(null, { type: "pane.agent_detected", pane_id: "w1:p2" });
+    expect(store.getJob(herd.id, "cv-2")!.status).toBe("active");
   });
 
   test("closed on a done or closed job is silent and marks closed", async () => {
