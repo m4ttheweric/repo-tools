@@ -127,4 +127,22 @@ final class RemoveOpTests: XCTestCase {
         XCTAssertEqual(makeOp().execute(), ExitCode.ok)
         XCTAssertFalse(runner.called("security"))
     }
+
+    // The exit status can't tell "already gone" apart from a real Keychain
+    // failure, so the message reports the status rather than naming a cause
+    // it hasn't verified. A stuck-CA incident reads the status, not a guess.
+    func testUntrustMessageReportsTheStatusNotAnAssumedCause() {
+        XCTAssertEqual(RemoveOp.untrustMessage(deleteStatus: 0), "untrust: ok")
+        XCTAssertEqual(
+            RemoveOp.untrustMessage(deleteStatus: 1),
+            "untrust: delete-certificate failed (status 1), skipping")
+        XCTAssertEqual(
+            RemoveOp.untrustMessage(deleteStatus: 25),
+            "untrust: delete-certificate failed (status 25), skipping")
+    }
+
+    func testBootoutMessageReportsTheObservedStatus() {
+        XCTAssertEqual(RemoveOp.bootoutMessage(status: 0), "bootout: ok")
+        XCTAssertEqual(RemoveOp.bootoutMessage(status: 3), "bootout: status 3, ignoring")
+    }
 }

@@ -19,8 +19,11 @@ struct RemoveOp {
     func execute() -> Int32 {
         // A first remove (or a remove after one already ran) has no service
         // to stop, so bootout's failure is the normal case, same as install's.
-        _ = runCommand(["/bin/launchctl", "bootout", "system/" + LaunchdPlist.label])
-        Report.step("bootout: ok")
+        // The status is reported rather than assumed: a nonzero exit here
+        // means "nothing to stop" as often as it means a real launchd error,
+        // and this op can't tell those apart any better than the CA step can.
+        let bootout = runCommand(["/bin/launchctl", "bootout", "system/" + LaunchdPlist.label])
+        Report.step(Self.bootoutMessage(status: bootout.status))
 
         guard remove(LaunchdPlist.path, name: "plist") else { return ExitCode.software }
         guard remove(Sudoers.path, name: "sudoers") else { return ExitCode.software }
@@ -66,9 +69,20 @@ struct RemoveOp {
         // security delete-certificate returns the same nonzero status for
         // "already gone" as for anything else, so its result cannot
         // distinguish idempotency from a real failure; treat both as
-        // non-fatal, consistent with every other step in this op.
+        // non-fatal, consistent with every other step in this op, but log
+        // the status rather than asserting which one it was.
         let delete = runCommand(["/usr/bin/security", "delete-certificate", "-c", commonName, "/Library/Keychains/System.keychain"])
-        Report.step(delete.status == 0 ? "untrust: ok" : "untrust: certificate not present, skipping")
+        Report.step(Self.untrustMessage(deleteStatus: delete.status))
+    }
+
+    static func bootoutMessage(status: Int32) -> String {
+        status == 0 ? "bootout: ok" : "bootout: status \(status), ignoring"
+    }
+
+    static func untrustMessage(deleteStatus: Int32) -> String {
+        deleteStatus == 0
+            ? "untrust: ok"
+            : "untrust: delete-certificate failed (status \(deleteStatus)), skipping"
     }
 
     /// portless generates its CA with a subject of exactly `/CN=<name>`, so
