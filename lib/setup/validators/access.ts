@@ -12,9 +12,10 @@ import { gitUsable } from "../home-git.ts";
 import type { SetupIntent } from "../intent.ts";
 import type { Probes } from "../probes.ts";
 import { forgeFromRemote, type TeamSnapshot, type UserIntegrationOverrides } from "../team-settings.ts";
-import { forgeTokenKey, gitWithToken } from "../../team/git-credential.ts";
+import { gitWithToken } from "../../team/git-credential.ts";
 import { withoutUrls } from "../../team/redact.ts";
 import type { SecretPresence } from "./accounts.ts";
+import { forgeTokenLookupFromPresence, tokenOrNull } from "../../team/forge-token.ts";
 
 const LS_REMOTE_TIMEOUT_MS = 15000;
 /** Never prompts for credentials on a headless probe — an interactive prompt would hang setup indefinitely instead of surfacing the honest "no access yet" row. */
@@ -28,17 +29,6 @@ const RECHECK_ACTION: Action = { type: "run", label: "Re-check", verb: ["setup",
 interface LsRemoteOutcome {
   status: "ready" | "needs-you" | "error";
   detail: string;
-}
-
-/** The forge token rt itself holds for a remote's host (stored, or staged during setup), so the probe can answer on a machine whose git has no credential helper yet. */
-async function forgeTokenFor(remote: string, secrets: SecretPresence | undefined): Promise<string | null> {
-  const key = secrets ? forgeTokenKey(remote) : null;
-  if (!key) return null;
-  try {
-    return await secrets!.has("rt", key);
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -77,7 +67,7 @@ async function teamRepoRow(p: Probes, team: TeamSnapshot, intent: SetupIntent | 
     return row({ ...base, status: "missing", detail: "needs Apple's Command Line Tools first (see the tool row), then re-check", action: RECHECK_ACTION });
   }
 
-  const outcome = await lsRemoteOutcome(p, remote, await forgeTokenFor(remote, secrets));
+  const outcome = await lsRemoteOutcome(p, remote, tokenOrNull(await forgeTokenLookupFromPresence(remote, secrets)));
   const action = outcome.status === "ready" ? null : RECHECK_ACTION;
   return row({ ...base, status: outcome.status, detail: outcome.detail, action });
 }

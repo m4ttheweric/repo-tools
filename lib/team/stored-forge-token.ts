@@ -7,14 +7,8 @@
 import { createRealAgeKeySeam } from "../home/age-key.ts";
 import { createRealSecretsExecSeam, readSecret } from "../secrets/store.ts";
 import type { Probes } from "../setup/probes.ts";
-import { forgeTokenKey } from "./git-credential.ts";
+import { forgeTokenLookupReal, tokenOrNull } from "./forge-token.ts";
 
-export async function storedForgeToken(_p: Probes, remote: string): Promise<string | null> {
-  const key = forgeTokenKey(remote);
-  if (!key) return null;
-  try {
-    return await readSecret("rt", key, { ageKeySeam: createRealAgeKeySeam(), execSeam: createRealSecretsExecSeam() });
-  } catch {
-    return null;
-  }
+export async function storedForgeToken(p: Probes, remote: string): Promise<string | null> {
+  return tokenOrNull(await forgeTokenLookupReal(p, remote));
 }
