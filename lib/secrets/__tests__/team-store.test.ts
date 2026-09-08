@@ -21,6 +21,8 @@ import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
 import { teamsDir } from "../../rt-paths.ts";
 import { join } from "path";
 import { secretsList } from "../../../commands/secrets.ts";
+import { fakeProbes } from "../../setup/__tests__/fakes.ts";
+import { teamLocalPath } from "../../team/team-local.ts";
 
 function teamCloneRootFor(slug: string): string {
   return join(teamsDir(), slug);
@@ -282,6 +284,19 @@ describe("writeTeamSecret", () => {
     expect(execSeam.calls).toEqual([]);
   });
 
+  test("writeTeamSecret refuses on a joined clone", async () => {
+    // "joined-clone-guard-team" (not "acme") so the slug's own text can never
+    // satisfy the /pull-only/ assertion by accident.
+    const slug = "joined-clone-guard-team";
+    const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-X"), execSeam: new FakeTeamExecSeam() };
+    const probes = fakeProbes({
+      home: "/home/x",
+      files: { [teamLocalPath("/home/x", slug)]: JSON.stringify({ createdByRt: false, joinedByRt: true, rtMayManageMembership: false }) },
+    });
+
+    await expect(writeTeamSecret(slug, "rt", "k", "v", seams, probes)).rejects.toThrow(/pull-only/);
+  });
+
   test("no age key on this machine -> NoAgeKeyError (the interim seam's staging-fallback trigger)", async () => {
     const execSeam = new FakeTeamExecSeam();
     execSeam.files.set(teamCloneRootFor("acme"), "");
@@ -433,6 +448,22 @@ describe("reencryptTeamSecrets", () => {
     execSeam.calls.length = 0;
 
     expect(await reencryptTeamSecrets("acme", seams)).toEqual([]);
+    expect(execSeam.calls).toEqual([]);
+  });
+
+  test("refuses on a joined clone, including the bare `rt secrets rotate --team` caller which has no guard of its own", async () => {
+    // "joined-clone-guard-team" (not "acme") so the slug's own text can never
+    // satisfy the /pull-only/ assertion by accident.
+    const slug = "joined-clone-guard-team";
+    const execSeam = new FakeTeamExecSeam();
+    execSeam.files.set(teamCloneRootFor(slug), "");
+    const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-X"), execSeam };
+    const probes = fakeProbes({
+      home: "/home/x",
+      files: { [teamLocalPath("/home/x", slug)]: JSON.stringify({ createdByRt: false, joinedByRt: true, rtMayManageMembership: false }) },
+    });
+
+    await expect(reencryptTeamSecrets(slug, seams, probes)).rejects.toThrow(/pull-only/);
     expect(execSeam.calls).toEqual([]);
   });
 

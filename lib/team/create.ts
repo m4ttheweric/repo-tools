@@ -143,7 +143,10 @@ async function resolveRemote(p: Probes, slug: string, opts: CreateTeamOpts): Pro
   // be OFFERED later, so rt never asks whether it should administer a repo it
   // was merely pointed at (MAT-387). The permission itself stays off until a
   // human grants it.
-  updateTeamLocal(p, slug, { createdByRt: true });
+  // Clears a stale joinedByRt from an earlier joined-then-deleted clone of
+  // this same slug: updateTeamLocal merges, so an unset field here would
+  // leave both flags true and this brand-new team pull-only from birth.
+  updateTeamLocal(p, slug, { createdByRt: true, joinedByRt: false });
 
   writeIntent(p, { v: 1, at: p.now().toISOString(), mode: "create", team: { slug, name: opts.name, remote: url, others: opts.others } });
   return url;

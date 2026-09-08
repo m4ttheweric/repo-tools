@@ -26,6 +26,7 @@ function fakeHandle(overrides: Partial<HomeSnapshotHandle> = {}): { handle: Home
     lastPullError: null,
     lastPullSkipped: null,
     conflicted: null,
+    pullOnly: false,
     claimedZones: ["prefs/"],
     firstSeenDirty: {},
     ownersError: null,
@@ -77,7 +78,7 @@ describe("home handlers", () => {
       status: () => ({
         id: "home", enabled: true, watching: true, repoDir: "/fake/repo", lastRunAt: 0, lastCommit: null, lastCommitError: null,
         pushPending: false, lastPushAt: 0, lastPushError: null,
-        lastPullAt: 0, lastPullError: null, lastPullSkipped: null, conflicted: null,
+        lastPullAt: 0, lastPullError: null, lastPullSkipped: null, conflicted: null, pullOnly: false,
         claimedZones: [], firstSeenDirty: {}, ownersError: "malformed jsonc",
       }),
     });

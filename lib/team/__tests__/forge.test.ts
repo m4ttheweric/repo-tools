@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { fakeProbes, ok, missing } from "../../setup/__tests__/fakes.ts";
-import { grantRead, revokeRead, forgeLogin, forgeProfile, forgeArgv } from "../forge.ts";
+import { grantRead, revokeRead, forgeLogin, forgeProfile, forgeArgv, membershipSteps } from "../forge.ts";
 import type { ExecScript } from "../../setup/__tests__/fakes.ts";
 
 const GITHUB_REMOTE = "git@github.com:acme/widgets.git";
@@ -426,5 +426,25 @@ describe("forgeProfile", () => {
     const script: ExecScript = () => ok(JSON.stringify({ name: "Mona Octocat", id: 583231 }));
     const p = fakeProbes({ exec: script });
     expect(await forgeProfile(p, "github", "github.com")).toBeNull();
+  });
+});
+
+describe("membershipSteps", () => {
+  test("GitHub: the repo's access settings page", () => {
+    expect(membershipSteps("git@github.com:acme/widgets.git", "octocat")).toEqual([
+      "Open https://github.com/acme/widgets/settings/access",
+      "Invite octocat with Read",
+    ]);
+  });
+
+  test("GitLab: the project's members page, on the remote's own host", () => {
+    expect(membershipSteps("https://gitlab.example.com/acme/sub/widgets.git", "octocat")).toEqual([
+      "Open https://gitlab.example.com/acme/sub/widgets/-/project_members",
+      "Invite octocat with Reporter access",
+    ]);
+  });
+
+  test("a remote it cannot parse yields no steps, never a guessed URL", () => {
+    expect(membershipSteps("not-a-remote", "octocat")).toEqual([]);
   });
 });
