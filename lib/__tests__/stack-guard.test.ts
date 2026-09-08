@@ -26,18 +26,18 @@ describe("checkStackMembership", () => {
   test("refuses a gitq stack member, naming its stack, parent, and children", async () => {
     const store = gitqStore([
       {
-        stackName: "cv-1599",
+        stackName: "acme-1599",
         root: "master",
         nodes: [
-          { branch: "cv-2626-log-call", parent: "master" },
-          { branch: "cv-2627-assign", parent: "cv-2626-log-call" },
-          { branch: "cv-1599-contacts", parent: "cv-2626-log-call" },
+          { branch: "acme-2626-log-call", parent: "master" },
+          { branch: "acme-2627-assign", parent: "acme-2626-log-call" },
+          { branch: "acme-1599-contacts", parent: "acme-2626-log-call" },
         ],
       },
     ]);
     const verdict = await checkStackMembership({
       cwd: "/repo",
-      branch: "cv-2626-log-call",
+      branch: "acme-2626-log-call",
       defaultBranch: "master",
       runners: runners({ gitqStacks: async () => store }),
     });
@@ -46,14 +46,14 @@ describe("checkStackMembership", () => {
     if (verdict.verdict !== "refuse") return;
     expect(verdict.refusal.kind).toBe("stack-refusal");
     expect(verdict.refusal.source).toBe("gitq");
-    expect(verdict.refusal.branch).toBe("cv-2626-log-call");
+    expect(verdict.refusal.branch).toBe("acme-2626-log-call");
     expect(verdict.refusal.stack).toEqual({
-      name: "cv-1599",
+      name: "acme-1599",
       root: "master",
       parent: "master",
-      children: ["cv-2627-assign", "cv-1599-contacts"],
+      children: ["acme-2627-assign", "acme-1599-contacts"],
     });
-    expect(verdict.refusal.tool).toBe("gitq sync --stack cv-1599");
+    expect(verdict.refusal.tool).toBe("gitq sync --stack acme-1599");
   });
 
   test("refuses via the forge when the branch's open MR targets a non-default branch", async () => {
