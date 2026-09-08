@@ -364,10 +364,11 @@ check_helpers() { # app
         done < <(find "$app/Contents/Helpers/skills" -type d -name '*.*' -print0)
     fi
     # Reverse direction: every top-level Helpers entry must trace to a
-    # deps.lock row or be a first-party build.sh product (rt-ui, skills).
+    # deps.lock row or be a first-party build.sh product (rt-ui, skills,
+    # mattstack-proxy-install).
     # The row loop above only proves declared things exist; a helper the
     # lock doesn't pin would otherwise ship unverified and unversioned.
-    local allowed=" rt-ui skills " seg entry stowaways=0
+    local allowed=" rt-ui skills mattstack-proxy-install " seg entry stowaways=0
     while IFS= read -r row; do
         [ -n "$row" ] || continue
         split_tsv "$row"
@@ -405,6 +406,15 @@ check_helpers() { # app
             "$rtui" --version 2>/dev/null | grep -q '^rt-ui .* protocol 1$' && pass "$exe rt-ui answers --version with protocol 1" || fail "$exe rt-ui --version did not report protocol 1"
         else
             fail "$exe missing Helpers/rt-ui"
+        fi
+        local pxy="$app/Contents/Helpers/mattstack-proxy-install"
+        if [ -f "$pxy" ]; then
+            pass "$exe ships Helpers/mattstack-proxy-install"
+            assert_eq "$exe proxy-helper codesign identifier" "Identifier=com.mattstack.helper.mattstack-proxy-install" "$(codesign -dv "$pxy" 2>&1 | grep '^Identifier=' || true)"
+            "$pxy" --version 2>/dev/null | grep -q '^mattstack-proxy-install .* protocol 1$' && pass "$exe proxy-helper answers --version" || fail "$exe proxy-helper --version failed"
+            [ -d "$app/Contents/Helpers/portless-dist" ] && pass "$exe ships portless-dist" || fail "$exe missing Helpers/portless-dist"
+        else
+            fail "$exe missing Helpers/mattstack-proxy-install"
         fi
     fi
 }
