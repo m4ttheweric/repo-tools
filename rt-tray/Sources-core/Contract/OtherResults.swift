@@ -29,11 +29,12 @@ public struct TeamJoinResult: Codable, Equatable, Sendable {
         public init(slug: String, name: String, owner: String? = nil) { self.slug = slug; self.name = name; self.owner = owner }
     }
     public var team: Team?
-    public var access: String      // ok | denied | unreachable
+    public var access: String      // ok | deferred | no-account | denied | unreachable | undetermined
     public var peering: String?    // applied | idle | unavailable
     public var message: String?
-    public init(team: Team? = nil, access: String, peering: String? = nil, message: String? = nil) {
-        self.team = team; self.access = access; self.peering = peering; self.message = message
+    public var intent: String?     // written | not-written; nil means an older CLI
+    public init(team: Team? = nil, access: String, peering: String? = nil, message: String? = nil, intent: String? = nil) {
+        self.team = team; self.access = access; self.peering = peering; self.message = message; self.intent = intent
     }
 }
 
@@ -43,9 +44,10 @@ public struct InviteResult: Codable, Equatable, Sendable {
     public var pasteBlock: String
     public var forgeAccess: String    // granted | manual | skipped
     public var manualSteps: [String]?
-    public init(code: String, expiresAt: String, pasteBlock: String, forgeAccess: String, manualSteps: [String]? = nil) {
+    public var link: String?
+    public init(code: String, expiresAt: String, pasteBlock: String, forgeAccess: String, manualSteps: [String]? = nil, link: String? = nil) {
         self.code = code; self.expiresAt = expiresAt; self.pasteBlock = pasteBlock
-        self.forgeAccess = forgeAccess; self.manualSteps = manualSteps
+        self.forgeAccess = forgeAccess; self.manualSteps = manualSteps; self.link = link
     }
 }
 

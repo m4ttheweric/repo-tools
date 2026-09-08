@@ -153,4 +153,13 @@ let teamChoiceChecks: [Check] = [
             c.expectEqual(m.canContinue, false)
         }
     },
+    Check("normalizedInviteCode accepts bare codes, deep links, and URLs; leaves other inputs for the CLI") { c in
+        let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt()) }
+        await MainActor.run {
+            m.inviteCode = "mattstack://join/01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC"
+            c.expectEqual(m.normalizedInviteCode, "0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABC")
+            m.inviteCode = "nope"
+            c.expectEqual(m.normalizedInviteCode, "nope")
+        }
+    },
 ]

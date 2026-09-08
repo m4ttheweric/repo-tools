@@ -50,7 +50,9 @@ public final class TeamChoiceModel: ObservableObject {
 
     public var slugPreview: String { Slug.make(teamName) }
     public var ghRepoPreview: String { "\(ghOwner ?? ghHandle ?? "you")/mattstack-team-\(slugPreview)" }
-    public var normalizedInviteCode: String { inviteCode.filter { !$0.isWhitespace && !$0.isNewline } }
+    public var normalizedInviteCode: String {
+        JoinLink.code(fromText: inviteCode) ?? inviteCode.filter { !$0.isWhitespace && !$0.isNewline }
+    }
 
     public var canContinue: Bool {
         switch choice {

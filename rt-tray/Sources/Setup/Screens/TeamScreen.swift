@@ -77,7 +77,7 @@ struct TeamScreen: View {
                     .frame(minHeight: 54)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
                     .accessibilityIdentifier(AXID.teamJoinCode)
-                Text("Paste the whole code (about \(TeamChoiceModel.inviteCodeLength) characters) or open the mattstack://join link you were sent.")
+                Text("Paste the whole code (about \(TeamChoiceModel.inviteCodeLength) characters), or paste the mattstack://join link you were sent.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let s = model.joinSummary { Label(s, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
