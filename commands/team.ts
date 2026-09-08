@@ -31,6 +31,7 @@ import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
 import { createRealProbes, readStdinJson, type Probes } from "../lib/setup/probes.ts";
 import { readTeamSnapshot, stripUserinfo, type SettingsReader } from "../lib/setup/team-settings.ts";
 import { createTeam } from "../lib/team/create.ts";
+import { extractInviteCode } from "../lib/team/invite-crypto.ts";
 import { mintInvite } from "../lib/team/invite.ts";
 import { JoinKeyExchangeError, joinDryRun, joinRedeem, realJoinRedeemSeams, type JoinRedeemSeams, type JoinResult } from "../lib/team/join.ts";
 import { membersRemove, membersSync, teamRemote } from "../lib/team/members.ts";
@@ -60,13 +61,15 @@ export interface TeamDeps {
 
 async function defaultReadCode(json: boolean): Promise<string> {
   if (!json && process.stdin.isTTY) {
-    return promptSecret("Invite code");
+    const raw = await promptSecret("Invite code");
+    return extractInviteCode(raw) ?? raw;
   }
   const parsed = await readStdinJson<{ code?: string }>();
   if (!parsed?.code) {
     throw new UserActionableError("usage", 'pass the invite code on stdin as {"code": "..."}');
   }
-  return parsed.code;
+  const raw = parsed.code;
+  return extractInviteCode(raw) ?? raw;
 }
 
 export function realTeamDeps(): TeamDeps {
