@@ -815,6 +815,11 @@ Expected: PASS, 11 tests (12 once Step 5 lands).
 
 - [ ] **Step 5: Add the enablement-outcome test the spec's Testing section requires**
 
+Written last but it must be seen to fail: before adding it, confirm it would go
+red against an implementation that used `install` where the sequence says
+`update` (that flips `enabled` to true and leaves `versions` at 0.5.18). A test
+added straight to green proves only that it agrees with the code as written.
+
 The tests above assert `ConvergeResult` against a scripted reply. The spec asks
 for one that reads the resulting state ("Assertions read those files, so the
 outcome is literal"), covering "a stale pack updates and keeps its disabled
@@ -969,6 +974,12 @@ test("a push fires no converge, even though its pull moves HEAD", async () => {
 Run: `bun test lib/daemon/__tests__/home-snapshot.test.ts -t onPulled`
 Expected: FAIL, the hook never fires and `pullNow` rejects the options argument.
 
+Two caveats about what this RED run does and does not prove. The `-t onPulled`
+filter does not select the push test or the re-arm test, whose names do not
+contain it; run them by name too. And the push test is legitimately green before
+Step 4, because the hook does not exist yet, so nothing can fire it: it only
+becomes a guard once Step 4 lands. Do not "fix" it for passing early.
+
 - [ ] **Step 3: Add the hook to the handle interface, the spec type, and `teamSnapshotSpec`**
 
 Widen the handle's own method signature (line 111), or the Task 4 tests fail `tsc` with "Expected 0 arguments":
@@ -1085,19 +1096,32 @@ on one.
 
 The spec lists "the budget cap returns and lets the pull loop re-arm" as a case
 that must be covered. A hook that never returns would stop this clone's pull loop
-for the life of the daemon, silently:
+for the life of the daemon, silently.
+
+The test must drive the TIMER, not `pullNow`. `tryArm()` arms the pull timer at
+boot (`home-snapshot.ts:548` says so in as many words), and an explicit
+`pullNow()` never touches `pullTimer`: only the timer-driven path re-arms, in
+`schedulePull`'s `.finally`. Asserting after an explicit `pullNow` would just be
+observing the boot-armed timer and would pass even against a hook that hangs
+forever, which is precisely the scenario this covers.
 
 ```ts
-test("a slow hook still lets the pull loop re-arm", async () => {
+test("the timer-driven pull re-arms after its hook returns", async () => {
   const h = pullHarness({ behind: 1, ahead: 0 });
   await pastBootPull(h);
-  await h.handle.pullNow();
-  // schedulePull re-arms in pullNow's .finally, so a returned hook leaves a
-  // fresh interval timer pending.
+
+  // fire() deletes what it fires, so the boot-armed timer is consumed here and
+  // any surviving 300s timer can only be schedulePull's .finally re-arm.
+  h.timers.fire((t) => t.ms === 300 * 1000);
+  await flushAsync();
+
   expect([...h.timers.pending.values()].some((t) => t.ms === 300 * 1000)).toBe(true);
   h.handle.stop();
 });
 ```
+
+The janitor (900s) and push (10s) timers do not match that predicate, so firing
+it cannot trip an unrelated one.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
@@ -1141,7 +1165,8 @@ test("each clone's spec carries an onPulled that converges that slug's packs", a
   const handle = startTeamSnapshots(h.deps);
   await handle.ready;
 
-  const spec = h.started[0]!.spec as { pull?: { onPulled?: (o: string) => Promise<void> } };
+  // `SnapshotSpec` is already imported in this file, so no cast is needed.
+  const spec = h.started[0]!.spec;
   expect(typeof spec.pull?.onPulled).toBe("function");
   await spec.pull!.onPulled!("fast-forwarded");
   expect(converged).toEqual(["acme"]);
@@ -1229,25 +1254,20 @@ git commit -m "team-snapshots: converge the plugin cache after a converging pull
 import { BASE_PLUGINS } from "../base-plugins.ts";
 ```
 
-Then replace the argv-absence assertions in the happy-path test (around `:163`).
+Then delete the argv-absence assertions from the happy-path test (around `:163`).
 The spec requires this specific deletion, because an argv assertion cannot fail
-when the outcome is wrong, which is exactly how the current defect stayed green.
-Delete these two lines:
+when the outcome is wrong, which is exactly how the current defect stayed green:
 
 ```ts
       expect(enables).toHaveLength(3);
       expect(enables.map((c) => c.argv.at(-1))).not.toContain("acme-skills@acme-market");
 ```
 
-and put in their place an assertion on the state those calls were standing in for:
-
-```ts
-      // The team pack's enablement, not the argv that was supposed to produce it.
-      expect(enabledAfter["acme-skills@acme-market"]).toBe(false);
-```
-
-where `enabledAfter` is the record the test's exec maintains (see the next test
-for the shape). Then add to the `plugins.install` describe block:
+Delete those two lines and put nothing in their place. That test's exec keeps no
+enablement record, and Step 4's rule for it is to change only the `list` reply,
+so there is nothing there to assert against. The coverage those lines were
+standing in for is asserted literally by the first new test below, which is the
+entire point of the replacement. Now add to the `plugins.install` describe block:
 
 ```ts
 test("a team-authored pack ends DISABLED, asserted on the resulting state rather than the argv", async () => {
@@ -1275,6 +1295,74 @@ test("a team-authored pack ends DISABLED, asserted on the resulting state rather
   expect(outcome.state).toBe("done");
   expect(enabled["acme-skills@acme-market"]).toBe(false);
   for (const base of BASE_PLUGINS) expect(enabled[base]).toBe(true);
+});
+
+test("apply does not re-enable a pack the member turned off, and does not disable one they turned on", async () => {
+  // The spec Acceptance bullet: "A member who enables the pack, then runs
+  // rt setup apply, still has it enabled afterwards." This is the only test that
+  // enters the already-installed/update branch, so it also covers the restored
+  // trusted enable.
+  const teamDir = join(home, ".mattstack", "teams", "acme");
+  const marketplacePath = join(teamDir, ".claude-plugin", "marketplace.json");
+  const enabled: Record<string, boolean> = {
+    "acme-skills@acme-market": true,   // the member enabled the team pack deliberately
+    "mattstack@mattstack": false,      // a baseline plugin that drifted off
+    "fast-browser@mattstack": true,
+    "chat@mattstack": true,
+  };
+  const execCalls: string[][] = [];
+  const p = fakeProbes({
+    home,
+    env: { PATH: "/usr/local/bin" },
+    files: { "/usr/local/bin/claude": "bin", [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills" }] }) },
+    exec: async (argv) => {
+      execCalls.push(argv);
+      const [, , verb, id] = argv;
+      if (verb === "list") return ok(JSON.stringify(Object.keys(enabled).map((k) => ({ id: k, version: "1.0.0", enabled: enabled[k] }))));
+      if (verb === "update") return ok("");            // moves version, touches nothing else
+      if (verb === "install") { enabled[id!] = true; return ok(""); }
+      if (verb === "enable") { enabled[id!] = true; return ok(""); }
+      if (verb === "disable") { enabled[id!] = false; return ok(""); }
+      return ok("");
+    },
+  });
+  const { ctx } = makeCtx(p, { team: { slug: "acme", name: "Acme", mode: "none" } });
+
+  const outcome = await pluginsInstallStep.run(ctx);
+
+  expect(outcome.state).toBe("done");
+  expect(enabled["acme-skills@acme-market"]).toBe(true);   // deliberate enable survives apply
+  expect(enabled["mattstack@mattstack"]).toBe(true);       // trusted plugin got its enable back
+  expect(execCalls.some((a) => a[2] === "install")).toBe(false);
+});
+
+test("a team pack the member left disabled is still disabled after apply", async () => {
+  const teamDir = join(home, ".mattstack", "teams", "acme");
+  const marketplacePath = join(teamDir, ".claude-plugin", "marketplace.json");
+  const enabled: Record<string, boolean> = {
+    "acme-skills@acme-market": false,
+    "mattstack@mattstack": true,
+    "fast-browser@mattstack": true,
+    "chat@mattstack": true,
+  };
+  const p = fakeProbes({
+    home,
+    env: { PATH: "/usr/local/bin" },
+    files: { "/usr/local/bin/claude": "bin", [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills" }] }) },
+    exec: async (argv) => {
+      const [, , verb, id] = argv;
+      if (verb === "list") return ok(JSON.stringify(Object.keys(enabled).map((k) => ({ id: k, version: "1.0.0", enabled: enabled[k] }))));
+      if (verb === "install") { enabled[id!] = true; return ok(""); }
+      if (verb === "enable") { enabled[id!] = true; return ok(""); }
+      if (verb === "disable") { enabled[id!] = false; return ok(""); }
+      return ok("");
+    },
+  });
+  const { ctx } = makeCtx(p, { team: { slug: "acme", name: "Acme", mode: "none" } });
+
+  await pluginsInstallStep.run(ctx);
+
+  expect(enabled["acme-skills@acme-market"]).toBe(false);
 });
 
 test("a rolled-back pack is not recorded in setup-state as installed", async () => {
@@ -1355,7 +1443,7 @@ Swap the per-plugin body for the shared sequence:
           // `tool.plugins` needs-you row's action is `rt setup pack`, which
           // lands here: without this, the one command offered for an
           // installed-but-disabled baseline plugin does nothing.
-          if (!teamAuthored) await runner.run(["plugin", "enable", plugin], SETTLE_EXEC_TIMEOUT_MS);
+          if (!teamAuthored) await enableTrusted(runner, plugin, dir);
           settled.push(plugin);
           continue;
         }
@@ -1364,6 +1452,16 @@ Swap the per-plugin body for the shared sequence:
       // `settled` accumulates across config dirs, so an id can repeat; the
       // dedupe below is what makes that harmless.
       const outcome = await settlePack(runner, plugin, { teamAuthored });
+
+      // settlePack returns `current` before its enable when install reports
+      // "already installed", which is right for a team pack (rt did not install
+      // it, so it does not touch its enablement) and wrong for a trusted one,
+      // which today falls through to the enable at plugins.ts:186. Reachable:
+      // a plugin installed at another scope is absent from this scope's listing
+      // while install still reports it already installed.
+      if (outcome.kind === "current" && !teamAuthored) {
+        await enableTrusted(runner, plugin, dir);
+      }
       if (outcome.kind === "failed") {
         // The install-stage wording is the contract's documented example
         // (docs/superpowers/specs/2026-08-21-rt-setup-contract.md) and an
@@ -1382,13 +1480,27 @@ Swap the per-plugin body for the shared sequence:
   updateSetupState(ctx.p, (s) => ({ ...s, marketplaces: [...s.marketplaces, ...marketplaces], plugins: [...s.plugins, ...new Set(settled)] }));
 ```
 
-Add `isNotFoundResult` beside `isAlready` in the same file:
+Add `isNotFoundResult` beside `isAlready` in the same file, and the enable helper
+both branches use. The helper keeps the log line `plugins.ts:187-189` emits
+today, which is the only signal a baseline plugin failed to enable:
 
 ```ts
 function isNotFoundResult(res: { stderr: string }): boolean {
   return /not found/i.test(res.stderr);
 }
 ```
+
+```ts
+  /** Best-effort, and logged: an older claude without the subcommand must never fail an otherwise-good install, but a silent failure leaves a disabled baseline plugin with no signal anywhere. */
+  async function enableTrusted(runner: ClaudeRunner, plugin: string, dir: string): Promise<void> {
+    const enable = await runner.run(["plugin", "enable", plugin], SETTLE_EXEC_TIMEOUT_MS);
+    if (enable.code !== 0 && !isAlready(enable) && !isUnknownSubcommand(enable)) {
+      ctx.log("plugins.install", `claude plugin enable ${plugin} (${dir}) exited ${enable.code} ... ignored`);
+    }
+  }
+```
+
+Declare it inside `pluginsInstallRun` so it closes over `ctx`.
 
 Import the new symbols:
 
@@ -1428,6 +1540,12 @@ is the contract's documented example. Give its exec the same `list` answer.
 The rule for all five: leave every other verb's reply exactly as it was, and add
 only `argv[2] === "list" ? ok("[]") : <the existing reply>`.
 
+One knock-on to expect at `:266` ("an unknown 'enable' subcommand ignored"): with
+an empty listing and an "already installed" install, every plugin takes
+`settlePack`'s `isAlready` return, and the `enable` fixture is reached again only
+because of the trusted-enable fix in Step 3. If that test ever goes quiet about
+`enable`, the fix has regressed.
+
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `bun test lib/setup/__tests__/steps-c.test.ts`
@@ -1438,10 +1556,11 @@ Expected: PASS, the whole file, including the unchanged contract-string test.
 Run: `bun test lib/setup`
 Expected: PASS. `uninstall.test.ts` still passes because `setup-state` records the same ids for a successful run.
 
-- [ ] **Step 7: Delete the now-dead `isUnknownSubcommand`**
+- [ ] **Step 7: Keep `isUnknownSubcommand`**
 
-Its only caller was the `enable` branch this task replaced. Leaving it would be
-dead code the next reader has to reason about.
+Round 1 flagged it as dead once the old `enable` branch went away. It is not:
+`enableTrusted` uses it for exactly the reason it was written, so leave it in
+place. Nothing to do here beyond not deleting it.
 
 - [ ] **Step 8: Commit**
 
@@ -1675,9 +1794,12 @@ This is a deliberate change to shared plan semantics, so it gets its own test in
 `lib/setup/__tests__/plan.test.ts` (not the validators file, which imports
 neither symbol):
 
+`plan.test.ts` imports nothing from `contract.ts` today, so the whole import line
+is new, and it must include `row` because both tests below call it:
+
 ```ts
 import { applyInstallSatisfiedFlip } from "../plan.ts";
-import { finalizePlan, type Group, type Row } from "../contract.ts";
+import { finalizePlan, row, type Group, type Row } from "../contract.ts";
 
 function statusPlan(rows: Row[]) {
   // Group requires a title as well as id and rows.
