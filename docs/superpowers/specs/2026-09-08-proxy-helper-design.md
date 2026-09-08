@@ -97,8 +97,9 @@ compiled in):
      routine (`portless trust`), which installs the local CA into the
      system keychain so `https://<app>.mattstack` is green.
   4. Write `/etc/sudoers.d/mattstack-portless` granting exactly the
-     invoking user (the console user who ran Install, resolved by the
-     helper from the authorization context, never `%admin`) NOPASSWD for
+     invoking user (the console user who ran Install, resolved as the
+     GUI session's user via `SCDynamicStoreCopyConsoleUser`, never
+     `%admin`) NOPASSWD for
      the one command `launchctl kickstart -k system/sh.portless.proxy`;
      `visudo -c`-validated via a sibling temp file on the same filesystem;
      a failed validation removes the candidate and fails the op.
@@ -135,24 +136,25 @@ compiled in):
 
 ## Error handling
 
-- Every helper sub-step failure is fatal for the op, reported on stderr,
-  and leaves the previous state in place (stage+rename for the copy; plist
-  and sudoers writes are single-file renames; bootstrap failure rolls back
-  the plist it just wrote).
-- The app already logs helper stdout/stderr through `TrayLog` and returns
-  `NeedResult(ok:false)` upward; `proxy.install` then reports failed with
-  the stderr detail, never skipped.
+- Every helper sub-step failure is fatal for the op: detail goes to stdout
+  (the only channel) followed by a non-zero `MATTSTACK_EXIT` trailer, and
+  the previous state stays in place (stage+rename for the copy; plist and
+  sudoers writes are single-file renames; bootstrap failure rolls back the
+  plist it just wrote).
+- The app parses the trailer and synthesizes `NeedResult` / `TrayLog`
+  detail from that stdout (PrivilegedInstaller.swift maps a failed run's
+  output into its stderr field); `proxy.install` then reports failed with
+  that detail, never skipped.
 - A machine where the user declines the admin prompt: the escalator
   returns failure; the step reports needs-you ("administrator approval
-  declined") and Install continues — the checklist row rule (a row only
-  Install can satisfy must not gate Install) does not apply here since
-  proxy.install IS an Install step; it completes degraded exactly as today.
+  declined") and Install continues, completing degraded exactly as today.
 
 ## Testing
 
 - Unit (Swift): the helper's plist/sudoers/copy logic behind a filesystem
-  seam; golden plist and sudoers fixtures; layout-verification refuses a
-  malformed portless-dist.
+  seam; golden plist and sudoers fixtures; content verification refuses a
+  swapped portless-dist even when its layout is valid (tree hash mismatch
+  against the compiled-in sha256s).
 - Unit (TS): validator version-compare truth table (match/drift/missing);
   need wiring unchanged contract.
 - `check-bundle.sh`: asserts the helper exists in the seal, is signed, and
