@@ -26,6 +26,7 @@ import { repoLabel } from "../lib/repo-label.ts";
 import { rebaseOnto, type RebaseResult } from "./git/rebase.ts";
 import { resetToOrigin, type ResetResult } from "./git/reset.ts";
 import { syncLog } from "../lib/sync-log.ts";
+import { checkStackMembership, createStackGuardRunners, type StackGuardRunners, type StackRefusal } from "../lib/stack-guard.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -37,6 +38,8 @@ interface SyncSummary {
   rebaseResult: RebaseResult | null;
   pushed: boolean;
   error?: string;
+  /** Set when the stack guard stopped the sync before any ref moved. */
+  refusal?: StackRefusal;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -95,9 +98,16 @@ function hasDivergedFromRemote(branch: string, cwd: string): boolean {
 
 // ─── Single-branch sync ─────────────────────────────────────────────────────
 
-async function syncBranch(
+export async function syncBranch(
   cwd: string,
-  opts: { dryRun?: boolean; quiet?: boolean; onConflict?: "abort" | "pause" },
+  opts: {
+    dryRun?: boolean;
+    quiet?: boolean;
+    onConflict?: "abort" | "pause";
+    stackRunners?: StackGuardRunners;
+    /** Refuse when stack membership cannot be verified (agent callers); a human run warns and proceeds. */
+    strictStackCheck?: boolean;
+  },
 ): Promise<SyncSummary> {
   // Guard: rebase-in-progress takes priority — getCurrentBranch returns null
   // during a rebase, which would cause a confusing "detached HEAD" error later.
@@ -169,6 +179,19 @@ async function syncBranch(
 
   const { createStepRunner } = await import("../lib/rt-render.ts");
   const steps = createStepRunner();
+
+  // Stack guard: a stack member rebased alone onto the default branch lands
+  // on master and strands its chain, so this runs before the first ref move.
+  const stackRunners = opts.stackRunners ?? createStackGuardRunners((await import("../lib/setup/probes.ts")).createRealProbes());
+  const stack = await checkStackMembership({ cwd, branch, defaultBranch: defaultBranchName, runners: stackRunners });
+  syncLog.phase("stack-guard", { verdict: stack.verdict, ...(stack.verdict === "clear" ? {} : { kind: stack.refusal.kind, source: stack.refusal.source }) });
+  if (stack.verdict === "refuse" || (stack.verdict === "unverified" && opts.strictStackCheck)) {
+    syncLog.worktreeEnd(branch, stack.refusal.hint);
+    return { branch, worktree: cwd, resetResult: null, rebaseResult: null, pushed: false, error: stack.refusal.hint, refusal: stack.refusal };
+  }
+  if (stack.verdict === "unverified" && !opts.quiet) {
+    steps.log(`${stack.refusal.hint} — proceeding; rerun with --json to fail closed`, "warn");
+  }
 
   // 1. Fetch once (rebase/reset will skip their own fetch)
   if (opts.quiet) {
