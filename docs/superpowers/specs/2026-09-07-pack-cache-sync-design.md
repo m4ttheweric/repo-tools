@@ -1,74 +1,78 @@
 # Converging Claude's plugin cache with the team clone
 
-2026-09-07. MAT-410. The team clone pulls new pack versions and the installed
-Claude plugin stays stale, so pack releases silently never reach the people
-using them. Every claim about the `claude` CLI below was proved by running it
-(2.1.263) against a fixture directory marketplace in an isolated HOME; the
-probe transcript is summarized under "Evidence".
+2026-09-07 (revised 2026-09-08 after adversarial review). MAT-410. The team
+clone pulls new pack versions and the installed Claude plugin stays stale, so
+pack releases silently never reach the people using them. Every claim about the
+`claude` CLI below was proved by running it (2.1.263) against a fixture
+directory marketplace in an isolated HOME; the probe results are in "Evidence".
 
 ## Problem
 
 `~/.mattstack/teams/<slug>` is registered with Claude Code as a `directory`
 marketplace, and the pack is installed from it as `<plugin>@<marketplace>`.
-Installing copies the pack into `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>`.
-The MAT-405 snapshot daemon now fast-forwards that clone every few minutes, but
-nothing re-reads it into the cache. Observed on the owner's own machine when
-MAT-410 was filed: clone at pack 0.5.20, installed plugin 0.5.18.
+Installing copies the pack into
+`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>`. The MAT-405 snapshot
+daemon now fast-forwards that clone every few minutes, but nothing re-reads it
+into the cache. Observed on the owner's own machine when MAT-410 was filed:
+clone at pack 0.5.20, installed plugin 0.5.18.
 
-Two facts make this worse than a missed update.
+Three further facts, all verified in the code:
 
 **`rt setup status` cannot show it.** The `pack.<pack>` row is built from
-`readPackRequirements`, which discovers packs by finding a `requirements.jsonc`
+`readPackRequirements`, which finds packs by locating a `requirements.jsonc`
 under the clone. ClaimView's pack ships none, so there is no `pack.claimview`
-row at all, and the row that does exist for other packs reports only
-`installed` with no version. Nothing on any screen can say "installed 0.5.18,
-team serves 0.5.20".
+row at all, and the rows that do exist report `installed` with no version.
 
 **The enable state underneath it is already wrong.** `plugins.install` enforces
-the installed-never-enabled ruling for team-authored plugins by skipping the
-`claude plugin enable` call. But `claude plugin install` enables the plugin by
+the installed-never-enabled ruling by skipping the `claude plugin enable` call
+for team-authored plugins. But `claude plugin install` enables the plugin by
 itself: install alone into a clean HOME yields `enabledPlugins: {<id>: true}`.
-So a joined team's pack is enabled today, contrary to the ruling, and the only
-test covering it asserts that the `enable` argv is absent, which stays green
-while the outcome is wrong. This matters here because the converge mechanism
-preserves whatever enable state it finds, so it would faithfully preserve the
-wrong one.
+The only test covering this asserts that the `enable` argv is absent, so it
+stays green while the outcome is wrong.
+
+**`rt setup apply` re-enables a pack the member deliberately turned off.**
+`pluginsInstallRun` runs `claude plugin install` unconditionally, including for
+plugins already present, and install on an installed-but-stale plugin flips
+enablement back to `true`. So today the ruling is violated at join time and the
+member's own later choice is overwritten on the next apply.
 
 ## Evidence
 
-Run against claude 2.1.263, isolated HOME, fixture directory marketplace with a
-one-skill pack:
+claude 2.1.263, isolated HOME, fixture directory marketplace with a one-skill
+pack:
 
 | Probe | Result |
 | --- | --- |
 | `claude plugin install <id>` into a clean HOME | version installed, `enabledPlugins[<id>] = true` |
-| `claude plugin disable <id>`, then bump the source version, then `claude plugin update <id> -y` | version moves, `enabledPlugins[<id>]` stays `false` |
-| `claude plugin update` with no prior `claude plugin marketplace update` | picks up the new version; the directory marketplace needs no refresh step |
+| `claude plugin disable <id>`, bump the source version, `claude plugin update <id> -y` | version moves, `enabledPlugins[<id>]` stays `false` |
+| `claude plugin update` with no prior `claude plugin marketplace update` | picks up the new version; a directory source needs no refresh step |
 | `claude plugin install` on an installed-but-stale plugin | version moves **and** enablement flips back to `true` |
 | `claude plugin update` when already current | exit 0, "already at the latest version" |
-| `claude plugin update` for a plugin that is not installed | exit 1, "Plugin not found" |
-| `claude plugin list --json --available` after a source bump | `available: []`, so it cannot be used to detect the newer version |
+| `claude plugin update` for a plugin that is not installed | exit 1, stderr `Plugin "<name>" not found` |
+| `claude plugin list --json --available` after a source bump | `available: []`, so it cannot detect the newer version |
 
-Two consequences follow directly. The converge verb must be `update`, never
-`install`, because only `update` preserves the disabled state. And the served
+Three consequences drive the whole design. The converge verb is `update`, never
+`install`, because only `update` preserves the disabled state. The served
 version must be read from the clone on disk, because the CLI will not report it.
+And `update`'s own not-found failure is a reliable, cheap proof that a plugin is
+absent, which the design uses instead of a separate installed-check.
 
 ## Alignment with the owner/member split
 
 Ruling of 2026-09-07: only the owner writes team settings, members are
 pull-only, and member daemons never push the team repo. This design sits
-entirely on the member-safe side. Its trigger is the pull edge, which is the
-half of the snapshot engine that stays alive when the push half is refused, and
-its only write is to `~/.claude` on the local machine. It does not write team
-scope, does not push, and does not need forge write.
+entirely on the member-safe side. Its trigger is the pull edge, the half of the
+snapshot engine that stays alive when the push half is refused, and its only
+write is to `~/.claude` on the local machine. It writes no team scope, pushes
+nothing, and needs no forge write.
 
 ## Design
 
-### Trigger: the pull that moved HEAD
+### Trigger: the pull that moved HEAD, from the timer and boot only
 
-`doPull` already classifies its outcomes, and exactly two of them mean HEAD
-moved: `fast-forwarded` and `rebased`. `conflict` aborts the rebase and
-restores the prior HEAD, `up-to-date` and `skipped` never move it.
+`doPull` classifies its outcomes, and exactly two mean HEAD moved:
+`fast-forwarded` and `rebased`. `conflict` aborts the rebase and restores the
+prior HEAD; `up-to-date` and `skipped` never move it.
 
 `SnapshotSpec.pull` gains one optional field:
 
@@ -80,41 +84,72 @@ pull?: {
 };
 ```
 
-`pullNow` awaits it after `withGitLock` releases, not inside `doPull`:
+`pullNow` awaits it after `withGitLock` releases:
 
 - outside the lock, because the hook shells out to `claude` and holding the git
-  lock for the length of a plugin install would block the commit cycle;
+  lock that long would block the commit cycle;
 - awaited rather than fire-and-forget, so a test that awaits `pullNow()`
-  deterministically observes the converge instead of racing it.
+  observes the converge deterministically instead of racing it.
 
-A throwing hook is caught and logged at `warn`. A failed converge must never
-turn a successful pull into a failure.
+**The push path does not fire it.** `doPushInner` calls `pullNow()` before every
+push (`home-snapshot.ts:866`) to avoid diverging, not to react to content. That
+pull is inside `pushInFlight`, so a converge there would delay every push by the
+length of a plugin install, and any converge stall would wedge the push path on
+owner machines. `pullNow` therefore takes `{ converge?: boolean }`, defaulting
+to true, and `doPushInner` passes `converge: false`. Nothing is lost: the timer
+pull converges the same clone within one interval.
 
-The home spec has no `pull` field at all, so the home repo is untouched by
-this change, and the engine stays pack-agnostic: it knows only that something
-wants to hear about a pull.
+The converging callers are the interval timer, the boot pull `init()` already
+fires (so a clone that moved while the daemon was down converges at start), and
+the explicit `team:pull` daemon verb.
 
-The boot pull that `init()` already fires means a clone that moved while the
-daemon was down converges at daemon start, with no extra code.
+The home spec has no `pull` field at all, so the home repo is untouched, and the
+engine stays pack-agnostic: it knows only that something wants to hear about a
+pull.
+
+### Bounding the hook, so a hung `claude` cannot kill the pull loop
+
+This is the sharpest failure mode in the design and it is specified explicitly.
+`execWithTimeout` awaits its collected output unconditionally when no
+`timeoutMs` is given (`probes.ts:118-122`), so a `claude` that never exits hangs
+forever. `schedulePull` re-arms only in the `.finally` of `pullNow`
+(`home-snapshot.ts:679-682`), so a hung hook would stop that clone's pull loop
+for the life of the daemon, silently.
+
+Two bounds, both required:
+
+- **Per-exec:** every `claude` call the converge makes passes
+  `timeoutMs: PACK_EXEC_TIMEOUT_MS` (60_000, the value and the reasoning
+  `plugins.install` already uses). A timeout surfaces as exit code 124, the
+  repo's existing convention, and is recorded as a `failed` entry for that pack
+  with detail `timed out after 60s`. It is never recorded as success, and never
+  as "not installed".
+- **Per-converge:** a whole-run budget of `CONVERGE_BUDGET_MS` (120_000).
+  When it is exhausted, the remaining packs are recorded as `skipped` with
+  `converge budget exhausted` and the run returns. The next pull retries them.
+
+Together these cap the hook's contribution to `pullNow` at a known bound, so
+`schedulePull` always re-arms. The hook's own `catch` additionally guarantees a
+throwing converge cannot turn a successful pull into a failure.
 
 ### Converge: `lib/setup/pack-cache.ts`
 
-A new module, placed beside `base-plugins.ts` and for the same reason: the
-daemon supervisor and the status validator both need it, and neither may import
-a setup step.
+A new module beside `base-plugins.ts`, and for the same reason: the daemon
+supervisor, the setup step and the status validator all need it, and none of
+them may import a setup step.
 
 ```ts
 export interface ServedPack { id: string; name: string; servedVersion: string | null }
 export interface InstalledPack { id: string; version: string | null; enabled: boolean }
+/** `error` is non-null only for a marketplace.json that exists and did not parse. */
+export interface ServedPacks { packs: ServedPack[]; error: string | null }
 
 /** marketplace.json plus each plugin source's plugin.json, read from the clone. */
-export function readServedPacks(p: Probes, slug: string): ServedPack[]
-
-/** One `claude plugin list --json` per config dir, parsed. */
-export async function readInstalledPacks(p: Probes, configDir: string): Promise<InstalledPack[] | null>
+export function readServedPacks(p: Probes, slug: string): ServedPacks
 
 export interface ConvergeResult {
-  updated: { id: string; from: string | null; to: string | null }[];
+  updated: { id: string; to: string | null }[];
+  installed: string[];
   current: string[];
   skipped: { id: string; reason: string }[];
   failed: { id: string; detail: string }[];
@@ -124,144 +159,211 @@ export async function convergePackCache(p: Probes, slug: string, log: Logger): P
 
 `convergePackCache` walks the same `claudeConfigDirs(p, [])` list and passes the
 same `CLAUDE_CONFIG_DIR` env as `plugins.install`, so the two agree about which
-Claude installs they are managing. Per pack:
+Claude installs they manage.
 
-- **not installed**: skipped. First install belongs to `plugins.install`, and
-  the daemon must not install a pack the member never had.
-- **installed version equals served version**: current, with no update call.
-  A converging pull costs one `claude plugin list --json` per config dir to
-  learn the installed versions, and nothing more unless a version actually
-  moved.
-- **versions differ**: `claude plugin update <id> -y`. Exit 0 is an update,
-  non-zero is a failure recorded with its stderr.
+**The per-pack sequence, which is also the ruling's single enforcement point:**
 
-`-y` is passed because the daemon has no TTY and the flag is required there.
-No `claude plugin marketplace add` and no `claude plugin marketplace update`:
-the marketplace is already registered (`plugins.install` did it) and the
-directory source needs no refresh, both proved above.
+```
+update <id> -y
+  exit 0                  -> it existed and is now current. Enable state untouched.
+  exit != 0, "not found"  -> it did not exist:
+                               install <id>
+                               disable <id>        (team-authored)
+  exit != 0, otherwise    -> failed, recorded with stderr
+```
+
+Deriving absence from `update`'s own not-found failure, rather than from a
+separate `claude plugin list` pre-check, is what makes the never-disable-on-
+uncertainty rule structural rather than a promise. `disable` runs only on the
+branch where `update` proved the pack absent and `install` then created it. There
+is no code path where an unreadable listing, a timeout or any other uncertainty
+can reach a `disable`, because uncertainty exits through the `failed` branch.
+
+A "not found" match is anchored to that phrasing in stderr, the way `isAlready`
+is anchored today, so an unrelated failure cannot be read as absence.
+
+`install` on a fresh pack is what delivers the 2026-09-07 ruling that a pack
+added to the team after a member joined installs through the converge, disabled,
+with the member opting in via Enable. It is the same three lines that serve the
+join-time case.
 
 If `resolveTool(p, "claude")` finds nothing, the converge returns a single
-skipped entry naming that. A machine without Claude Code is not a daemon error.
+skipped entry naming that: a machine without Claude Code is not a daemon error.
+
+No `claude plugin marketplace add` and no `claude plugin marketplace update`:
+the marketplace is already registered by `plugins.install`, and a directory
+source needs no refresh, both proved above.
+
+### Reading what the team serves
+
+`readServedPacks` reads `<clone>/.claude-plugin/marketplace.json` and, for each
+entry, the `plugin.json` at its `source`. The failure cases are defined rather
+than left to silence, because silent dropping is the exact failure this spec
+exists to fix:
+
+| Input | Result |
+| --- | --- |
+| file absent | `{ packs: [], error: null }`. A clone rt does not own yet is not an error, matching `readTeamMarketplace` today. |
+| file unparsable | `{ packs: [], error: "<path> did not parse" }`. The team authored it; its packs must not vanish silently. The status row renders this as an `error` row. |
+| entry `source` is a string | resolved relative to the clone root; its `plugin.json` `version` is the served version. |
+| entry `source` is object-form (github, url) | pack listed, `servedVersion: null`. The version is not on disk to read. |
+| `plugin.json` missing or unparsable | pack listed, `servedVersion: null`. |
+
+**Null-version comparison is defined:** a pack whose served or installed version
+is null is never treated as stale and never triggers an update. Unknown is not a
+mismatch. It renders as `version unknown` on its row, and the converge records
+it as `skipped` with that reason. This keeps an object-form source from
+provoking an update loop it can never satisfy.
 
 ### The parser, shared not duplicated
 
-`validators/tools.ts` already parses `claude plugin list --json`, with a
+`validators/tools.ts` already parses `claude plugin list --json` with a
 deliberate strictness contract: any element missing a string `id` rejects the
-whole payload, and a missing `enabled` normalizes to `false` rather than
-rejecting. That parser moves into `pack-cache.ts` and gains `version`, and
-`validators/tools.ts` imports it. The strictness contract and its tests are
-preserved exactly; the change is additive.
+whole payload, while a missing `enabled` normalizes to `false` rather than
+rejecting. That parser moves into `pack-cache.ts` and gains `version`;
+`validators/tools.ts` imports it. The contract and its tests are preserved
+exactly; the change is additive.
+
+The status row still needs the listing (to report installed version and enable
+state), so the pre-check that the converge no longer performs remains where it
+always was: in the read-only status path, where being unable to read it renders
+an honest `error` row rather than driving a write.
 
 ### Wiring
 
-`teamSnapshotSpec` takes an `onPulled` in its opts and passes it through.
-`startTeamSnapshots` supplies it, and it already holds everything needed:
-`probes` (from `createRealProbes()`), the slug, and the per-clone child logger.
+`teamSnapshotSpec` takes `onPulled` in its opts and passes it through.
+`startTeamSnapshots` supplies it and already holds everything needed: `probes`
+(from `createRealProbes()`), the slug, and the per-clone child logger.
+
+**A known environment divergence, named rather than hidden.** `claudeConfigDirs`
+reads `CLAUDE_CONFIG_DIR` from the process env. The daemon's env is launchd's,
+not the user's shell, so a user who sets that variable in their shell profile
+has the CLI managing one config dir and the daemon converging another. The
+converge therefore logs which config dir it acted on, and the status row reports
+the dir the CLI sees, so the two can be compared instead of quietly disagreeing.
+Making them agree is out of scope here (it is a setting, not a fix in this lane).
 
 ### Surfacing: the pack rows
 
-`packRow` is rebuilt around the union of two sources, keyed by pack name so
-each pack yields exactly one row:
+`toolRows` gains the team slug through its `opts` argument; `composePlan` has
+`team.slug` in hand at the call site (`plan.ts:143`, used at `plan.ts:156`).
 
-- packs discovered by `readPackRequirements` (which may carry `.error`, and
-  whose error row is preserved unchanged), and
+`packRow` is rebuilt around the union of two sources, keyed by pack name so each
+pack yields exactly one row:
+
+- packs discovered by `readPackRequirements` (whose `.error` row is preserved
+  unchanged), and
 - packs the team marketplace serves, which is how ClaimView gets a row at all.
-
-Row states, given the never-enabled ruling:
 
 | Condition | Status | Detail |
 | --- | --- | --- |
+| marketplace.json unparsable | `error` | `<path> did not parse` |
 | not installed | `missing` | installed by Install (plugins.install) |
-| installed, version matches, not enabled | `ready` | `<v> installed, not enabled ... claude plugin enable <id>` |
-| installed, version matches, enabled | `ready` | `<v> installed and enabled` |
-| installed, version differs | `needs-you` | `installed <a>, team serves <b>; a running Claude session uses the old cache until it restarts` |
-| malformed requirements | `error` | unchanged |
+| installed, versions match, not enabled | `ready` | `<v> installed, not enabled ... claude plugin enable <id>`, plus the restart caveat |
+| installed, versions match, enabled | `ready` | `<v> installed and enabled`, plus the restart caveat |
+| installed, versions differ | `needs-you` | `installed <a>, team serves <b>` |
+| either version unknown | `ready` | `<v> installed, served version unknown` |
+
+**The restart caveat sits on the converged row, not the stale one.** On a stale
+row the cache itself still holds the old version, so a restart changes nothing
+and the caveat would be actively misleading. It belongs where the cache has
+already moved and only the running process is behind: `a Claude session started
+before this version landed uses the old cache until it restarts`.
 
 A disabled team pack is `ready`, not `needs-you`: under the ruling that is the
 correct state, and the row's job is to name the one command that turns it on
-(R1's "a visible statement of the one command that enables the pack"). The
-stale row is `needs-you` with the existing `rt setup pack` action, because the
-daemon converges automatically, so a row that is still stale when a human reads
-it means the automatic path did not work and a person does need to act.
+(R1's "a visible statement of the one command that enables the pack"). A stale
+row is `needs-you` with the existing `rt setup pack` action, because the daemon
+converges automatically, so a row still stale when a human reads it means the
+automatic path did not work and a person does need to act.
 
-The restart caveat is stated on the stale row rather than everywhere, because
-that is the row where it changes what the reader should expect: the version
-they see is the version the next session gets, not this one.
+### The install path
 
-### The install-path fix
+`plugins.install` stops calling `claude plugin install` unconditionally and
+calls the same `pack-cache.ts` per-pack sequence instead, so the enable rule and
+the update-not-install rule live in exactly one place. For trusted plugins the
+`enable` call follows as it does today; for team-authored plugins it stays
+skipped, and the `disable` fires only on the proved-absent branch.
 
-In `plugins.install`, one `claude plugin list --json` per config dir before the
-install loop yields the set that was already installed. Then, for a
-team-authored plugin:
+This is what stops `rt setup apply` re-enabling a pack the member deliberately
+turned off: an already-installed plugin now takes the `update` path, which
+preserves enablement, and never the `install` path, which does not.
 
-```
-install
-if teamAuthored:
-    if not wasInstalledBefore: claude plugin disable <id>
-    continue          # the enable call stays skipped, as today
-```
-
-Disable only on first install. A user who later enables the pack deliberately
-keeps it enabled through every subsequent `rt setup apply`, and the converge
-preserves it too. A failed disable is logged and named in the step detail, but
-does not fail the step: an otherwise successful install should not fail over
-enable-state bookkeeping, and the posture matches the existing best-effort
-`enable`.
+A failed `disable` is logged and named in the step detail but does not fail the
+step, matching the existing best-effort posture for `enable`: an otherwise
+successful install should not fail over enable-state bookkeeping.
 
 ### Logging
 
 The converge logs one domain event per team clone per converging pull, naming
-what moved, at `info`; nothing when there was nothing to do. Failures log at
-`warn` with `{ err }`. No request/response logging and no try/catch wrapper: the
-daemon's `handleCommand` seam and the crash handlers already cover the rest,
-per the logging architecture.
+what moved and which config dir it acted on, at `info`; nothing when there was
+nothing to do. Failures and timeouts log at `warn` with `{ err }`.
+
+The hook's own `catch` is the logging seam for this path, and the spec says so
+because the usual one does not apply: `handleCommand` covers daemon commands,
+and a timer-driven pull is not one. Nothing below that catch may swallow an
+error silently.
 
 ### No new setting
 
-`rt.teamSnapshot.enabled` already disables the whole engine including its
-pulls, so a kill switch for the converge exists. A second key would add a
-registry entry and a second way to express the same intent.
+`rt.teamSnapshot.enabled` already disables the whole engine including its pulls,
+so a kill switch for the converge exists. A second key would add a registry
+entry and a second way to express one intent.
 
 ## Testing
 
-**Unit, always run.** The step and converge tests drive a fake `exec` that
-models the real claude semantics proved above (install sets enabled true,
-disable sets false, update preserves) and assert the resulting enable state and
-version, not the argv sequence. The existing argv-absence test in
-`steps-c.test.ts` is replaced by this outcome assertion: an argv assertion
-cannot fail when the outcome is wrong, which is exactly how the current defect
-stayed green.
+**Unit, always run.** The converge and step tests run against a temp HOME with a
+fake `exec` that models the proved claude semantics by writing a real
+`settings.json` and `installed_plugins.json` (install writes `enabled: true`,
+disable writes `false`, update leaves enablement alone and moves the version).
+Assertions read those files. The outcome is therefore literal, not a stand-in:
+the existing argv-absence test in `steps-c.test.ts` is replaced, because an argv
+assertion cannot fail when the outcome is wrong, which is precisely how the
+current defect stayed green.
 
-**Contract e2e, opt-in.** `RT_CLAUDE_PLUGIN_E2E=1` runs the real `claude`
-binary against a fixture directory marketplace in an isolated HOME and asserts
-the four behaviors the design rests on: install enables, disable then update
-preserves disabled, update moves the version from a directory source, and
-update on an uninstalled plugin exits non-zero. This is the test that fails
+Cases that must be covered because the design turns on them: a converge with no
+version change issues no `update`; a stale pack updates and keeps its disabled
+state; a served-but-absent pack installs and ends disabled; an `update` failure
+that is not "not found" never reaches `install` or `disable`; a per-exec timeout
+records `failed` and never `not installed`; the budget cap returns and lets the
+pull loop re-arm; and a push-path pull fires no converge.
+
+**Contract e2e, opt-in.** `RT_CLAUDE_PLUGIN_E2E=1` runs the real `claude` binary
+against a fixture directory marketplace in an isolated HOME and asserts the
+behaviors the design rests on: install enables, disable then update preserves
+disabled, update moves the version from a directory source, and update on an
+uninstalled plugin exits non-zero with "not found". This is the test that fails
 loudly if claude's behavior changes. It follows the house pattern for a test
 needing a real external dependency (`sdm-browser-login.test.ts`): env-gated and
 named, never silently skipped on a missing binary.
 
-Honest limitation: no CI workflow installs `claude`, so CI cannot catch a
-claude behavior change. The VM pass is where that assertion becomes a release
-gate, and MAT-402's planned `team-pack` fixture and `assert-team.sh` blocks are
-the vehicle for it. That work stays in MAT-402's lane.
+Honest limitation: no CI workflow installs `claude`, so CI cannot catch a claude
+behavior change. The VM pass is where that assertion becomes a release gate, and
+MAT-402's planned `team-pack` fixture and `assert-team.sh` blocks are the vehicle.
+That work stays in MAT-402's lane.
 
 ## Acceptance
 
 - A member whose team clone fast-forwards onto a new pack version ends with the
   new version in `~/.claude/plugins/cache`, with no command typed.
 - The pack's enable state is the same before and after that converge.
-- A joiner who completes setup ends with the team pack installed and **not**
-  enabled, asserted on the resulting settings rather than on the argv.
+- A pack added to the team after a member joined installs on the next converging
+  pull and ends **not** enabled.
+- A joiner who completes setup ends with the team pack installed and not
+  enabled, asserted on the resulting settings files rather than on argv.
+- A member who enables the pack, then runs `rt setup apply`, still has it enabled
+  afterwards.
 - `rt setup status` shows a row per team-served pack carrying its installed
-  version, and names both served version and the restart caveat when they differ.
+  version, names the served version when they differ, and states the restart
+  caveat on the row where the cache has already moved.
 - A pull that moves HEAD without changing any pack version runs no
   `claude plugin update`.
+- A `claude` that never exits cannot stop a clone's pull loop: the converge
+  returns within its budget and `schedulePull` re-arms.
 
 ## Out of scope
 
 The enable verb and the Done-screen line from R1 (this ships the row and the
-command text, not a one-shot verb), the VM fixture and its assertions
-(MAT-402), first-install of a pack added to the team after a member joined
-(the converge deliberately updates only what is installed), and any change to
+command text, not a one-shot verb), the VM fixture and its assertions (MAT-402),
+reconciling the daemon's `CLAUDE_CONFIG_DIR` with the shell's, and any change to
 how packs are published.
