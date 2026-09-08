@@ -199,3 +199,77 @@ describe("herd:resume / status / close", () => {
     expect(store.getJob(herd, "cv-1")!.status).toBe("closed");
   });
 });
+
+describe("worker verbs", () => {
+  const Q = [{ id: "q1", label: "Which?", multi: false, options: ["a", "b"] }];
+  async function withJob() {
+    const hx = harness();
+    const s = await hx.h["herd:start"](START);
+    if (!s.ok) throw new Error(s.error);
+    hx.store.upsertJob({ herd: s.data.herd, name: "cv-1", worktree: "/w/cv-1", handle: "cv-1", status: "active", pane: "w9:p1", agentSession: "sess-w1" });
+    return { ...hx, herd: s.data.herd, room: s.data.room };
+  }
+
+  test("ask opens a question gate with subject, refs, nudge, meta; job goes at-gate", async () => {
+    const { h, store, gateStore, herd } = await withJob();
+    const res = await h["herd:ask"]({ herd, job: "cv-1", session: "sess-w1", pane: "w9:p1", questions: Q, context: "why" });
+    if (!res.ok) throw new Error(res.error);
+    const g = gateStore.get(res.data.gate)!;
+    expect(g).toMatchObject({ subject: `herd:${herd}/cv-1`, kind: "question", agent: "cv-1", pane: "w9:p1", nudge: { session: "sess-w1" }, meta: { herd, job: "cv-1" }, context: "why" });
+    expect(store.getJob(herd, "cv-1")).toMatchObject({ status: "at-gate", lastGate: res.data.gate });
+  });
+
+  test("ask refuses an unknown job and invalid questions", async () => {
+    const { h, herd } = await withJob();
+    expect((await h["herd:ask"]({ herd, job: "nope", session: "s", questions: Q })).ok).toBe(false);
+    expect((await h["herd:ask"]({ herd, job: "cv-1", session: "s", questions: [] })).ok).toBe(false);
+  });
+
+  test("milestone posts quietly to the room then opens a milestone gate with the fixed options", async () => {
+    const { h, store, gateStore, chatCalls, herd, room } = await withJob();
+    const res = await h["herd:milestone"]({ herd, job: "cv-1", session: "sess-w1", pane: "w9:p1", artifact: "/w/cv-1/spec.md", summary: "spec ready" });
+    if (!res.ok) throw new Error(res.error);
+    const post = chatCalls.find((c) => c.verb === "post")!;
+    expect(post.payload).toMatchObject({ room, handle: "cv-1", quiet: true });
+    expect(post.payload.body).toContain("/w/cv-1/spec.md");
+    const g = gateStore.get(res.data.gate)!;
+    expect(g.kind).toBe("milestone");
+    expect(g.questions).toEqual([{ id: "decision", label: "spec ready", multi: false, options: ["Approve", "Revise", "Spawn a reviewer"] }]);
+    expect(g.meta).toMatchObject({ herd, job: "cv-1", artifact: "/w/cv-1/spec.md" });
+    expect(store.getJob(herd, "cv-1")!.status).toBe("at-milestone");
+  });
+
+  test("answer returns the recorded answer with notes, or null while open", async () => {
+    const { h, gateStore, herd } = await withJob();
+    const asked = await h["herd:ask"]({ herd, job: "cv-1", session: "sess-w1", questions: Q });
+    if (!asked.ok) throw new Error(asked.error);
+    const open = await h["herd:answer"]({ gate: asked.data.gate });
+    if (!open.ok) throw new Error(open.error);
+    expect(open.data).toMatchObject({ status: "open", answer: null });
+    gateStore.answer(asked.data.gate, { q1: { value: "b", note: "and also x" } } as never, "shepherd");
+    const done = await h["herd:answer"]({ gate: asked.data.gate });
+    if (!done.ok) throw new Error(done.error);
+    expect(done.data.status).toBe("answered");
+    expect(done.data.answer!.by).toBe("shepherd");
+    expect((await h["herd:answer"]({ gate: "gt-nope" })).ok).toBe(false);
+  });
+
+  test("report posts to the room mentioning the shepherd and marks the job done", async () => {
+    const { h, store, chatCalls, herd, room } = await withJob();
+    const res = await h["herd:report"]({ herd, job: "cv-1", body: "done: A1 A2" });
+    if (!res.ok) throw new Error(res.error);
+    const post = chatCalls.find((c) => c.verb === "post")!;
+    expect(post.payload).toMatchObject({ room, handle: "cv-1", body: "done: A1 A2", mentions: ["shepherd"] });
+    expect(post.payload.quiet).toBeUndefined();
+    expect(store.getJob(herd, "cv-1")).toMatchObject({ status: "done", lastReport: res.data.message });
+  });
+
+  test("report on a disposable job closes its pane and marks it closed", async () => {
+    const { h, store, herdrCalls, herd } = await withJob();
+    store.upsertJob({ herd, name: "review-cv-1", worktree: "/w/cv-1", handle: "review-cv-1", status: "active", pane: "w9:p7", disposable: true });
+    const res = await h["herd:report"]({ herd, job: "review-cv-1", body: "verdict: approve" });
+    expect(res.ok).toBe(true);
+    expect(herdrCalls).toContainEqual(["pane", "close", "w9:p7"]);
+    expect(store.getJob(herd, "review-cv-1")!.status).toBe("closed");
+  });
+});

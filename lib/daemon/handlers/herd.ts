@@ -181,5 +181,65 @@ export function createHerdHandlers(deps: HerdDeps) {
       store.setJobStatus(herdId, name, "closed");
       return { ok: true, data: { job: name, status: "closed" } };
     },
+
+    "herd:ask": async (raw: unknown): Promise<CommandResult<"herd:ask">> => {
+      const p = raw as Commands["herd:ask"]["payload"] | undefined;
+      const herdId = str(p?.herd); const name = str(p?.job); const session = str(p?.session);
+      if (!herdId || !name || !session) return { ok: false, error: "herd, job, and session are required (HERD_ID, HERD_JOB, CLAUDE_CODE_SESSION_ID)" };
+      const job = store.getJob(herdId, name);
+      if (!job) return { ok: false, error: `unknown job "${name}" in herd "${herdId}"` };
+      const opened = await deps.gate["gate:open"]({
+        subject: herdSubject(herdId, name), kind: "question", questions: p!.questions,
+        meta: { herd: herdId, job: name }, agent: name, pane: str(p?.pane) ?? job.pane ?? undefined,
+        nudge: { session }, context: str(p?.context),
+      });
+      if (!opened.ok) return opened;
+      store.setJobStatus(herdId, name, "at-gate", { lastGate: opened.data.id });
+      return { ok: true, data: { gate: opened.data.id } };
+    },
+
+    "herd:milestone": async (raw: unknown): Promise<CommandResult<"herd:milestone">> => {
+      const p = raw as Commands["herd:milestone"]["payload"] | undefined;
+      const herdId = str(p?.herd); const name = str(p?.job); const session = str(p?.session); const artifact = str(p?.artifact);
+      if (!herdId || !name || !session || !artifact) return { ok: false, error: "herd, job, session, and artifact are required" };
+      const herd = store.get(herdId); const job = herd ? store.getJob(herdId, name) : null;
+      if (!herd || !job) return { ok: false, error: `unknown job "${name}" in herd "${herdId}"` };
+      const summary = str(p?.summary) ?? `milestone: ${artifact}`;
+      const posted = await deps.chat["chat:post"]({ room: herd.room, handle: job.handle, body: `${summary}\n\nartifact: ${artifact}`, quiet: true });
+      if (!posted.ok) return posted;
+      const opened = await deps.gate["gate:open"]({
+        subject: herdSubject(herdId, name), kind: "milestone",
+        questions: [{ id: "decision", label: summary, multi: false, options: [...MILESTONE_OPTIONS] }],
+        meta: { herd: herdId, job: name, artifact, message: posted.data.id },
+        agent: name, pane: str(p?.pane) ?? job.pane ?? undefined, nudge: { session },
+      });
+      if (!opened.ok) return opened;
+      store.setJobStatus(herdId, name, "at-milestone", { lastGate: opened.data.id });
+      return { ok: true, data: { gate: opened.data.id, message: posted.data.id } };
+    },
+
+    "herd:answer": async (raw: unknown): Promise<CommandResult<"herd:answer">> => {
+      const id = str((raw as { gate?: unknown } | undefined)?.gate);
+      if (!id) return { ok: false, error: "gate is required" };
+      const row = deps.gateStore.get(id);
+      if (!row) return { ok: false, error: `gate not found: ${id}` };
+      return { ok: true, data: { gate: row.id, status: row.status, answer: row.answer, closedReason: row.closedReason } };
+    },
+
+    "herd:report": async (raw: unknown): Promise<CommandResult<"herd:report">> => {
+      const p = raw as Commands["herd:report"]["payload"] | undefined;
+      const herdId = str(p?.herd); const name = str(p?.job); const body = str(p?.body);
+      if (!herdId || !name || !body) return { ok: false, error: "herd, job, and a non-empty body are required" };
+      const herd = store.get(herdId); const job = herd ? store.getJob(herdId, name) : null;
+      if (!herd || !job) return { ok: false, error: `unknown job "${name}" in herd "${herdId}"` };
+      const posted = await deps.chat["chat:post"]({ room: herd.room, handle: job.handle, body, mentions: [herd.shepherdHandle] });
+      if (!posted.ok) return posted;
+      store.setJobStatus(herdId, name, "done", { lastReport: posted.data.id });
+      if (job.disposable) {
+        if (job.pane) await closePane(herd.herdrSocket, job.pane, { herd: herdId, job: name });
+        store.setJobStatus(herdId, name, "closed");
+      }
+      return { ok: true, data: { message: posted.data.id } };
+    },
   };
 }

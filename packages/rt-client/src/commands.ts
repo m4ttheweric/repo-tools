@@ -630,6 +630,10 @@ export interface Commands {
   "herd:resume": { payload: { herd: string; session: string }; data: { subscription: string; gates: GateRow[]; unread: number; status: HerdStatusData } };
   "herd:status": { payload: { herd: string }; data: HerdStatusData };
   "herd:close":  { payload: { herd: string; job: string }; data: { job: string; status: "closed" } };
+  "herd:ask":       { payload: { herd: string; job: string; session: string; pane?: string; questions: GateQuestion[]; context?: string }; data: { gate: string } };
+  "herd:milestone": { payload: { herd: string; job: string; session: string; pane?: string; artifact: string; summary?: string }; data: { gate: string; message: number } };
+  "herd:answer":    { payload: { gate: string }; data: { gate: string; status: GateStatus; answer: GateAnswer | null; closedReason: GateRow["closedReason"] } };
+  "herd:report":    { payload: { herd: string; job: string; body: string }; data: { message: number } };
 
   /** Wire reply on success is always `{ok:true, repaired}` (no `data`
    *  wrapper) — `data` here documents the extra field the same way PingData
@@ -738,6 +742,10 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "herd:resume",
   "herd:status",
   "herd:close",
+  "herd:ask",
+  "herd:milestone",
+  "herd:answer",
+  "herd:report",
   "hooks:repair",
   "hooks:watch",
   "sdm:catalog",
