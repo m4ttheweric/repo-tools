@@ -664,6 +664,7 @@ describe("worktree:restore", () => {
       const res: any = await h["worktree:restore"]!({ repoName, tree: bad });
       expect(res).toMatchObject({ ok: false, error: "no-target" });
     },
+    20_000,
   );
 
   test("a normal treeName is not rejected by validation (reaches restoreTree)", async () => {

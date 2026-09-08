@@ -1631,6 +1631,7 @@ describe("homeSnapshot", () => {
     lastPullError: null,
     lastPullSkipped: null,
     conflicted: null,
+    pullOnly: false,
     claimedZones: ["prefs/"],
     firstSeenDirty: {},
     ownersError: null,

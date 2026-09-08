@@ -11,6 +11,7 @@ import { JoinKeyExchangeError, joinDryRun, joinRedeem, type JoinRedeemSeams } fr
 import type { RelayClient } from "../relay-client.ts";
 import type { SecretsSeams } from "../../secrets/store.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
+import { readTeamLocal, updateTeamLocal } from "../team-local.ts";
 
 const HOME = "/home";
 const ID_HEX = "0102030405060708090a0b0c0d0e0f10";
@@ -488,6 +489,23 @@ describe("joinRedeem", () => {
     expect(p.calls.writes[intentPath(HOME)]).toBeDefined();
   });
 
+  test("records joinedByRt BEFORE the clone runs, so the daemon watcher cannot race it", async () => {
+    const seen: string[] = [];
+    const p = redeemProbes({
+      exec: (argv) => {
+        if (argv[1] === "clone") seen.push(readTeamLocal(p, POINTER.team).joinedByRt ? "flag-first" : "clone-first");
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams();
+
+    await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+
+    expect(seen).toEqual(["flag-first"]);
+    expect(readTeamLocal(p, POINTER.team).joinedByRt).toBe(true);
+  });
+
   test("switchboard url + a readable admin token → peering applied, POSTs /peer/join with the joiner's forge login", async () => {
     const fetchCalls: { url: string; init?: Parameters<Probes["fetch"]>[1] }[] = [];
     const p = redeemProbes({
@@ -563,6 +581,16 @@ describe("joinRedeem", () => {
     expect(relay.redeemCalls).toHaveLength(0);
   });
 
+  test("a failed clone attempt clears joinedByRt back to false, not asserting membership in a team never cloned", async () => {
+    const p = redeemProbes({ exec: () => ({ code: 128, stdout: "", stderr: "fatal: Authentication failed" }) });
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams();
+
+    await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+
+    expect(readTeamLocal(p, POINTER.team).joinedByRt).toBe(false);
+  });
+
   describe("clone failures are classified honestly — 'check your network' only when it IS the network", () => {
     test("a non-auth, non-network clone failure does not blame the network", async () => {
       const p = redeemProbes({ exec: () => ({ code: 128, stdout: "", stderr: "fatal: destination path already exists and is not an empty directory" }) });
@@ -635,6 +663,21 @@ describe("joinRedeem", () => {
     expect(p.calls.exec.some((argv) => argv[0] === "git" && argv[1] === "clone")).toBe(false);
   });
 
+  test("an owner redeeming a code for a team they already created and cloned themselves is not stamped joinedByRt, which would flip their own machine pull-only", async () => {
+    const p = redeemProbes({
+      dirs: { [TEAM_DIR]: [".git"] },
+      files: { [pathJoin(TEAM_DIR, ".git", "config")]: gitConfigWithRemote(REMOTE) },
+    });
+    updateTeamLocal(p, POINTER.team, { createdByRt: true });
+    const relay = fakeRelay({ redeem: async () => "already" });
+    const { seams } = baseJoinRedeemSeams();
+
+    const result = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+
+    expect(result.access).toBe("ok");
+    expect(readTeamLocal(p, POINTER.team).joinedByRt).toBe(false);
+  });
+
   test("an existing clone with a DIFFERENT remote throws instead of silently reusing it", async () => {
     const p = redeemProbes({
       dirs: { [TEAM_DIR]: [".git"] },
@@ -644,6 +687,36 @@ describe("joinRedeem", () => {
     const { seams } = baseJoinRedeemSeams();
 
     await expect(joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams)).rejects.toMatchObject({ code: "team-remote-mismatch" });
+  });
+
+  test("a remote-mismatch refusal clears joinedByRt back to false too", async () => {
+    const p = redeemProbes({
+      dirs: { [TEAM_DIR]: [".git"] },
+      files: { [pathJoin(TEAM_DIR, ".git", "config")]: gitConfigWithRemote("git@github.com:someone-else/other.git") },
+    });
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams();
+
+    await expect(joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams)).rejects.toMatchObject({ code: "team-remote-mismatch" });
+
+    expect(readTeamLocal(p, POINTER.team).joinedByRt).toBe(false);
+  });
+
+  test("a remote-mismatch refusal does NOT clobber a genuine prior join under the same slug", async () => {
+    const p = redeemProbes({
+      dirs: { [TEAM_DIR]: [".git"] },
+      files: { [pathJoin(TEAM_DIR, ".git", "config")]: gitConfigWithRemote("git@github.com:someone-else/other.git") },
+    });
+    updateTeamLocal(p, POINTER.team, { joinedByRt: true });
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams();
+
+    // A stale or mistyped code resolving to this same slug, with a remote
+    // that no longer matches what this machine already joined, must refuse
+    // without touching the standing record of that earlier, unrelated join.
+    await expect(joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams)).rejects.toMatchObject({ code: "team-remote-mismatch" });
+
+    expect(readTeamLocal(p, POINTER.team).joinedByRt).toBe(true);
   });
 
   test("no code and no saved intent throws no-join-intent", async () => {

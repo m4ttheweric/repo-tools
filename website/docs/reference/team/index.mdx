@@ -21,7 +21,8 @@ rt team
 | --- | --- |
 | [`create`](create) | Scaffold a fresh team zone (~/.mattstack/teams/&lt;slug&gt;) and set its remote — Install pushes it |
 | [`publish`](publish) | Push the local team zone to its remote (or a new one) |
-| [`invite`](invite) | Mint an opaque invite code for a handle, and grant them forge read access |
+| [`invite`](invite) | Mint an opaque invite code for a handle, granting forge read access where mattstack manages membership |
+| [`manage-membership`](manage-membership) | Let mattstack add and remove teammates' read access on a team repo it created |
 | [`join`](join) | Redeem an invite (code on stdin, never an argument) |
 | [`members`](members) | Roster: collect invitee keys / remove a member |
 | [`status`](status) | Team summary (name, remote, last push, sync state, members) |

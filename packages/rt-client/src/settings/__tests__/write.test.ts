@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { machineSettingsPath, teamSettingsPath, teamsDir, userSettingsPath } from "../paths.ts";
+import { machineSettingsPath, teamLocalPath, teamSettingsPath, teamsDir, userSettingsPath } from "../paths.ts";
 import { setSetting, unsetSetting } from "../write.ts";
 
 const IDENTITY = "gitlab.com/acme/acme-dev";
@@ -378,6 +378,94 @@ describe("settings/write", () => {
 
   test("uses the HOME-relative teamsDir for team store discovery", () => {
     expect(teamsDir()).toContain(home);
+  });
+});
+
+// ─── refusing writes on a joined (pull-only) clone ─────────────────────────
+
+describe("settings/write: joined-team guard", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-settings-joined-")));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  // The guard runs after resolveStorePath's existence check (write.ts:216-219),
+  // so every seed must create the team SETTINGS STORE too, not just the
+  // machine-local record (a seed of the record alone would refuse with
+  // "team store does not exist" before the guard is ever reached).
+  function seedTeamStore(team: string): void {
+    const path = teamSettingsPath(team);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `// ${team} team store\n{}\n`);
+  }
+
+  function seedJoinedTeam(team: string): void {
+    seedTeamStore(team);
+    const recordPath = teamLocalPath(team);
+    mkdirSync(dirname(recordPath), { recursive: true });
+    writeFileSync(recordPath, JSON.stringify({ createdByRt: false, joinedByRt: true, rtMayManageMembership: false }));
+  }
+
+  function seedOwnerTeam(team: string): void {
+    seedTeamStore(team);
+    const recordPath = teamLocalPath(team);
+    mkdirSync(dirname(recordPath), { recursive: true });
+    writeFileSync(recordPath, JSON.stringify({ createdByRt: true, joinedByRt: false, rtMayManageMembership: false }));
+  }
+
+  function seedTeamWithNoRecord(team: string): void {
+    seedTeamStore(team);
+  }
+
+  test("set refuses a team write on a joined clone", () => {
+    seedJoinedTeam("acme");
+    expect(() => setSetting("board.title", "x", "team", { team: "acme" })).toThrow(/pull-only/);
+  });
+
+  test("unset refuses on a joined clone too", () => {
+    seedJoinedTeam("acme");
+    expect(() => unsetSetting("board.title", "team", { team: "acme" })).toThrow(/pull-only/);
+  });
+
+  test("an owner clone is unaffected", () => {
+    seedOwnerTeam("acme");
+    expect(() => setSetting("board.title", "x", "team", { team: "acme" })).not.toThrow();
+  });
+
+  test("a clone with no record at all is unaffected", () => {
+    seedTeamWithNoRecord("acme");
+    expect(() => setSetting("board.title", "x", "team", { team: "acme" })).not.toThrow();
+  });
+
+  // NOT board.title: its scopes are ["team"] only (registry-defs.ts:386), so a
+  // user-scope write throws a scope refusal before the guard is ever reached,
+  // and the test would pass for the wrong reason. claude.plugins is user+team.
+  test("user and machine scope are never gated by a team record", () => {
+    seedJoinedTeam("acme");
+    expect(() => setSetting("claude.plugins", [], "user", {})).not.toThrow();
+  });
+
+  test("the single-local-team resolution branch is guarded too, not just the explicit opts.team branch", () => {
+    seedJoinedTeam("acme");
+    expect(() => setSetting("board.title", "x", "team", {})).toThrow(/pull-only/);
+  });
+
+  test("unset's single-local-team resolution branch is guarded too, not just the explicit opts.team branch", () => {
+    seedJoinedTeam("acme");
+    expect(() => unsetSetting("board.title", "team", {})).toThrow(/pull-only/);
+  });
+
+  test("the refusal names the future proposal flow so a member knows this is not forbidden forever", () => {
+    seedJoinedTeam("acme");
+    expect(() => setSetting("board.title", "x", "team", { team: "acme" })).toThrow(/MAT-415/);
   });
 });
 

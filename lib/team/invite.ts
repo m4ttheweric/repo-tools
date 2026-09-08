@@ -18,7 +18,7 @@ import type { Probes } from "../setup/probes.ts";
 import { forgeFromRemote, readTeamSnapshot, type SettingsReader } from "../setup/team-settings.ts";
 import { getSetting } from "../settings/resolve.ts";
 import { setSetting } from "../settings/write.ts";
-import { forgeLogin, grantRead, type ForgeAccess } from "./forge.ts";
+import { forgeLogin, grantRead, membershipSteps, type ForgeAccess } from "./forge.ts";
 import { storedForgeToken } from "./stored-forge-token.ts";
 import { readTeamLocal } from "./team-local.ts";
 import { encodeCode, generateId, generateKey, seal } from "./invite-crypto.ts";
@@ -110,6 +110,44 @@ function assertValidHandle(handle: string): void {
   }
 }
 
+/**
+ * rt administers membership only where it created the repo AND the operator
+ * granted the permission (MAT-387). Both, not either: the record is a file, so
+ * requiring only the permission would let a hand-edited flag act on a repo rt
+ * was merely pointed at.
+ */
+async function resolveForgeAccess(
+  p: Probes,
+  seams: MintInviteSeams,
+  slug: string,
+  remote: string,
+  handle: string,
+  token: string | null,
+): Promise<{ access: ForgeAccess; manualSteps: string[] }> {
+  const local = seams.readTeamLocal(p, slug);
+  if (local.createdByRt && local.rtMayManageMembership) {
+    return seams.grantRead(p, remote, handle, token);
+  }
+  if (local.createdByRt) {
+    return {
+      access: "skipped",
+      manualSteps: [
+        `Let mattstack grant it: run \`rt team manage-membership on --team ${slug}\`, then invite ${handle} again`,
+        ...membershipSteps(remote, handle),
+      ],
+    };
+  }
+  // The admin sentence is appended here, never returned by membershipSteps,
+  // so a remote that cannot be parsed still leaves the reader one true line.
+  return {
+    access: "skipped",
+    manualSteps: [
+      ...membershipSteps(remote, handle),
+      `Ask whoever administers ${remote} to give ${handle} read access. mattstack did not create this repo, so your admin decides.`,
+    ],
+  };
+}
+
 export async function mintInvite(p: Probes, relay: RelayClient, opts: MintInviteOpts, seams: MintInviteSeams = realMintInviteSeams()): Promise<InviteResult> {
   assertValidHandle(opts.handle);
 
@@ -164,13 +202,10 @@ export async function mintInvite(p: Probes, relay: RelayClient, opts: MintInvite
 
   // Repo membership is a precondition, not something rt provisions (MAT-387):
   // you are added to a repo by whoever administers it, before mattstack is in
-  // the picture. rt only reaches for the forge when the operator has explicitly
-  // asked it to manage membership on THIS team — a permission that defaults to
-  // off and is never derivable from the remote URL, which cannot distinguish a
-  // repo rt created from an employer's.
-  const { access: forgeAccess, manualSteps } = seams.readTeamLocal(p, opts.slug).rtMayManageMembership
-    ? await seams.grantRead(p, remote, opts.handle, token)
-    : { access: "skipped" as ForgeAccess, manualSteps: [`Ask whoever administers ${remote} to give ${opts.handle} read access — mattstack does not manage membership on this repo`] };
+  // the picture. rt only reaches for the forge where it created the repo AND
+  // the operator has explicitly granted membership management on THIS team;
+  // neither fact is derivable from the remote URL alone.
+  const { access: forgeAccess, manualSteps } = await resolveForgeAccess(p, seams, opts.slug, remote, opts.handle, token);
 
   addToRoster(seams, opts.slug, opts.handle);
 

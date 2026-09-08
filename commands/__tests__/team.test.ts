@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, test, expect, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { teamCreate, teamInvite, teamPublish, teamPull, teamStatus, type TeamDeps } from "../team.ts";
+import { teamCreate, teamInvite, teamManageMembership, teamPublish, teamPull, teamStatus, type TeamDeps } from "../team.ts";
 import { fakeProbes } from "../../lib/setup/__tests__/fakes.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../lib/home/age-key.ts";
 import type { ExecScript } from "../../lib/setup/__tests__/fakes.ts";
 import type { Probes } from "../../lib/setup/probes.ts";
 import { pasteBlock } from "../../lib/team/invite.ts";
+import { readTeamLocal, writeTeamLocal, type TeamLocalRecord } from "../../lib/team/team-local.ts";
 
 const FAKE_PUBLIC_KEY = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 const FAKE_PRIVATE_KEY = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ";
@@ -228,15 +229,20 @@ describe("teamInvite", () => {
     };
   }
 
-  function inviteDeps(overrides: { exec?: ExecScript } = {}): TeamDeps & { lines: string[]; exitCodes: number[] } {
-    return baseDeps({
-      probes: fakeProbes({
-        home,
-        files: { [join(teamDir, ".git", "config")]: GIT_CONFIG },
-        exec: overrides.exec ?? ghExec(),
-        fetch: relayFetch(),
-      }),
+  function inviteDeps(overrides: { exec?: ExecScript; record?: Partial<TeamLocalRecord>; onRelay?: () => void } = {}): TeamDeps & { lines: string[]; exitCodes: number[] } {
+    const probes = fakeProbes({
+      home,
+      files: { [join(teamDir, ".git", "config")]: GIT_CONFIG },
+      exec: overrides.exec ?? ghExec(),
+      fetch: (url, init) => {
+        overrides.onRelay?.();
+        return relayFetch()(url, init);
+      },
     });
+    if (overrides.record) {
+      writeTeamLocal(probes, "acme", { createdByRt: false, joinedByRt: false, rtMayManageMembership: false, ...overrides.record });
+    }
+    return baseDeps({ probes });
   }
 
   test("--json prints the exact contract envelope shape", async () => {
@@ -255,9 +261,46 @@ describe("teamInvite", () => {
     // membership on a team repo unless explicitly permitted. The value is one
     // the contract and the app already accept ("granted"|"manual"|"skipped").
     expect(parsed.forgeAccess).toBe("skipped");
-    expect(parsed.manualSteps).toHaveLength(1);
-    expect((parsed.manualSteps as string[])[0]).toContain("Ask whoever administers");
+    // Not-created branch: the two forge web-UI steps, plus the admin sentence.
+    expect(parsed.manualSteps).toHaveLength(3);
+    expect((parsed.manualSteps as string[]).at(-1)).toContain("Ask whoever administers");
     expect(parsed.pasteBlock).toBe(pasteBlock(parsed.code));
+  });
+
+  test("a joined machine refuses before the relay is ever touched", async () => {
+    let relayCalls = 0;
+    const deps = inviteDeps({ record: { joinedByRt: true }, onRelay: () => { relayCalls++; } });
+
+    const code = await runExpectingProcessExit(() => teamInvite(["--handle", "zaphod", "--team", "acme", "--json"], {}, deps));
+
+    expect(relayCalls).toBe(0);
+    expect(code).toBe(2);
+    expect(JSON.parse(deps.lines[0]!).error.code).toBe("team-pull-only");
+  });
+
+  test("on a TTY, accepting the offer writes the permission before minting", async () => {
+    const deps = inviteDeps({ record: { createdByRt: true } });
+    deps.interactive = () => true;
+    deps.confirm = async () => true;
+
+    await teamInvite(["--handle", "zaphod", "--team", "acme"], {}, deps);
+
+    expect(readTeamLocal(deps.probes, "acme").rtMayManageMembership).toBe(true);
+  });
+
+  test("--json never prompts, even on a TTY", async () => {
+    const deps = inviteDeps({ record: { createdByRt: true } });
+    deps.interactive = () => true;
+    let asked = false;
+    deps.confirm = async () => {
+      asked = true;
+      return true;
+    };
+
+    await teamInvite(["--handle", "zaphod", "--team", "acme", "--json"], {}, deps);
+
+    expect(asked).toBe(false);
+    expect(readTeamLocal(deps.probes, "acme").rtMayManageMembership).toBe(false);
   });
 
   test("missing --handle, --json: exits 2 with the usage envelope", async () => {
@@ -287,6 +330,56 @@ describe("teamInvite", () => {
     expect(rest).toContain("forge access is skipped");
     expect(rest).toContain("Ask whoever administers");
     expect(rest).toContain("zaphod");
+  });
+});
+
+describe("teamManageMembership", () => {
+  function manageDeps(record: TeamLocalRecord): TeamDeps & { lines: string[]; exitCodes: number[] } {
+    const deps = baseDeps();
+    writeTeamLocal(deps.probes, "acme", record);
+    return deps;
+  }
+
+  test("bare form reports the state and whether it can be offered at all", async () => {
+    const deps = manageDeps({ createdByRt: true, joinedByRt: false, rtMayManageMembership: false });
+    await teamManageMembership(["--team", "acme", "--json"], {}, deps);
+
+    const parsed = JSON.parse(deps.lines[0]!);
+    expect(parsed.mayManage).toBe(false);
+    expect(parsed.offerable).toBe(true);
+  });
+
+  test("on writes the permission", async () => {
+    const deps = manageDeps({ createdByRt: true, joinedByRt: false, rtMayManageMembership: false });
+    await teamManageMembership(["on", "--team", "acme", "--json"], {}, deps);
+
+    expect(readTeamLocal(deps.probes, "acme").rtMayManageMembership).toBe(true);
+  });
+
+  test("on is refused where rt did not create the repo, and writes nothing", async () => {
+    const deps = manageDeps({ createdByRt: false, joinedByRt: false, rtMayManageMembership: false });
+    const code = await runExpectingProcessExit(() => teamManageMembership(["on", "--team", "acme", "--json"], {}, deps));
+
+    expect(code).toBe(2);
+    expect(JSON.parse(deps.lines[0]!).error.code).toBe("not-rt-created");
+    expect(readTeamLocal(deps.probes, "acme").rtMayManageMembership).toBe(false);
+  });
+
+  test("off clears it", async () => {
+    const deps = manageDeps({ createdByRt: true, joinedByRt: false, rtMayManageMembership: true });
+    await teamManageMembership(["off", "--team", "acme", "--json"], {}, deps);
+
+    expect(readTeamLocal(deps.probes, "acme").rtMayManageMembership).toBe(false);
+  });
+
+  test("an unrecognized state token is a usage error, not silently ignored", async () => {
+    const deps = manageDeps({ createdByRt: true, joinedByRt: false, rtMayManageMembership: false });
+    const code = await runExpectingProcessExit(() => teamManageMembership(["sideways", "--team", "acme", "--json"], {}, deps));
+
+    expect(code).toBe(2);
+    const body = JSON.parse(deps.lines[0]!);
+    expect(body.error.code).toBe("usage");
+    expect(body.error.message).toContain("usage:");
   });
 });
 

@@ -9,6 +9,7 @@ import { teamsDir } from "../../rt-paths.ts";
 import { seal, sealReply } from "../invite-crypto.ts";
 import { upsertInviteRecord, type InviteRecord } from "../invite-records.ts";
 import { membersRemove, membersSync, MembersSyncAbortedError, type MembersSeams } from "../members.ts";
+import { teamLocalPath } from "../team-local.ts";
 import type { RelayClient } from "../relay-client.ts";
 
 const HOME = "/home/x";
@@ -21,6 +22,14 @@ const CREATOR_SECRET = "creator-secret-alice";
 
 function teamCloneRootFor(slug: string): string {
   return join(teamsDir(), slug);
+}
+
+/** A machine that redeemed an invite for `slug` (the local record read by `assertNotJoined`), unrelated to any file in the team clone itself. */
+function probesWithJoinedTeam(slug = SLUG) {
+  return fakeProbes({
+    home: HOME,
+    files: { [teamLocalPath(HOME, slug)]: JSON.stringify({ createdByRt: false, joinedByRt: true, rtMayManageMembership: false }) },
+  });
 }
 
 function fakeAgeKeySeam(privateKey = "AGE-SECRET-KEY-1OWNER", publicKey = OWNER_PUBLIC_KEY): AgeKeySeam {
@@ -170,7 +179,7 @@ function fakeMembersSeams(overrides: Partial<MembersSeams> = {}): { seams: Membe
       if (key === "board.members" || key === "mattstack.roster") store = { ...store, [key]: value };
     }) as MembersSeams["writeSetting"],
     revokeRead: async () => ({ access: "revoked", manualSteps: [] }),
-    readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
+    readTeamLocal: () => ({ createdByRt: true, joinedByRt: false, rtMayManageMembership: true }),
     forgeToken: async () => null,
     warn: () => {},
     ...overrides,
@@ -512,6 +521,15 @@ describe("membersSync", () => {
     expect(err.pending).toEqual([]);
     expect(err.message).toContain("aborted after adding 0 key(s)");
   });
+
+  test("membersSync refuses on a joined clone", async () => {
+    const p = probesWithJoinedTeam();
+    const { secrets } = seamsWithClone();
+    const { seams } = fakeMembersSeams();
+    const relay = fakeRelay();
+
+    await expect(membersSync(p, relay, secrets, SLUG, seams)).rejects.toThrow(/pull-only/);
+  });
 });
 
 describe("membersRemove", () => {
@@ -532,7 +550,7 @@ describe("membersRemove", () => {
     const revokeCalls: unknown[] = [];
     const { seams } = fakeMembersSeams({
       readTeamStore: () => ({ "board.members": [{ username: "matt" }, { username: "alice", agePublicKey: ALICE_PUBLIC_KEY }] }),
-      readTeamLocal: () => ({ createdByRt: false, rtMayManageMembership: false }),
+      readTeamLocal: () => ({ createdByRt: false, joinedByRt: false, rtMayManageMembership: false }),
       revokeRead: async (...args) => {
         revokeCalls.push(args);
         return { access: "revoked", manualSteps: [] };
@@ -551,6 +569,33 @@ describe("membersRemove", () => {
     expect(readTeamRecipients(SLUG, secrets)).toEqual([OWNER_PUBLIC_KEY]);
   });
 
+  // Mirrors the mint side's own regression test (MAT-387): the permission
+  // alone must not be enough on a repo rt did not create, since the record
+  // is a file a human can hand-edit.
+  test("the permission alone, without createdByRt, still never calls the forge", async () => {
+    const remote = "git@github.com:acme/widgets.git";
+    const p = fakeProbes({ home: HOME, files: { [join(HOME, ".mattstack", "teams", SLUG, ".git", "config")]: gitConfigWithRemote(remote) } });
+    const { execSeam, secrets } = seamsWithClone();
+    writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY], secrets);
+    execSeam.writeFile(teamSecretsFile(SLUG, "board"), JSON.stringify({ data: "opaque", sops: {} }));
+
+    const revokeCalls: unknown[] = [];
+    const { seams } = fakeMembersSeams({
+      readTeamStore: () => ({ "board.members": [{ username: "matt" }, { username: "alice", agePublicKey: ALICE_PUBLIC_KEY }] }),
+      readTeamLocal: () => ({ createdByRt: false, joinedByRt: false, rtMayManageMembership: true }),
+      revokeRead: async (...args) => {
+        revokeCalls.push(args);
+        return { access: "revoked", manualSteps: [] };
+      },
+    });
+
+    const result = await membersRemove(p, secrets, SLUG, "alice", undefined, seams);
+
+    expect(revokeCalls).toEqual([]);
+    expect(result.forgeAccess).toBe("skipped");
+    expect(result.manualSteps.join(" ")).toContain("still has access");
+  });
+
   test("revokes forge access, writes the roster without the handle, re-encrypts, and returns a non-empty residue note", async () => {
     const remote = "git@github.com:acme/widgets.git";
     const p = fakeProbes({ home: HOME, files: { [join(HOME, ".mattstack", "teams", SLUG, ".git", "config")]: gitConfigWithRemote(remote) } });
@@ -562,7 +607,7 @@ describe("membersRemove", () => {
     const revokeCalls: { remote: string; handle: string; token: string | null | undefined }[] = [];
     const { seams, writes } = fakeMembersSeams({
       readTeamStore: () => ({ "board.members": [{ username: "matt" }, { username: "alice", agePublicKey: ALICE_PUBLIC_KEY }] }),
-      readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
+      readTeamLocal: () => ({ createdByRt: true, joinedByRt: false, rtMayManageMembership: true }),
       forgeToken: async () => "ghp-secret",
       revokeRead: async (_p, r, h, token) => {
         revokeCalls.push({ remote: r, handle: h, token });
@@ -710,7 +755,7 @@ describe("membersRemove", () => {
       const { seams, writes } = fakeMembersSeams({
         // Simulates the roster having already recorded the owner's key under "alice" — the exact end state the echo attack (defense i) exists to prevent, tested here in isolation so defense ii is proven to hold even if defense i were bypassed.
         readTeamStore: () => ({ "board.members": [{ username: "alice", agePublicKey: OWNER_PUBLIC_KEY }] }),
-        readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
+        readTeamLocal: () => ({ createdByRt: true, joinedByRt: false, rtMayManageMembership: true }),
         revokeRead: async (...args) => {
           revokeCalls.push(args);
           return { access: "revoked", manualSteps: [] };
@@ -771,5 +816,13 @@ describe("membersRemove", () => {
       // 3. owner still a recipient throughout.
       expect(readTeamRecipients(SLUG, secrets)).toContain(OWNER_PUBLIC_KEY);
     });
+  });
+
+  test("membersRemove refuses on a joined clone", async () => {
+    const p = probesWithJoinedTeam();
+    const { secrets } = seamsWithClone();
+    const { seams } = fakeMembersSeams();
+
+    await expect(membersRemove(p, secrets, SLUG, "zaphod", undefined, seams)).rejects.toThrow(/pull-only/);
   });
 });

@@ -12,6 +12,7 @@ import { UserActionableError } from "../setup/errors.ts";
 import type { ExecResult, Probes } from "../setup/probes.ts";
 import { parseOriginUrl, stripUserinfo } from "../setup/team-settings.ts";
 import { withoutUrls } from "./redact.ts";
+import { assertNotJoined } from "./team-local.ts";
 
 export interface PublishTeamResult {
   remote: string;
@@ -54,6 +55,7 @@ export async function publishTeam(p: Probes, slug: string, remote: string | null
     // to a directory outside teamsDir() and run git there.
     throw new UserActionableError("invalid-team-slug", err instanceof Error ? err.message : String(err));
   }
+  assertNotJoined(p, slug);
 
   const dir = join(p.home, ".mattstack", "teams", slug);
   if (!p.exists(dir)) {
