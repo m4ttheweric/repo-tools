@@ -93,9 +93,22 @@ compiled in):
      environment — verified supported by portless's cli — pointing at the
      invoking user's `~/.portless` per the deck-lane contract; the trust
      run gets the same variable).
-  3. Trust the portless CA: run the root-copied portless's own trust
-     routine (`portless trust`), which installs the local CA into the
-     system keychain so `https://<app>.mattstack` is green.
+  3. Trust the portless CA (NON-FATAL): run
+     `security add-trusted-cert -d -r trustRoot -k
+     /Library/Keychains/System.keychain <ca.pem>` as root. macOS gates
+     this write behind `com.apple.trust-settings.admin`, whose rule is
+     `entitled OR authenticate-admin` with `timeout 0`: no Developer ID
+     process, root included, can write CA trust without an interactive
+     prompt, and the admin credential from the escalation prompt is never
+     reused for it. So the install raises TWO dialogs, the admin prompt and
+     then macOS's "Certificate Trust Settings" prompt, and the copy says so
+     (`NeedModels.swift` promises "once" today; it must say two). A
+     cancelled or failed trust write does not stop the op: the helper
+     records `trust: declined|failed <detail>` on stdout and continues to
+     steps 4 and 5, so the proxy installs and runs untrusted. The trust
+     outcome travels in the stdout report (a `MATTSTACK_TRUST=<ok|declined|
+     failed>` line before the exit trailer); step 5's bootstrap remains the
+     op's success criterion.
   4. Write `/etc/sudoers.d/mattstack-portless` granting exactly the
      invoking user (the console user who ran Install, resolved as the
      GUI session's user via `SCDynamicStoreCopyConsoleUser`, never
@@ -115,6 +128,11 @@ compiled in):
 - `remove` — bootout + delete the plist, the sudoers file, the CA trust,
   and the root copy. Wired into `rt uninstall` (installer ruling 14) and
   the app's existing `proxyRemove()`.
+- `trust` — re-runs only the CA trust write (install step 3) against the
+  root copy's `ca.pem`, same `MATTSTACK_TRUST` line and exit trailer, no
+  other side effects. It is the Retry behind the untrusted-certificate row
+  and raises macOS's trust prompt (one dialog, plus the escalation prompt
+  that reaches the helper at all).
 
 ### 3. Wiring
 
@@ -131,12 +149,24 @@ compiled in):
   helper at install) against the bundle's pinned version: match = ready,
   drift = needs-you with an "Update proxy" action that re-runs the helper
   (one prompt). Root never auto-follows a bundle update.
+- The same validator checks CA trust: the root copy's `ca.pem` must be
+  present in the System keychain with trustRoot settings (`security
+  verify-cert -c <ca.pem> -p ssl` under the admin trust domain, or the
+  equivalent `security dump-trust-settings -d` match). Version-match but
+  untrusted = needs-you ("Browsers will warn until the proxy certificate is
+  trusted") with a "Trust certificate" action that runs the helper's `trust`
+  verb through the tray's escalator (`POST /privileged/proxy-trust`, the
+  sibling of the existing proxy-install route). The proxy keeps serving in
+  that state; only browser trust is missing.
 - deck: no changes — it already talks to portless and holds the kickstart
   path; the sudoers rule is what makes its reload work on a fresh machine.
 
 ## Error handling
 
-- Every helper sub-step failure is fatal for the op: detail goes to stdout
+- The CA trust step is the one non-fatal sub-step: declined or failed, it
+  is reported on the `MATTSTACK_TRUST` line and the op proceeds; the
+  validator turns that into the untrusted-certificate needs-you row with
+  its Retry. Every OTHER helper sub-step failure is fatal for the op: detail goes to stdout
   (the only channel) followed by a non-zero `MATTSTACK_EXIT` trailer, and
   the previous state stays in place (stage+rename for the copy; plist and
   sudoers writes are single-file renames; bootstrap failure rolls back the
@@ -162,9 +192,16 @@ compiled in):
 - VM (the release gate, per the ticket): `walkthrough.sh --scenario create
   --no-graphics` shows `proxy.install: done`;
   `/Library/LaunchDaemons/sh.portless.proxy.plist` present in the guest;
-  and `curl -fsS https://deck.mattstack` (or the guest's configured app
-  domain) answers through the proxy. The admin prompt is answered by the
-  existing SecurityAgent driver from the update leg.
+  and a `.mattstack` hostname read back from `~/.portless/routes.json`
+  answers through the proxy over TLS (`deck.mattstack` itself exists only
+  after `deck setup`, which rt never runs; the deck lane owns that). Both
+  dialogs are answered by the SecurityAgent driver, which resolves each
+  window by its wording, never by index. A second guest run declines the
+  trust prompt and asserts the proxy still serves and `tool.proxy` shows the
+  untrusted-certificate needs-you row; a `trust` verb run then clears it.
+- Unit (Swift): the trust step's declined and failed outcomes leave the op
+  running and emit `MATTSTACK_TRUST`; the `trust` verb touches nothing but
+  trust settings.
 
 ## Out of scope
 
