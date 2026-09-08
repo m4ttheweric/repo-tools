@@ -1,29 +1,23 @@
 import Foundation
 
 // Install step 1: put the bundled portless payload under a root-owned target.
-// This runs with root privileges against a path the console user can reach, so
-// it verifies before it writes and never writes anywhere but a staging sibling
-// it renames into place.
+//
+// The bundle is writable by the console user, so nothing read from it is
+// trusted twice: the payload is copied into a root-owned staging directory
+// FIRST and the pins are checked against the staged bytes, which are the bytes
+// that get renamed into place. Verifying the bundle path and then re-reading it
+// to copy would leave exactly the swap window this step exists to close.
 enum CopyStep {
     static func run(bundleRoot: URL, targetRoot: URL, fs: FileOps, pins: PinsValues) throws {
-        let portlessDist = bundleRoot.appendingPathComponent("Helpers/portless-dist")
-        let node = bundleRoot.appendingPathComponent("Helpers/node")
-        for source in [portlessDist, node] {
-            if try fs.stat(source) == nil {
-                throw ProxyInstallError("bundled payload missing at \(source.path)")
-            }
-        }
+        let portlessSource = bundleRoot.appendingPathComponent("Helpers/portless-dist")
+        // Only the interpreter, as a single regular file. The rest of the node
+        // distribution (npm, npx, corepack and their symlinks) has no business
+        // in a root-owned tree.
+        let nodeSource = bundleRoot.appendingPathComponent("Helpers/node/bin/node")
 
-        // The tarball sha in the pins guards fetch time; this guards install
-        // time, where the bundle has already been unpacked and could have been
-        // swapped for a tree with the same layout.
-        let found = try fs.treeHash(portlessDist)
-        guard found == pins.portlessTreeSha256 else {
-            throw ProxyInstallError(
-                "portless-dist hash mismatch: pinned \(pins.portlessTreeSha256), found \(found)")
-        }
-        Report.step("verified portless \(pins.portlessVersion) (tree \(String(found.prefix(12))))")
-
+        // Before anything is written: the staging directory is a sibling of the
+        // target, so every existing segment on the way down has to be root-owned
+        // and unwritable by anyone else.
         var targetExists = false
         let target = targetRoot.standardizedFileURL
         for segment in ancestorsIncludingSelf(of: target) {
@@ -33,6 +27,9 @@ enum CopyStep {
             }
             if info.uid != 0 {
                 throw ProxyInstallError("refusing to install under \(segment.path): owned by uid \(info.uid), not root")
+            }
+            if info.isGroupOrWorldWritable {
+                throw ProxyInstallError("refusing to install under \(segment.path): writable by group or other")
             }
             if segment.path == target.path { targetExists = true }
         }
@@ -45,8 +42,31 @@ enum CopyStep {
         try fs.removeTree(stage)
         try fs.mkdir(stage)
         do {
-            try fs.copyTree(from: portlessDist, to: stage.appendingPathComponent("portless-dist"))
-            try fs.copyTree(from: node, to: stage.appendingPathComponent("node"))
+            let stagedPortless = stage.appendingPathComponent("portless-dist")
+            let stagedNode = stage.appendingPathComponent("node")
+            try fs.copyItem(from: portlessSource, to: stagedPortless)
+            try fs.copyItem(from: nodeSource, to: stagedNode)
+
+            // Type before contents: a bundle payload swapped for a symlink would
+            // stage as one, hash as whatever it points at, and then be renamed
+            // into place as a link out of the root-owned tree.
+            guard let portlessInfo = try fs.stat(stagedPortless), portlessInfo.isDirectory, !portlessInfo.isSymlink else {
+                throw ProxyInstallError("staged portless-dist is not a directory")
+            }
+            let portlessHash = try fs.treeHash(stagedPortless)
+            guard portlessHash == pins.portlessTreeSha256 else {
+                throw ProxyInstallError(
+                    "portless-dist hash mismatch: pinned \(pins.portlessTreeSha256), found \(portlessHash)")
+            }
+            guard let nodeInfo = try fs.stat(stagedNode), nodeInfo.isRegularFile, !nodeInfo.isSymlink else {
+                throw ProxyInstallError("staged node is not a regular file")
+            }
+            let nodeHash = try fs.fileHash(stagedNode)
+            guard nodeHash == pins.nodeBinSha256 else {
+                throw ProxyInstallError("node hash mismatch: pinned \(pins.nodeBinSha256), found \(nodeHash)")
+            }
+            Report.step("verified portless \(pins.portlessVersion) and the node binary")
+
             try fs.write(pins.portlessVersion, to: stage.appendingPathComponent("VERSION"))
             // rename(2) will not replace a non-empty directory, so an upgrade
             // moves the old tree aside first and puts it back if the swap fails.

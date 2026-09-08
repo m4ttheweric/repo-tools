@@ -11,6 +11,23 @@ struct ProxyInstallError: Error, CustomStringConvertible {
 struct PathStat: Equatable {
     let uid: UInt32
     let isSymlink: Bool
+    let isRegularFile: Bool
+    let isDirectory: Bool
+    let isGroupOrWorldWritable: Bool
+
+    init(
+        uid: UInt32,
+        isSymlink: Bool = false,
+        isRegularFile: Bool = false,
+        isDirectory: Bool = false,
+        isGroupOrWorldWritable: Bool = false
+    ) {
+        self.uid = uid
+        self.isSymlink = isSymlink
+        self.isRegularFile = isRegularFile
+        self.isDirectory = isDirectory
+        self.isGroupOrWorldWritable = isGroupOrWorldWritable
+    }
 }
 
 // The filesystem seam. CopyStep runs as root over paths a non-root user can
@@ -23,11 +40,14 @@ protocol FileOps {
     /// nil when the path does not exist. Never follows a final symlink.
     func stat(_ path: URL) throws -> PathStat?
     func mkdir(_ path: URL) throws
-    func copyTree(from: URL, to: URL) throws
+    /// Copies a file or a directory tree. A symlink is copied as a symlink, so
+    /// the staged copy still reports one to stat.
+    func copyItem(from: URL, to: URL) throws
     func write(_ contents: String, to path: URL) throws
     func rename(from: URL, to: URL) throws
     func removeTree(_ path: URL) throws
     func treeHash(_ root: URL) throws -> String
+    func fileHash(_ path: URL) throws -> String
 }
 
 func sha256Hex(_ data: Data) -> String {
@@ -51,6 +71,8 @@ extension FileOps {
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
+
+    func fileHash(_ path: URL) throws -> String { sha256Hex(try read(path)) }
 }
 
 struct RealFileOps: FileOps {
@@ -100,14 +122,19 @@ struct RealFileOps: FileOps {
             if errno == ENOENT || errno == ENOTDIR { return nil }
             throw ProxyInstallError("lstat(\(path.path)): \(String(cString: strerror(errno)))")
         }
-        return PathStat(uid: info.st_uid, isSymlink: (info.st_mode & S_IFMT) == S_IFLNK)
+        return PathStat(
+            uid: info.st_uid,
+            isSymlink: (info.st_mode & S_IFMT) == S_IFLNK,
+            isRegularFile: (info.st_mode & S_IFMT) == S_IFREG,
+            isDirectory: (info.st_mode & S_IFMT) == S_IFDIR,
+            isGroupOrWorldWritable: (info.st_mode & (S_IWGRP | S_IWOTH)) != 0)
     }
 
     func mkdir(_ path: URL) throws {
         try fm.createDirectory(at: path, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
     }
 
-    func copyTree(from: URL, to: URL) throws { try fm.copyItem(at: from, to: to) }
+    func copyItem(from: URL, to: URL) throws { try fm.copyItem(at: from, to: to) }
 
     func write(_ contents: String, to path: URL) throws {
         try contents.write(to: path, atomically: true, encoding: .utf8)

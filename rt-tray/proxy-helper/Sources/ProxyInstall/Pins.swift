@@ -4,7 +4,10 @@
 // compile rather than installing whatever bytes happen to be in the bundle.
 struct PinsValues {
     let portlessVersion: String
+    /// Carried for the record: this guards the download in fetch-deps.sh, and
+    /// nothing at install time re-checks it. portlessTreeSha256 is that check.
     let portlessTarballSha256: String
     let portlessTreeSha256: String
+    let nodeBinSha256: String
     let appVersion: String
 }

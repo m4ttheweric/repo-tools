@@ -3,11 +3,16 @@ import XCTest
 @testable import ProxyInstall
 
 extension PinsValues {
-    static func fixture(treeSha256: String = "cafe", portlessVersion: String = "0.0.0") -> PinsValues {
+    static func fixture(
+        treeSha256: String = "cafe",
+        portlessVersion: String = "0.0.0",
+        nodeBinSha256: String = "n0de"
+    ) -> PinsValues {
         PinsValues(
             portlessVersion: portlessVersion,
             portlessTarballSha256: "0000",
             portlessTreeSha256: treeSha256,
+            nodeBinSha256: nodeBinSha256,
             appVersion: "0.0.0-test")
     }
 }
@@ -21,51 +26,134 @@ final class FakeFileOps: FileOps {
     let target = URL(fileURLWithPath: "/fake/opt/mattstack/portless")
 
     private let cannedTreeHash: String
+    private let cannedNodeHash: String
     private let segmentOwner: UInt32
     private let segmentIsSymlink: Bool
+    private let segmentIsGroupOrWorldWritable: Bool
+    private let targetAlreadyInstalled: Bool
+    private let stagedNodeIsSymlink: Bool
+    private let stagedPortlessIsSymlink: Bool
 
-    private(set) var renamedIntoPlace = false
-    private(set) var stagedSiblingOfTarget = false
+    private(set) var stageRoot: URL?
+    private(set) var log: [String] = []
     private(set) var written: [String: String] = [:]
-    private(set) var copied: [String] = []
+    private(set) var renames: [(from: String, to: String)] = []
+    private(set) var removed: [String] = []
+    private(set) var treeHashedPath: URL?
 
-    init(treeHash: String = "cafe", targetSegmentOwner: UInt32 = 0, targetSegmentIsSymlink: Bool = false) {
+    var renamedIntoPlace: Bool { renames.contains { $0.to == target.path } }
+    var stagedSiblingOfTarget: Bool {
+        guard let stage = stageRoot else { return false }
+        return stage.deletingLastPathComponent().path == target.deletingLastPathComponent().path
+    }
+
+    init(
+        treeHash: String = "cafe",
+        nodeHash: String = "n0de",
+        targetSegmentOwner: UInt32 = 0,
+        targetSegmentIsSymlink: Bool = false,
+        targetSegmentIsGroupOrWorldWritable: Bool = false,
+        targetAlreadyInstalled: Bool = false,
+        stagedNodeIsSymlink: Bool = false,
+        stagedPortlessIsSymlink: Bool = false
+    ) {
         cannedTreeHash = treeHash
+        cannedNodeHash = nodeHash
         segmentOwner = targetSegmentOwner
         segmentIsSymlink = targetSegmentIsSymlink
+        segmentIsGroupOrWorldWritable = targetSegmentIsGroupOrWorldWritable
+        self.targetAlreadyInstalled = targetAlreadyInstalled
+        self.stagedNodeIsSymlink = stagedNodeIsSymlink
+        self.stagedPortlessIsSymlink = stagedPortlessIsSymlink
     }
 
     func list(_ root: URL) throws -> [String] { [] }
     func read(_ path: URL) throws -> Data { Data() }
-    func treeHash(_ root: URL) throws -> String { cannedTreeHash }
+
+    func treeHash(_ root: URL) throws -> String {
+        treeHashedPath = root
+        log.append("treeHash \(root.lastPathComponent)")
+        return cannedTreeHash
+    }
+
+    func fileHash(_ path: URL) throws -> String {
+        log.append("fileHash \(path.lastPathComponent)")
+        return cannedNodeHash
+    }
 
     func stat(_ path: URL) throws -> PathStat? {
-        if path.path == target.path { return nil }
-        if path.path == "/" || target.path.hasPrefix(path.path + "/") {
-            return PathStat(uid: segmentOwner, isSymlink: segmentIsSymlink)
+        if path.path == target.path {
+            return targetAlreadyInstalled ? PathStat(uid: 0, isDirectory: true) : nil
         }
-        return PathStat(uid: 0, isSymlink: false)
+        if let stage = stageRoot {
+            if path.path == stage.appendingPathComponent("node").path {
+                return PathStat(uid: 0, isSymlink: stagedNodeIsSymlink, isRegularFile: !stagedNodeIsSymlink)
+            }
+            if path.path == stage.appendingPathComponent("portless-dist").path {
+                return PathStat(
+                    uid: 0,
+                    isSymlink: stagedPortlessIsSymlink,
+                    isDirectory: !stagedPortlessIsSymlink)
+            }
+        }
+        if path.path == "/" || target.path.hasPrefix(path.path + "/") {
+            return PathStat(
+                uid: segmentOwner,
+                isSymlink: segmentIsSymlink,
+                isDirectory: true,
+                isGroupOrWorldWritable: segmentIsGroupOrWorldWritable)
+        }
+        return PathStat(uid: 0, isDirectory: true)
     }
 
     func mkdir(_ path: URL) throws {
-        guard path.lastPathComponent.hasPrefix(".proxy-stage-") else { return }
-        stagedSiblingOfTarget = path.deletingLastPathComponent().path == target.deletingLastPathComponent().path
+        log.append("mkdir \(path.lastPathComponent)")
+        if path.lastPathComponent.hasPrefix(".proxy-stage-") { stageRoot = path }
     }
 
-    func copyTree(from: URL, to: URL) throws { copied.append(to.lastPathComponent) }
-    func write(_ contents: String, to path: URL) throws { written[path.lastPathComponent] = contents }
-    func rename(from: URL, to: URL) throws { if to.path == target.path { renamedIntoPlace = true } }
-    func removeTree(_ path: URL) throws {}
+    func copyItem(from: URL, to: URL) throws { log.append("copy \(to.lastPathComponent)") }
+
+    func write(_ contents: String, to path: URL) throws {
+        log.append("write \(path.lastPathComponent)")
+        written[path.path] = contents
+    }
+
+    func rename(from: URL, to: URL) throws {
+        log.append("rename \(from.lastPathComponent)")
+        renames.append((from: from.path, to: to.path))
+    }
+
+    func removeTree(_ path: URL) throws {
+        log.append("remove \(path.lastPathComponent)")
+        removed.append(path.path)
+    }
 }
 
 final class CopyStepTests: XCTestCase {
-    func testRefusesSwappedTreeWithValidLayout() {
+    func testRefusesSwappedTreeWithValidLayout() throws {
         let pins = PinsValues.fixture(treeSha256: "cafe")
         let fs = FakeFileOps(treeHash: "deadbeef")
         XCTAssertThrowsError(try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs, pins: pins)) {
             XCTAssertTrue("\($0)".contains("hash mismatch"), "got: \($0)")
         }
         XCTAssertFalse(fs.renamedIntoPlace)
+        // The refused bytes are already staged by then, so the cleanup matters.
+        XCTAssertTrue(fs.removed.contains(try XCTUnwrap(fs.stageRoot).path))
+    }
+
+    // The bundle is writable by the console user, so hashing the bundle path and
+    // then re-reading it to copy would verify bytes other than the installed
+    // ones. The hash has to come from the staged copy.
+    func testVerifiesTheStagedCopyNotTheBundlePath() throws {
+        let fs = FakeFileOps(treeHash: "cafe")
+        try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs, pins: .fixture(treeSha256: "cafe"))
+        let stage = try XCTUnwrap(fs.stageRoot)
+        XCTAssertEqual(
+            try XCTUnwrap(fs.treeHashedPath).path,
+            stage.appendingPathComponent("portless-dist").path)
+        let copied = try XCTUnwrap(fs.log.firstIndex(of: "copy portless-dist"))
+        let hashed = try XCTUnwrap(fs.log.firstIndex(of: "treeHash portless-dist"))
+        XCTAssertLessThan(copied, hashed)
     }
 
     func testRefusesNonRootOwnedTargetSegment() {
@@ -80,13 +168,59 @@ final class CopyStepTests: XCTestCase {
         XCTAssertFalse(fs.renamedIntoPlace)
     }
 
+    func testRefusesGroupOrWorldWritableTargetSegment() {
+        let fs = FakeFileOps(targetSegmentIsGroupOrWorldWritable: true)
+        XCTAssertThrowsError(try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs, pins: .fixture())) {
+            XCTAssertTrue("\($0)".contains("writable by group or other"), "got: \($0)")
+        }
+        XCTAssertFalse(fs.renamedIntoPlace)
+    }
+
+    func testRefusesSymlinkedStagedNode() {
+        let fs = FakeFileOps(stagedNodeIsSymlink: true)
+        XCTAssertThrowsError(try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs, pins: .fixture())) {
+            XCTAssertTrue("\($0)".contains("not a regular file"), "got: \($0)")
+        }
+        XCTAssertFalse(fs.renamedIntoPlace)
+    }
+
+    // A symlinked payload would hash as whatever it points at and then be
+    // renamed into place as a link out of the root-owned tree.
+    func testRefusesSymlinkedStagedPortlessDist() {
+        let fs = FakeFileOps(stagedPortlessIsSymlink: true)
+        XCTAssertThrowsError(try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs, pins: .fixture())) {
+            XCTAssertTrue("\($0)".contains("not a directory"), "got: \($0)")
+        }
+        XCTAssertFalse(fs.renamedIntoPlace)
+    }
+
+    func testRefusesSwappedNodeBinary() {
+        let fs = FakeFileOps(nodeHash: "deadbeef")
+        XCTAssertThrowsError(try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs, pins: .fixture())) {
+            XCTAssertTrue("\($0)".contains("node hash mismatch"), "got: \($0)")
+        }
+        XCTAssertFalse(fs.renamedIntoPlace)
+    }
+
     func testHappyPathStagesThenRenamesAndWritesVersion() throws {
         let pins = PinsValues.fixture(treeSha256: "cafe", portlessVersion: "9.9.9")
         let fs = FakeFileOps(treeHash: "cafe")
         try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs, pins: pins)
         XCTAssertTrue(fs.renamedIntoPlace)
         XCTAssertTrue(fs.stagedSiblingOfTarget)
-        XCTAssertEqual(fs.written["VERSION"], "9.9.9")
-        XCTAssertEqual(fs.copied, ["portless-dist", "node"])
+        let stage = try XCTUnwrap(fs.stageRoot)
+        XCTAssertEqual(fs.written[stage.appendingPathComponent("VERSION").path], "9.9.9")
+        XCTAssertNil(fs.written[fs.target.appendingPathComponent("VERSION").path])
+        XCTAssertEqual(fs.log.filter { $0.hasPrefix("copy ") }, ["copy portless-dist", "copy node"])
+    }
+
+    func testUpgradeRetiresTheExistingInstallThenRenames() throws {
+        let fs = FakeFileOps(treeHash: "cafe", targetAlreadyInstalled: true)
+        try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs, pins: .fixture(treeSha256: "cafe"))
+        let retired = try XCTUnwrap(fs.renames.first)
+        XCTAssertEqual(retired.from, fs.target.path)
+        XCTAssertTrue(retired.to.contains("/.proxy-old-"), "got: \(retired.to)")
+        XCTAssertTrue(fs.renamedIntoPlace)
+        XCTAssertTrue(fs.removed.contains(retired.to))
     }
 }

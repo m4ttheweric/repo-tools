@@ -65,6 +65,18 @@ IFS=$'\t' read -r P_NAME P_VERSION P_SHA <<< "$ROW"
 TREE="$TRAY_DIR/deps/arm64/$P_NAME"
 [ -d "$TREE" ] || { echo "  x gen-pins: $TREE not fetched — run scripts/fetch-deps.sh arm64" >&2; exit 1; }
 
+# Shape-checks the digest so an unreadable file fails the build rather than
+# pinning an empty or partial hash.
+file_hash() { # path -> 64 hex chars
+    local path="$1" hex
+    hex="$(shasum -a 256 "$path" 2>/dev/null | cut -d' ' -f1 || true)"
+    if [[ ! "$hex" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "  x gen-pins: could not hash $path" >&2
+        exit 1
+    fi
+    printf '%s' "$hex"
+}
+
 # sha256 over "<relative path>\n<sha256(content) hex>\n" for every regular file,
 # concatenated in byte order of the relative path.
 #
@@ -72,9 +84,12 @@ TREE="$TRAY_DIR/deps/arm64/$P_NAME"
 # this at install time and compares. The two definitions must stay byte-identical
 # or every install refuses a payload that is in fact correct.
 tree_hash() {
-    local root="$1" rel
-    if [ -n "$(find "$root" -type l -print -quit)" ]; then
-        echo "  x gen-pins: symlink under $root; the pin cannot describe it" >&2
+    local root="$1" rel hex odd count=0
+    # Symlinks, fifos, sockets and devices alike: the Swift side throws on all of
+    # them, so refusing here keeps both definitions describing the same trees.
+    odd="$(cd "$root" && find . ! -type f ! -type d -print -quit)"
+    if [ -n "$odd" ]; then
+        echo "  x gen-pins: non-regular entry '${odd#./}' under $root; the pin cannot describe it" >&2
         exit 1
     fi
     # find reports the bytes on disk; Foundation reports them decomposed, so a
@@ -86,21 +101,46 @@ tree_hash() {
             echo "  x gen-pins: non-ASCII or control character in payload path '$rel' under $root" >&2
             exit 1
         fi
+        count=$((count + 1))
     done < <(cd "$root" && find . -type f -print0)
+    # An empty tree has a perfectly good digest of its own, so emptiness has to be
+    # caught by counting rather than by inspecting the hash afterwards.
+    if [ "$count" -eq 0 ]; then
+        echo "  x gen-pins: no regular files under $root; refusing to pin an empty tree" >&2
+        exit 1
+    fi
+    # The digest is captured into a variable rather than substituted into the
+    # printf argument: nested inside one, a failing hash would exit only its own
+    # subshell and printf would happily emit an empty field.
     ( cd "$root" && find . -type f -print0 | sort -z ) \
         | while IFS= read -r -d '' rel; do
               rel="${rel#./}"
-              printf '%s\n%s\n' "$rel" "$(shasum -a 256 "$root/$rel" | cut -d' ' -f1)"
+              hex="$(shasum -a 256 "$root/$rel" 2>/dev/null | cut -d' ' -f1 || true)"
+              if [[ ! "$hex" =~ ^[0-9a-f]{64}$ ]]; then
+                  echo "  x gen-pins: could not hash '$rel' under $root" >&2
+                  exit 1
+              fi
+              printf '%s\n%s\n' "$rel" "$hex"
           done \
         | shasum -a 256 | cut -d' ' -f1
 }
 
 TREE_SHA="$(tree_hash "$TREE")"
-[ -n "$TREE_SHA" ] || { echo "  x gen-pins: empty tree hash for $TREE" >&2; exit 1; }
+
+# Only the interpreter is installed into the root-owned tree, so only it is
+# pinned; the rest of the node distribution never leaves the bundle.
+NODE_BIN="$TRAY_DIR/deps/arm64/node/bin/node"
+if [ -L "$NODE_BIN" ]; then
+    echo "  x gen-pins: $NODE_BIN is a symlink; the pin cannot describe it" >&2; exit 1
+fi
+if [ ! -f "$NODE_BIN" ]; then
+    echo "  x gen-pins: $NODE_BIN not fetched or not a regular file — run scripts/fetch-deps.sh arm64" >&2; exit 1
+fi
+NODE_SHA="$(file_hash "$NODE_BIN")"
 
 # Every value below lands inside a Swift string literal, so anything that could
 # close one is refused rather than escaped.
-for value in "$P_VERSION" "$P_SHA" "$TREE_SHA" "$APP_VERSION"; do
+for value in "$P_VERSION" "$P_SHA" "$TREE_SHA" "$NODE_SHA" "$APP_VERSION"; do
     case "$value" in
         *[!A-Za-z0-9._+-]*) echo "  x gen-pins: refusing unsafe pin value '$value'" >&2; exit 1 ;;
     esac
@@ -113,8 +153,9 @@ let PINS_CURRENT = PinsValues(
     portlessVersion: "$P_VERSION",
     portlessTarballSha256: "$P_SHA",
     portlessTreeSha256: "$TREE_SHA",
+    nodeBinSha256: "$NODE_SHA",
     appVersion: "$APP_VERSION")
 enum Pins { static let current = PINS_CURRENT }
 enum HelperVersion { static let value = Pins.current.appVersion }
 EOF
-echo "  ✓ Pins.generated.swift (portless $P_VERSION, tree ${TREE_SHA:0:12}, app $APP_VERSION)"
+echo "  ✓ Pins.generated.swift (portless $P_VERSION, tree ${TREE_SHA:0:12}, node ${NODE_SHA:0:12}, app $APP_VERSION)"
