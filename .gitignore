@@ -5,6 +5,7 @@ dist/
 *.vsix
 extensions/vscode/rt-context/package-lock.json
 rt-tray/.build/
+rt-tray/proxy-helper/.build/
 rt-tray/rt-tray.app/
 rt-tray/mattstack.app/
 rt-tray/mattstack-dev.app/

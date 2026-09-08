@@ -294,6 +294,17 @@ if [ "$IS_DEV" != true ]; then
     fi
 fi
 
+# ─── Build + embed the privileged proxy helper ────────────────────────────────
+# Mirrors rt-ui exactly, including the prod-only gate: the dev bundle ships
+# without it and check-bundle's assertions are mattstack-gated to match.
+if [ "$IS_DEV" != true ]; then
+    ( cd "$REPO_DIR/rt-tray/proxy-helper" && swift build -c release --disable-sandbox )
+    PROXY_HELPER_BIN="$REPO_DIR/rt-tray/proxy-helper/.build/release/ProxyInstall"
+    cp "$PROXY_HELPER_BIN" "$CONTENTS/Helpers/mattstack-proxy-install"; chmod +x "$CONTENTS/Helpers/mattstack-proxy-install"
+    xattr -cr "$CONTENTS/Helpers/mattstack-proxy-install" 2>/dev/null || true
+    HELPER_ENTITLEMENTS+=("$CONTENTS/Helpers/mattstack-proxy-install	none")
+fi
+
 # ─── Extension ───────────────────────────────────────────────────────────────
 if [ -n "${RT_VSIX:-}" ]; then
     [ -f "$RT_VSIX" ] || { echo "  ✗ RT_VSIX=$RT_VSIX not found"; exit 1; }
