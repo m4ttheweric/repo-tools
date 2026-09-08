@@ -23,6 +23,5 @@ case .usage:
 case .install:
     Report.finish(InstallOp.run())
 case .remove:
-    Report.step("not implemented yet")
-    Report.finish(ExitCode.unavailable)
+    Report.finish(RemoveOp.run())
 }

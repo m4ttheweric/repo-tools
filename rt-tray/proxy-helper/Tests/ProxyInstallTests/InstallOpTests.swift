@@ -10,6 +10,7 @@ final class RecordingFileOps: FileOps {
     /// Files that already exist. Seed it to model a re-install or upgrade.
     var existingPaths: Set<String> = []
     var failWritesTo: Set<String> = []
+    var failRemovesOf: Set<String> = []
 
     /// Every mutating call, in order, as "<op> <path>". Lets a test assert that
     /// a stage was chmod/chown'd BEFORE it was renamed into place.
@@ -59,6 +60,7 @@ final class RecordingFileOps: FileOps {
     }
 
     func removeTree(_ path: URL) throws {
+        if failRemovesOf.contains(path.path) { throw ProxyInstallError("remove refused: \(path.path)") }
         existingPaths.remove(path.path)
         removed.append(path.path)
         ops.append("remove \(path.path)")
