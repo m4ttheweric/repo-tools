@@ -332,6 +332,42 @@ describe("herd:spawn", () => {
     expect(hx.agentCalls[0].herdrSocket).toBe("/tmp/hidden.sock");
   });
 
+  test("a sign-in that hands back a renamed handle is what the join, the row, and the response carry", async () => {
+    const calls: Array<{ verb: string; payload: any }> = [];
+    const chat = {
+      "chat:sign-in": async (p: any) => { calls.push({ verb: "sign-in", payload: p }); return { ok: true as const, data: { handle: "cv-1-2", baseHandle: p.baseHandle, sessionId: p.sessionId, room: null } }; },
+      "chat:join": async (p: any) => { calls.push({ verb: "join", payload: p }); return { ok: true as const, data: { handle: p.handle, memberCount: 1, unread: 0 } }; },
+    } as unknown as HerdDeps["chat"];
+    const hx = harness({ chat, presenceHandleForSession: () => "shepherd" });
+    const s = await hx.h["herd:start"](START);
+    if (!s.ok) throw new Error(s.error);
+    const res = await hx.h["herd:spawn"]({ herd: s.data.herd, job: "cv-1", brief: "b", dir: "/t" });
+    if (!res.ok) throw new Error(res.error);
+    expect(calls.filter((c) => c.verb === "join")[1]!.payload).toMatchObject({ room: s.data.room, handle: "cv-1-2" });
+    expect(hx.store.getJob(s.data.herd, "cv-1")).toMatchObject({ handle: "cv-1-2", pane: "w9:p1", agentSession: "sess-w1", agentId: "ag-1" });
+    expect(res.data.handle).toBe("cv-1-2");
+  });
+
+  test("a respawn whose agent:start fails leaves no pane on the row, since the old one is already closed", async () => {
+    let starts = 0;
+    const agent = {
+      "agent:start": async (p: any) => {
+        starts += 1;
+        if (starts > 1) return { ok: false as const, error: "boom" };
+        return { ok: true as const, data: { id: "ag-1", sessionId: "sess-w1", paneId: "w9:p1", tabId: "w9:t1", workspaceId: "w9", repo: p.repo, cwd: p.cwd, surface: "herdr", provider: "claude" } };
+      },
+    } as unknown as HerdDeps["agent"];
+    const hx = harness({ agent });
+    const s = await hx.h["herd:start"](START);
+    if (!s.ok) throw new Error(s.error);
+    const first = await hx.h["herd:spawn"]({ herd: s.data.herd, job: "cv-1", brief: "b", dir: "/t" });
+    if (!first.ok) throw new Error(first.error);
+    expect(hx.store.getJob(s.data.herd, "cv-1")!.pane).toBe("w9:p1");
+    expect((await hx.h["herd:spawn"]({ herd: s.data.herd, job: "cv-1", dir: "/t" })).ok).toBe(false);
+    expect(hx.herdrCalls).toContainEqual(["pane", "close", "w9:p1"]);
+    expect(hx.store.getJob(s.data.herd, "cv-1")).toMatchObject({ pane: null, agentSession: null, agentId: null, status: "spawning" });
+  });
+
   test("refuses a bad job name, a new job with no brief, and an unknown herd", async () => {
     const { h, herd } = await started();
     expect((await h["herd:spawn"]({ herd, job: "Bad", brief: "b" })).ok).toBe(false);

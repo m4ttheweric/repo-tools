@@ -211,7 +211,9 @@ export function createHerdHandlers(deps: HerdDeps) {
       }
       const disposable = p?.disposable === true;
 
-      store.upsertJob({ herd: herdId, name, worktree, branch, tree, handle: name, status: "spawning", disposable });
+      // The prior pane is closed above, so the row must not go on naming it
+      // while agent:start decides whether there is a new one.
+      store.upsertJob({ herd: herdId, name, worktree, branch, tree, handle: name, status: "spawning", disposable, pane: null, agentSession: null, agentId: null });
       const started = await deps.agent["agent:start"]({
         repo: herd.repo, cwd: worktree, prompt: brief, surface: "herdr",
         ...(str(p?.model) && { model: p!.model }), ...(str(p?.effort) && { effort: p!.effort }), ...(str(p?.account) && { account: p!.account }),
