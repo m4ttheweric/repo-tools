@@ -429,6 +429,33 @@ describe("hidden verbs", () => {
     expect(res.error).toMatch(/not hidden/);
   });
 
+  test("attend fails cleanly when tab create exits zero with output that is not JSON", async () => {
+    const hx = harness({
+      herdrRunnerFor: (socket) => async (args) => {
+        hx.herdrCalls.push([socket ?? "default", ...args]);
+        if (args[0] === "pane" && args[1] === "get") return { stdout: JSON.stringify({ result: { pane: { terminal_id: "term-7" } } }), exitCode: 0 };
+        if (args[0] === "tab" && args[1] === "create") return { stdout: "nope", exitCode: 0 };
+        return { stdout: "{}", exitCode: 0 };
+      },
+    });
+    const s = await hx.h["herd:start"]({ ...START, hidden: true });
+    if (!s.ok) throw new Error(s.error);
+    hx.store.upsertJob({ herd: s.data.herd, name: "cv-1", worktree: "/w", handle: "cv-1", status: "active", pane: "wh:p1" });
+    const res = await hx.h["herd:attend"]({ herd: s.data.herd, job: "cv-1", callerWorkspace: "wv" });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.error).toMatch(/invalid JSON/);
+    expect(hx.herdrCalls.some((c) => c[1] === "pane" && c[2] === "run")).toBe(false);
+  });
+
+  test("stop-hidden returns the failure when the herdr stop fails", async () => {
+    const hx = harness({ hidden: { socketPath: () => "/tmp/hidden.sock", ensure: async () => "/tmp/hidden.sock", up: async () => true, stop: async () => { throw new Error("herdr session stop failed: no such session"); } } });
+    const res = await hx.h["herd:stop-hidden"]({});
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.error).toMatch(/no such session/);
+  });
+
   test("stop-hidden refuses while an active hidden herd exists, then stops", async () => {
     let stopped = 0;
     const hx = harness({ hidden: { socketPath: () => "/tmp/hidden.sock", ensure: async () => "/tmp/hidden.sock", up: async () => true, stop: async () => { stopped++; } } });

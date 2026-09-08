@@ -330,18 +330,28 @@ export function createHerdHandlers(deps: HerdDeps) {
       const visible = deps.herdrRunnerFor(null);
       const tab = await visible(["tab", "create", "--workspace", callerWorkspace, "--label", `attend: ${name}`, "--focus"]);
       if (tab.exitCode !== 0) return { ok: false, error: `herdr tab create failed: ${tab.stdout.slice(0, 200)}` };
-      const root = JSON.parse(tab.stdout)?.result?.root_pane;
-      if (!root?.pane_id) return { ok: false, error: "herdr tab create returned no root pane" };
+      let root: { pane_id?: unknown; tab_id?: unknown } | undefined;
+      try {
+        root = JSON.parse(tab.stdout)?.result?.root_pane;
+      } catch { return { ok: false, error: "herdr tab create returned invalid JSON" }; }
+      const rootPane = typeof root?.pane_id === "string" ? root.pane_id : null;
+      const tabId = typeof root?.tab_id === "string" ? root.tab_id : null;
+      if (!rootPane) return { ok: false, error: "herdr tab create returned no root pane" };
+      if (!tabId) return { ok: false, error: "herdr tab create returned no tab id" };
       const attach = `env -u HERDR_SOCKET_PATH HERDR_SESSION=${HIDDEN_SESSION} herdr terminal attach ${termId} --takeover`;
-      const ran = await visible(["pane", "run", root.pane_id, attach]);
+      const ran = await visible(["pane", "run", rootPane, attach]);
       if (ran.exitCode !== 0) return { ok: false, error: `herdr pane run failed: ${ran.stdout.slice(0, 200)}` };
-      return { ok: true, data: { tab: root.tab_id, pane: job.pane } };
+      return { ok: true, data: { tab: tabId, pane: job.pane } };
     },
 
     "herd:stop-hidden": async (_payload: unknown): Promise<CommandResult<"herd:stop-hidden">> => {
       const active = store.list({ status: "active" }).filter((h) => h.hidden);
       if (active.length > 0) return { ok: false, error: `hidden herd(s) still active: ${active.map((h) => h.id).join(", ")}; wrap them up first` };
-      await deps.hidden.stop();
+      try {
+        await deps.hidden.stop();
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
       return { ok: true, data: { stopped: true } };
     },
   };

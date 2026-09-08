@@ -53,24 +53,47 @@ export function createHiddenSession(opts: {
     return { exitCode: r.exitCode, stdout: r.stdout || r.stderr };
   });
 
+  /** One server per socket: a launch that times out leaves its child alive, so
+      a second one would fight the first for the same socket. */
+  const SPAWN_COOLDOWN_MS = 60_000;
+  let inFlight: Promise<string> | null = null;
+  let lastSpawnAt = 0;
+
+  async function launch(): Promise<string> {
+    if (await available(sock)) return sock;
+    const logPath = join(logDir, "herd-session.log");
+    const sinceSpawn = Date.now() - lastSpawnAt;
+    if (lastSpawnAt > 0 && sinceSpawn < SPAWN_COOLDOWN_MS) {
+      throw new Error(`hidden herd session was spawned ${Math.round(sinceSpawn / 1000)}s ago and has not bound yet; see ${logPath}`);
+    }
+    lastSpawnAt = Date.now();
+    spawn(serverArgv(resolveHerdrBin(), logPath), envWithoutSocket({ HERDR_SESSION: HIDDEN_SESSION }), logPath);
+    const deadline = Date.now() + readyTimeoutMs;
+    while (Date.now() < deadline) {
+      if (await available(sock)) {
+        opts.log.info({ sock }, "hidden herd session started");
+        return sock;
+      }
+      await Bun.sleep(100);
+    }
+    throw new Error(`hidden herd session did not come up within ${readyTimeoutMs}ms (socket ${sock}); see ${logPath}`);
+  }
+
   return {
     socketPath: () => sock,
     async up(): Promise<boolean> {
       return available(sock);
     },
     async ensure(): Promise<string> {
-      if (await available(sock)) return sock;
-      const logPath = join(logDir, "herd-session.log");
-      spawn(serverArgv(resolveHerdrBin(), logPath), envWithoutSocket({ HERDR_SESSION: HIDDEN_SESSION }), logPath);
-      const deadline = Date.now() + readyTimeoutMs;
-      while (Date.now() < deadline) {
-        if (await available(sock)) {
-          opts.log.info({ sock }, "hidden herd session started");
-          return sock;
-        }
-        await Bun.sleep(100);
+      // Concurrent --hidden starts join the launch already running; probing
+      // and spawning independently is what puts two servers on one socket.
+      if (inFlight) return inFlight;
+      inFlight = launch();
+      try {
+        return await inFlight;
+      } finally {
+        inFlight = null;
       }
-      throw new Error(`hidden herd session did not come up within ${readyTimeoutMs}ms (socket ${sock}); see ${logPath}`);
     },
     async stop(): Promise<void> {
       const r = await run([resolveHerdrBin(), "session", "stop", HIDDEN_SESSION], envWithoutSocket({}));

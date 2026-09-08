@@ -40,6 +40,32 @@ describe("hidden herd session", () => {
     await expect(s.ensure()).rejects.toThrow(/did not come up/);
   });
 
+  test("concurrent ensures join the launch already running instead of spawning a second server", async () => {
+    let calls = 0;
+    const spawned: string[][] = [];
+    const s = createHiddenSession({
+      log, home: "/h", logDir: "/h/logs", readyTimeoutMs: 500,
+      available: async () => ++calls > 2,
+      spawn: (argv) => { spawned.push(argv); },
+    });
+    const [a, b] = await Promise.all([s.ensure(), s.ensure()]);
+    expect(spawned).toHaveLength(1);
+    expect(a).toBe("/h/.config/herdr/sessions/herd/herdr.sock");
+    expect(b).toBe(a);
+  });
+
+  test("a retry after a timed-out launch refuses to spawn a second server", async () => {
+    const spawned: string[][] = [];
+    const s = createHiddenSession({
+      log, home: "/h", logDir: "/h/logs", readyTimeoutMs: 50,
+      available: async () => false,
+      spawn: (argv) => { spawned.push(argv); },
+    });
+    await expect(s.ensure()).rejects.toThrow(/did not come up/);
+    await expect(s.ensure()).rejects.toThrow(/has not bound/);
+    expect(spawned).toHaveLength(1);
+  });
+
   test("stop runs `herdr session stop herd` without HERDR_SOCKET_PATH", async () => {
     const runs: Array<{ argv: string[]; env: Record<string, string> }> = [];
     const s = createHiddenSession({ log, home: "/h", run: async (argv, env) => { runs.push({ argv, env }); return { exitCode: 0, stdout: "" }; } });
