@@ -229,15 +229,20 @@ describe("teamInvite", () => {
     };
   }
 
-  function inviteDeps(overrides: { exec?: ExecScript } = {}): TeamDeps & { lines: string[]; exitCodes: number[] } {
-    return baseDeps({
-      probes: fakeProbes({
-        home,
-        files: { [join(teamDir, ".git", "config")]: GIT_CONFIG },
-        exec: overrides.exec ?? ghExec(),
-        fetch: relayFetch(),
-      }),
+  function inviteDeps(overrides: { exec?: ExecScript; record?: Partial<TeamLocalRecord>; onRelay?: () => void } = {}): TeamDeps & { lines: string[]; exitCodes: number[] } {
+    const probes = fakeProbes({
+      home,
+      files: { [join(teamDir, ".git", "config")]: GIT_CONFIG },
+      exec: overrides.exec ?? ghExec(),
+      fetch: (url, init) => {
+        overrides.onRelay?.();
+        return relayFetch()(url, init);
+      },
     });
+    if (overrides.record) {
+      writeTeamLocal(probes, "acme", { createdByRt: false, joinedByRt: false, rtMayManageMembership: false, ...overrides.record });
+    }
+    return baseDeps({ probes });
   }
 
   test("--json prints the exact contract envelope shape", async () => {
@@ -256,9 +261,46 @@ describe("teamInvite", () => {
     // membership on a team repo unless explicitly permitted. The value is one
     // the contract and the app already accept ("granted"|"manual"|"skipped").
     expect(parsed.forgeAccess).toBe("skipped");
-    expect(parsed.manualSteps).toHaveLength(1);
-    expect((parsed.manualSteps as string[])[0]).toContain("Ask whoever administers");
+    // Not-created branch: the two forge web-UI steps, plus the admin sentence.
+    expect(parsed.manualSteps).toHaveLength(3);
+    expect((parsed.manualSteps as string[]).at(-1)).toContain("Ask whoever administers");
     expect(parsed.pasteBlock).toBe(pasteBlock(parsed.code));
+  });
+
+  test("a joined machine refuses before the relay is ever touched", async () => {
+    let relayCalls = 0;
+    const deps = inviteDeps({ record: { joinedByRt: true }, onRelay: () => { relayCalls++; } });
+
+    const code = await runExpectingProcessExit(() => teamInvite(["--handle", "zaphod", "--team", "acme", "--json"], {}, deps));
+
+    expect(relayCalls).toBe(0);
+    expect(code).toBe(2);
+    expect(JSON.parse(deps.lines[0]!).error.code).toBe("team-pull-only");
+  });
+
+  test("on a TTY, accepting the offer writes the permission before minting", async () => {
+    const deps = inviteDeps({ record: { createdByRt: true } });
+    deps.interactive = () => true;
+    deps.confirm = async () => true;
+
+    await teamInvite(["--handle", "zaphod", "--team", "acme"], {}, deps);
+
+    expect(readTeamLocal(deps.probes, "acme").rtMayManageMembership).toBe(true);
+  });
+
+  test("--json never prompts, even on a TTY", async () => {
+    const deps = inviteDeps({ record: { createdByRt: true } });
+    deps.interactive = () => true;
+    let asked = false;
+    deps.confirm = async () => {
+      asked = true;
+      return true;
+    };
+
+    await teamInvite(["--handle", "zaphod", "--team", "acme", "--json"], {}, deps);
+
+    expect(asked).toBe(false);
+    expect(readTeamLocal(deps.probes, "acme").rtMayManageMembership).toBe(false);
   });
 
   test("missing --handle, --json: exits 2 with the usage envelope", async () => {

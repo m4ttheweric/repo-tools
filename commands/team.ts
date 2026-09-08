@@ -57,6 +57,10 @@ export interface TeamDeps {
   forgeToken?: typeof storedForgeToken;
   /** The daemon round trip `teamPull`/`teamStatus` use for the team-snapshot verbs (`team:pull`, `team:snapshot-status`); real `daemonQuery` by default. */
   daemon?: (cmd: string, payload: unknown, timeoutMs?: number) => Promise<unknown>;
+  /** The rt-ui confirm, seamed so a test never spawns the helper. */
+  confirm?: (message: string) => Promise<boolean>;
+  /** The TTY gate, seamed for the same reason. */
+  interactive?: () => boolean;
 }
 
 async function defaultReadCode(json: boolean): Promise<string> {
@@ -225,6 +229,26 @@ export async function teamInvite(args: string[], _ctx: CommandContext = {}, deps
 
   try {
     const slug = resolveTeamSlug(args);
+
+    const local = readTeamLocal(deps.probes, slug);
+    if (local.joinedByRt) {
+      throw new UserActionableError(
+        "team-pull-only",
+        `this machine joined "${slug}" by invite, so its clone is pull-only and cannot add members or write team settings. Ask the team's owner to invite ${handle}. Member-proposed changes are tracked in MAT-415.`,
+      );
+    }
+
+    // Asked here, not inside mintInvite: the mint POSTs to the relay before it
+    // reaches the roster, so a question answered later would arrive after the
+    // world had already changed.
+    const gate = deps.interactive ?? (await import("../lib/ui/gate.ts")).interactive;
+    if (!json && local.createdByRt && !local.rtMayManageMembership && gate()) {
+      const ask = deps.confirm ?? (async (message: string) => (await import("../lib/ui/prompts.ts")).confirm({ message }));
+      if (await ask(`mattstack created this repo. Let it give ${handle} read access on the forge, and manage access for future invites?`)) {
+        updateTeamLocal(deps.probes, slug, { rtMayManageMembership: true });
+      }
+    }
+
     const relay = createRelayClient(deps.probes.fetch, inviteRelayUrl(deps.probes.env));
     const result = await mintInvite(deps.probes, relay, { slug, handle, now: deps.probes.now() });
 
