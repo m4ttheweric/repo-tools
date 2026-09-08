@@ -242,13 +242,19 @@ because the two disagree about the no-such-store case.
 `rt settings unset --scope team` open, and an unset is a tracked-file mutation
 exactly like a set: the same jam, reached by a different verb.
 
-rt-client needs to read one field of a record the CLI owns. To keep a single
-source of truth for the location, `teamLocalPath` moves into rt-client's
-`paths.ts` beside `teamSettingsPath`, and `lib/team/team-local.ts` imports it;
-rt-client reads only `joinedByRt`, the CLI keeps owning the whole record and
-its Probes seams. Only the path is shared, and it is shared rather than copied.
-The shared helper must keep taking the home directory explicitly, or the
-Probes-seamed tests that run against a fake home stop working.
+rt-client needs to read one field of a record the CLI owns. It **mirrors**
+the path rather than importing it, because that is this package's documented
+convention: `packages/rt-client/src/settings/paths.ts` states that rt-client
+has no dependency on rt's `lib/`, that `lib/rt-paths.ts` is the authority, and
+that these literals are mirrored (the same treatment `teamSettingsPath`,
+`userSettingsPath` and `teamsDir` already get). Inverting that to make `lib`
+import from rt-client would also break the `home` argument
+`lib/team/team-local.ts` needs for its Probes seam, since rt-client's paths
+resolve HOME at call time with no argument.
+
+So: rt-client gains a `teamLocalPath(team)` in `paths.ts` following the file's
+existing mirroring comment, and reads only `joinedByRt`. The CLI keeps owning
+the whole record and its seams.
 
 **Four explicit guards** for the paths that do not go through settings:
 `rt team publish`, `rt secrets --team`, `rt team members sync|remove`, and
@@ -266,9 +272,12 @@ permission offer, which is the same seam and the same moment.
 **Two degrade instead of refusing**, because a refusal there is a regression in
 an unrelated command:
 
-- `saveVariation` is reached from `rt run`. It catches the pull-only refusal
-  and writes user scope with a one-line notice. Failing a member's `rt run`
-  because a variation could not reach the team is not an improvement.
+- `saveVariation` (`lib/variations.ts:96`) needs **no change at all**: it
+  already wraps the write in try/catch and returns
+  `{ ok: false, reason: "write-failed", message }`, so the refusal reaches its
+  caller as a structured result rather than crashing `rt run`. Verified by
+  reading it. The plan asserts that behavior with a test rather than adding
+  code to produce it.
 - The VSCode extension's legacy import is a silent background migration. It
   skips silently.
 
@@ -281,11 +290,19 @@ approval (MAT-415), and until that ships the owner makes the change.
 
 ### The Install trap
 
-`lib/setup/steps/secrets.ts:36` drains staged secrets into the team store for
-`team-<slug>-(rt|board)` domains, and a joiner runs the full Install checklist.
-The guard must not turn a joiner's Install red. Whether that step can be
-reached with staged team secrets on a joined machine is a question the
-implementation answers with a test before the guard lands, not an assumption.
+`lib/setup/steps/secrets.ts` (`secretsWriteRun`) drains staged secrets into
+the team store for `team-<slug>-(rt|board)` domains, and a joiner runs the full
+Install checklist. The guard must not turn a joiner's Install red.
+
+Resolved: the guard goes **inside `writeTeamSecret`**, the real choke point,
+and `secretsWriteRun` catches the pull-only refusal and returns
+`{ state: "skipped", detail }`. `StepOutcome` already has a `skipped` state
+(`lib/setup/apply.ts:25`), so Install stays green and the tracked secrets file
+is never dirtied.
+
+Guarding only the `rt secrets` CLI verb was the tempting alternative and is
+wrong: it would leave the Install path writing a tracked file on a pull-only
+clone, which is the jam this whole part exists to prevent.
 
 ## Non-goals
 
