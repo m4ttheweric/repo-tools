@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import pino from "pino";
@@ -57,7 +57,17 @@ export function harness(over: Partial<HerdDeps> = {}) {
       if (method === "session.snapshot") return { ok: true, result: { snapshot: { panes: [{ pane_id: "w9:p1", agent_status: "working" }] } } };
       return { ok: false, code: "invalid_request", message: method };
     }) as unknown as HerdDeps["herdr"],
-    herdrRunnerFor: () => async (args) => { herdrCalls.push(args); return { stdout: "{}", exitCode: 0 }; },
+    herdrRunnerFor: (socket: string | null) => {
+      const allHerds = store.list();
+      return async (args: string[]) => {
+        herdrCalls.push(args);
+        if (args[0] === "workspace" && args[1] === "list") {
+          const workspaces = allHerds.map((h) => ({ workspace_id: h.id, label: h.workspace }));
+          return { stdout: JSON.stringify({ result: { workspaces } }), exitCode: 0 };
+        }
+        return { stdout: "{}", exitCode: 0 };
+      };
+    },
     lifecycle: { connected: () => true, watch: () => {} },
     hidden: { socketPath: () => "/tmp/hidden.sock", ensure: async () => "/tmp/hidden.sock", up: async () => false, stop: async () => {} },
     jobsRoot: join(dir, "herds"),
@@ -466,5 +476,60 @@ describe("hidden verbs", () => {
     const res = await hx.h["herd:stop-hidden"]({});
     expect(res.ok).toBe(true);
     expect(stopped).toBe(1);
+  });
+});
+
+describe("herd:wrap-up", () => {
+  async function withTwoJobs() {
+    const hx = harness();
+    const s = await hx.h["herd:start"](START);
+    if (!s.ok) throw new Error(s.error);
+    const herd = s.data.herd;
+    hx.store.upsertJob({ herd, name: "cv-1", worktree: "/w/cv-1", branch: "cv-1", tree: "slot-a", handle: "cv-1", status: "done", pane: "w9:p1" });
+    hx.store.upsertJob({ herd, name: "cv-2", worktree: "/w/cv-2", branch: "cv-2", tree: "slot-b", handle: "cv-2", status: "done", pane: "w9:p2" });
+    mkdirSync(join(hx.dir, "herds", herd, "cv-1"), { recursive: true });
+    return { ...hx, herd, room: s.data.room };
+  }
+
+  test("runs exactly the flagged actions: panes, workspace, dispose by registry tree name, job dirs, archive", async () => {
+    const { h, store, herdrCalls, worktreeCalls, chatCalls, herd, room, dir } = await withTwoJobs();
+    const res = await h["herd:wrap-up"]({ herd, closePanes: true, dispose: ["cv-1"], deleteJobDirs: true, archiveRoom: true });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data).toEqual({ closed: ["cv-1", "cv-2"], workspaceClosed: true, disposed: ["slot-a"], refused: [], deletedJobDirs: true, archived: true });
+    expect(herdrCalls).toContainEqual(["pane", "close", "w9:p1"]);
+    expect(herdrCalls).toContainEqual(["pane", "close", "w9:p2"]);
+    expect(herdrCalls.some((c) => c[0] === "workspace" && c[1] === "close")).toBe(true);
+    expect(worktreeCalls).toContainEqual({ verb: "dispose", p: { repoName: "gh:m4ttstack/rt", tree: "slot-a" } });
+    expect(existsSync(join(dir, "herds", herd))).toBe(false);
+    expect(chatCalls.at(-1)).toMatchObject({ verb: "archive", payload: { room, handle: "shepherd", archived: true } });
+    expect(store.get(herd)!.status).toBe("wrapped");
+    expect(store.jobs(herd).every((j) => j.status === "closed")).toBe(true);
+  });
+
+  test("with no flags it only marks the herd wrapped and reports a dispose refusal verbatim", async () => {
+    const hx = await withTwoJobs();
+    hx.worktreeCalls.length = 0;
+    const refusing = harness({
+      worktree: {
+        "worktree:provision": async () => ({ ok: true, data: {} }),
+        "worktree:dispose": async (p: any) => ({ ok: true, data: { disposed: [], refused: [{ tree: p.tree, reason: "unmerged work" }], recoverable: [] } }),
+      },
+    });
+    const s = await refusing.h["herd:start"](START);
+    if (!s.ok) throw new Error(s.error);
+    refusing.store.upsertJob({ herd: s.data.herd, name: "cv-1", worktree: "/w/cv-1", branch: "cv-1", tree: "slot-a", handle: "cv-1", status: "done" });
+    const res = await refusing.h["herd:wrap-up"]({ herd: s.data.herd, dispose: ["cv-1"] });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data).toMatchObject({ closed: [], workspaceClosed: false, disposed: [], refused: [{ tree: "slot-a", reason: "unmerged work" }], deletedJobDirs: false, archived: false });
+    expect(refusing.herdrCalls).toEqual([]);
+  });
+
+  test("a --dir job has no registry tree and is refused with a reason, not disposed", async () => {
+    const { h, store, worktreeCalls, herd } = await withTwoJobs();
+    store.upsertJob({ herd, name: "cv-3", worktree: "/elsewhere", handle: "cv-3", status: "done" });
+    const res = await h["herd:wrap-up"]({ herd, dispose: ["cv-3"] });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data.refused).toEqual([{ tree: "cv-3", reason: "no rt-provisioned tree for this job" }]);
+    expect(worktreeCalls.filter((c) => c.verb === "dispose")).toEqual([]);
   });
 });

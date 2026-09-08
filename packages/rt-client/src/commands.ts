@@ -640,6 +640,7 @@ export interface Commands {
   /** `callerWorkspace` is the attending session's own HERDR_WORKSPACE_ID: the attached tab opens there, not in the herd's workspace. */
   "herd:attend":      { payload: { herd: string; job: string; callerWorkspace: string }; data: { tab: string; pane: string } };
   "herd:stop-hidden": { payload: Record<string, never>; data: { stopped: boolean } };
+  "herd:wrap-up": { payload: { herd: string; closePanes?: boolean; dispose?: string[]; deleteJobDirs?: boolean; archiveRoom?: boolean }; data: { closed: string[]; workspaceClosed: boolean; disposed: string[]; refused: Array<{ tree: string; reason: string }>; deletedJobDirs: boolean; archived: boolean } };
 
   /** Wire reply on success is always `{ok:true, repaired}` (no `data`
    *  wrapper) — `data` here documents the extra field the same way PingData
@@ -756,6 +757,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "herd:report",
   "herd:attend",
   "herd:stop-hidden",
+  "herd:wrap-up",
   "hooks:repair",
   "hooks:watch",
   "sdm:catalog",

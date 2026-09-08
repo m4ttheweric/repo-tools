@@ -3,7 +3,7 @@
  * existing handlers (gate, chat, agent, worktree) so the herd owns no
  * delivery, CAS, or spawn semantics of its own.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import type { Logger } from "pino";
 import type { Commands, GateRow, HerdStatusData } from "../../../packages/rt-client/src/commands.ts";
@@ -353,6 +353,57 @@ export function createHerdHandlers(deps: HerdDeps) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
       return { ok: true, data: { stopped: true } };
+    },
+
+    "herd:wrap-up": async (raw: unknown): Promise<CommandResult<"herd:wrap-up">> => {
+      const p = raw as Commands["herd:wrap-up"]["payload"] | undefined;
+      const herdId = str(p?.herd);
+      if (!herdId) return { ok: false, error: "herd is required" };
+      const herd = store.get(herdId);
+      if (!herd) return { ok: false, error: `unknown herd "${herdId}"` };
+      const jobs = store.jobs(herdId);
+      const runner = deps.herdrRunnerFor(herd.herdrSocket);
+      const closed: string[] = [];
+      let workspaceClosed = false;
+
+      if (p?.closePanes === true) {
+        for (const job of jobs) {
+          if (job.pane && job.status !== "closed") {
+            await closePane(herd.herdrSocket, job.pane, { herd: herdId, job: job.name });
+          }
+          store.setJobStatus(herdId, job.name, "closed");
+          closed.push(job.name);
+        }
+        try {
+          const list = await runner(["workspace", "list"]);
+          const ws = (JSON.parse(list.stdout)?.result?.workspaces ?? []).find((w: any) => w?.label === herd.workspace);
+          if (ws?.workspace_id) { await runner(["workspace", "close", ws.workspace_id]); workspaceClosed = true; }
+        } catch (err) {
+          log.warn({ herd: herdId, err }, "herd wrap-up: workspace close failed");
+        }
+      }
+
+      const disposed: string[] = []; const refused: Array<{ tree: string; reason: string }> = [];
+      for (const name of Array.isArray(p?.dispose) ? p!.dispose! : []) {
+        const job = jobs.find((j) => j.name === name);
+        if (!job || !job.tree) { refused.push({ tree: name, reason: "no rt-provisioned tree for this job" }); continue; }
+        const r = await deps.worktree["worktree:dispose"]({ repoName: herd.repo, tree: job.tree });
+        if (!r.ok) { refused.push({ tree: job.tree, reason: r.error }); continue; }
+        disposed.push(...(r.data.disposed as string[]));
+        refused.push(...(r.data.refused as Array<{ tree: string; reason: string }>));
+      }
+
+      let deletedJobDirs = false;
+      if (p?.deleteJobDirs === true) { rmSync(join(deps.jobsRoot, herdId), { recursive: true, force: true }); deletedJobDirs = true; }
+
+      let archived = false;
+      if (p?.archiveRoom === true) {
+        const r = await deps.chat["chat:archive"]({ room: herd.room, handle: herd.shepherdHandle, archived: true });
+        if (r.ok) archived = true; else log.warn({ herd: herdId, error: r.error }, "herd wrap-up: archive failed");
+      }
+
+      store.setHerdStatus(herdId, "wrapped");
+      return { ok: true, data: { closed, workspaceClosed, disposed, refused, deletedJobDirs, archived } };
     },
   };
 }
