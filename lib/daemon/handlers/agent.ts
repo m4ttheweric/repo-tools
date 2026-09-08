@@ -63,6 +63,10 @@ function isStringRecord(v: unknown): v is Record<string, string> {
     Object.values(v).every((x) => typeof x === "string");
 }
 
+// buildPaneCommand interpolates the key into the pane's shell line raw (only
+// the value is quoted), so anything but a shell-inert identifier is injection.
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 export function createAgentHandlers(opts: {
   db: Database;
   emitEvent: (topic: string, payload?: unknown) => unknown;
@@ -163,6 +167,9 @@ export function createAgentHandlers(opts: {
       }
       if (payload.env !== undefined && !isStringRecord(payload.env)) {
         return { ok: false, error: "env must be an object of strings" };
+      }
+      if (payload.env !== undefined && !Object.keys(payload.env).every((k) => ENV_KEY_RE.test(k))) {
+        return { ok: false, error: "invalid env key" };
       }
       if (payload.handle !== undefined && !isValidChatName(payload.handle)) {
         return { ok: false, error: "invalid handle" };
