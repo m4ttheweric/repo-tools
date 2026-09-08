@@ -117,6 +117,17 @@ if [ "$BUILD_CONFIG" = "debug" ]; then
     exit 0
 fi
 
+# ─── Version ─────────────────────────────────────────────────────────────────
+# Resolved here rather than beside the Info.plist writes below because the proxy
+# helper bakes this value into its pins at compile time, and that compile runs
+# first. The plist writes stay where $INFO exists.
+RT_VERSION="${RT_VERSION:-$(cd "$REPO_DIR" && git describe --tags --abbrev=0 2>/dev/null || echo dev)}"
+RT_VERSION="${RT_VERSION#v}"
+RT_BUILD=""
+if [ "$RT_VERSION" != "dev" ]; then
+    RT_BUILD="$(numeric_build "$RT_VERSION")" || { echo "  ✗ RT_VERSION '$RT_VERSION' is not semver (expected X.Y.Z)" >&2; exit 1; }
+fi
+
 # ─── Assemble ────────────────────────────────────────────────────────────────
 echo "  Assembling $APP_NAME.app..."
 rm -rf "$APP_BUNDLE"
@@ -298,6 +309,9 @@ fi
 # Mirrors rt-ui exactly, including the prod-only gate: the dev bundle ships
 # without it and check-bundle's assertions are mattstack-gated to match.
 if [ "$IS_DEV" != true ]; then
+    # Nothing in the package supplies fallback pins, so codegen has to precede
+    # the compile: a helper that built without it would install unverified bytes.
+    bash "$REPO_DIR/rt-tray/proxy-helper/scripts/gen-pins.sh" "$RT_VERSION"
     ( cd "$REPO_DIR/rt-tray/proxy-helper" && swift build -c release --disable-sandbox )
     PROXY_HELPER_BIN="$REPO_DIR/rt-tray/proxy-helper/.build/release/ProxyInstall"
     cp "$PROXY_HELPER_BIN" "$CONTENTS/Helpers/mattstack-proxy-install"; chmod +x "$CONTENTS/Helpers/mattstack-proxy-install"
@@ -344,10 +358,7 @@ plist_set() { # key type value
 plist_set MSDevBuild bool "$IS_DEV"
 plist_set LSMinimumSystemVersion string 14.0
 
-RT_VERSION="${RT_VERSION:-$(cd "$REPO_DIR" && git describe --tags --abbrev=0 2>/dev/null || echo dev)}"
-RT_VERSION="${RT_VERSION#v}"
 if [ "$RT_VERSION" != "dev" ]; then
-    RT_BUILD="$(numeric_build "$RT_VERSION")" || { echo "  ✗ RT_VERSION '$RT_VERSION' is not semver (expected X.Y.Z)" >&2; exit 1; }
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $RT_VERSION" "$INFO"
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $RT_BUILD" "$INFO"
     echo "  ✓ Version $RT_VERSION (build $RT_BUILD)"
