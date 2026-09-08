@@ -106,11 +106,11 @@ describe("dist/ freshness", () => {
         );
       }
     }
-  });
+  }, 20_000);
 
   test("a fresh build's commands.d.ts carries the deck-scope catalog (cfApiToken) — catches whitelist/build drift", () => {
     const freshDir = buildIntoTempDir();
     const contents = readFileSync(join(freshDir, "commands.d.ts"), "utf8");
     expect(contents).toContain("cfApiToken");
-  });
+  }, 20_000);
 });

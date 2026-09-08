@@ -62,7 +62,8 @@ export type SkipReason =
   | "index-locked"
   | "add-failed"
   | "no-changes"
-  | "conflict";
+  | "conflict"
+  | "pull-only";
 
 export interface SnapshotResult {
   committed: boolean;
@@ -98,6 +99,8 @@ export interface SnapshotStatus {
   lastPullSkipped: string | null;
   /** A rebase that stopped mid-way. Cleared once the clone is no longer ahead of origin (a hand rebase then `rt team publish`, or a reset to origin); pushes and the applying of pulls stay suspended until then, while the fetch itself keeps running, since that is what observes the clearing condition. */
   conflicted: { at: number; detail: string } | null;
+  /** True when this clone only fetches and fast-forwards. */
+  pullOnly: boolean;
   claimedZones: string[];
   firstSeenDirty: Record<string, number>;
   /** Set (and cleared) each time status() re-reads the owners file — surfaces a fail-closed readOwners throw without hiding it behind a stale cache. */
@@ -151,6 +154,13 @@ export interface SnapshotSpec {
   scope?: (relPath: string) => boolean;
   /** Fetch + rebase policy; absent = never pull (the home repo is single-writer). */
   pull?: { intervalSec: number };
+  /**
+   * This machine may not write the remote, so the engine only fetches and
+   * fast-forwards: no commit, no push. A clean tree is what keeps
+   * fast-forward always sufficient, so a member can never reach the rebase
+   * conflict path at all.
+   */
+  pullOnly?: boolean;
   /** The forge token rt holds for origin; absent = git's own credentials. */
   tokenFor?: () => Promise<string | null>;
   /** The retired pre-kv state file to import once; home only. */
@@ -352,7 +362,7 @@ export function homeSnapshotSpec(repoDir: string = join(mattstackHome(), "user")
 export function teamSnapshotSpec(
   slug: string,
   repoDir: string,
-  opts: { pullIntervalSec: number; originUrl: string; probes: Probes; readToken?: (p: Probes, remote: string) => Promise<string | null> },
+  opts: { pullIntervalSec: number; originUrl: string; probes: Probes; pullOnly?: boolean; readToken?: (p: Probes, remote: string) => Promise<string | null> },
 ): SnapshotSpec {
   const readToken = opts.readToken ?? storedForgeToken;
   return {
@@ -362,6 +372,7 @@ export function teamSnapshotSpec(
     eventPrefix: "team",
     scope: teamScope,
     pull: { intervalSec: opts.pullIntervalSec },
+    pullOnly: opts.pullOnly === true,
     tokenFor: () => readToken(opts.probes, opts.originUrl),
   };
 }
@@ -760,7 +771,10 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     }
     if (pushTimer) { deps.clearTimeout(pushTimer); pushTimer = null; }
     if (pushRetryTimer) { deps.clearTimeout(pushRetryTimer); pushRetryTimer = null; }
-    deps.log.warn({ id: spec.id, detail }, `${label}: rebase conflict; still fetching, but not applying pulls or pushing until you rebase and \`rt team publish\` by hand, or reset the clone to origin`);
+    // A pull-only clone cannot publish, so the remedy told to it must not name a verb it will
+    // itself refuse (team-pull-only) the moment it is tried.
+    const remedy = spec.pullOnly ? "reset it to origin or ask the team's owner" : "rebase and `rt team publish` by hand, or reset the clone to origin";
+    deps.log.warn({ id: spec.id, detail }, `${label}: rebase conflict; still fetching, but not applying pulls or pushing until you ${remedy}`);
     deps.broadcast(`${spec.eventPrefix}:conflict`, { id: spec.id, detail });
     return { outcome: "conflict", detail };
   }
@@ -847,6 +861,10 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       deps.log.debug(`${label}: disabled via ${settingsKey}.enabled=false; skipping a due push`);
       return;
     }
+    // Backstop. A pull-only spec never commits, so nothing should ever arm a
+    // push, but the timer is armed from more than one place and this costs
+    // nothing.
+    if (spec.pullOnly) return;
     // Local-only (rt home init with no remote attached) is a permanent,
     // supported state — not a push failure: no exec, no retry, no broadcast.
     // Clearing pushPending/lastPushError here matters for a remote that
@@ -978,6 +996,9 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     // deeper: nothing more lands until the marker clears (see doPull).
     if (conflicted) {
       return { committed: false, sha: null, paths: [], reason, skipped: "conflict" };
+    }
+    if (spec.pullOnly) {
+      return { committed: false, sha: null, paths: [], reason, skipped: "pull-only" };
     }
 
     let owners: Owners;
@@ -1216,6 +1237,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       lastPullError,
       lastPullSkipped,
       conflicted,
+      pullOnly: spec.pullOnly === true,
       claimedZones,
       firstSeenDirty: { ...firstSeenDirty },
       ownersError,

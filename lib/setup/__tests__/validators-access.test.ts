@@ -78,6 +78,22 @@ describe("accessRows — access.team-repo", () => {
     expect(r.detail).toBe("empty repo (will be initialized)");
   });
 
+  test("the team repo row asks only for read on a pull-only clone", async () => {
+    const team = baseTeam({ remote: REMOTE });
+    const exec: ExecScript = () => ok();
+    const files = { "/fake-home/.mattstack/rt/teams/acme.json": JSON.stringify({ joinedByRt: true }) };
+    const r = await pickRow(accessRows(fakeProbes({ exec, files }), team, null), "access.team-repo");
+    expect(r.why).toContain("read");
+    expect(r.why).not.toContain("read/write");
+  });
+
+  test("a clone rt created itself still asks for read/write (it is the one clone that pushes)", async () => {
+    const team = baseTeam({ remote: REMOTE });
+    const exec: ExecScript = () => ok();
+    const r = await pickRow(accessRows(fakeProbes({ exec }), team, null), "access.team-repo");
+    expect(r.why).toContain("read/write");
+  });
+
   test("exit 128 with an auth-refusal stderr -> needs-you, detail never echoes the remote URL, carries a re-check action (finding 5)", async () => {
     const team = baseTeam({ remote: REMOTE });
     const exec: ExecScript = gitAnswers(() => ({ code: 128, stdout: "", stderr: `remote: HTTP Basic: Access denied\nfatal: Authentication failed for '${REMOTE}/'` }));

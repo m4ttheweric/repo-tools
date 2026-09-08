@@ -507,13 +507,36 @@ export async function teamSyncRow(
       continue;
     }
     if (e.conflicted) {
-      problems.push(`${slug}: rebase conflict: ${e.conflicted.detail}; rebase and rt team publish by hand`);
+      // A pull-only clone cannot publish, so telling one to "rt team publish by hand" is an
+      // instruction it will refuse (team-pull-only) the moment it tries. `=== true` rather than
+      // truthy: a fixture or a pre-Task-6 entry missing the field must read as a pushing clone.
+      const remedy = e.pullOnly === true ? "reset it to origin or ask the team's owner" : "rebase and rt team publish by hand";
+      problems.push(`${slug}: rebase conflict: ${e.conflicted.detail}; ${remedy}`);
+      continue;
+    }
+    // A pull-only clone's own failure mode: a fast-forward it refused. rt never resets that for
+    // the user (see the `pullOnly` field doc in home-snapshot.ts), it only names the
+    // clone so the user can. `=== true` rather than truthy: a fixture or a pre-Task-6 entry
+    // missing the field must read as a pushing clone, not a silent pull-only skip.
+    //
+    // Gated on lastPullError too, because a failed FETCH sets both fields: the engine stores
+    // the stderr as lastPullError and returns it as a skip, whose detail pullNow then copies
+    // into lastPullSkipped. Without this, a revoked token reads as "cannot fast-forward, reset
+    // it to origin", which is both the wrong diagnosis and advice that cannot help.
+    if (e.pullOnly === true && e.lastPullError == null && e.lastPullSkipped) {
+      problems.push(`${slug}: pull-only clone cannot fast-forward (${e.lastPullSkipped}); reset it to origin or ask the team's owner`);
       continue;
     }
     // Both fields come off the same redactCredentials(stderr) shape in the
     // engine, so "" is reachable for either; tested against null/undefined,
     // never a truthiness check `""` would fail past.
-    if (e.lastPushError != null) {
+    //
+    // A pull-only clone (joined, not created) never pushes, so it has no push to fail; skip only
+    // THIS check for it. Every check below (fetch failure, never-pulled, staleness) still applies
+    // to a pull-only clone exactly as much as a pushing one: it fetches on the same timer, and a
+    // broken fetch (expired token, revoked access) must not read as "ready" just because the
+    // clone never pushes.
+    if (e.pullOnly !== true && e.lastPushError != null) {
       problems.push(`${slug}: push failing: ${e.lastPushError || "push failed"}`);
       continue;
     }
@@ -539,7 +562,9 @@ export async function teamSyncRow(
   // failure, but it is why a member's store edits are not moving; say so
   // without changing the status.
   const skips = slugs.map((slug) => entries.find((x) => x.slug === slug)?.lastPullSkipped).filter((d): d is string => !!d);
-  const detail = `${slugs.length} clone${slugs.length === 1 ? "" : "s"} in sync${skips.length ? `; last pull skipped: ${skips.join("; ")}` : ""}`;
+  const pullOnlySlugs = slugs.filter((slug) => entries.find((x) => x.slug === slug)?.pullOnly === true);
+  const pullOnlyNote = pullOnlySlugs.length ? `; pull-only, never pushes: ${pullOnlySlugs.join(", ")}` : "";
+  const detail = `${slugs.length} clone${slugs.length === 1 ? "" : "s"} in sync${pullOnlyNote}${skips.length ? `; last pull skipped: ${skips.join("; ")}` : ""}`;
   return row({ ...base, status: "ready", detail });
 }
 

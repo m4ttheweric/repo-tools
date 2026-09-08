@@ -2239,6 +2239,25 @@ describe("startSnapshot: pull", () => {
     handle.stop();
   });
 
+  // A pull-only clone should never reach this branch in normal operation
+  // (it never commits), but a stray local commit from elsewhere can still
+  // land it here, and its remedy must not name a verb it will itself refuse.
+  test("a rebase conflict on a pull-only spec is logged with a remedy that does not name rt team publish", async () => {
+    const dirty = " M mattstack/settings.team.jsonc\0";
+    const exec = makeSwitchableExec([...pullResponders({ behind: 1, ahead: 1, rebase: "conflict" }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps, log } = baseDeps({ exec: exec.fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot({ ...teamSpecFor(), pullOnly: true }, specDeps);
+    await handle.ready;
+
+    const result = await handle.pullNow();
+    expect(result.outcome).toBe("conflict");
+    const conflictWarn = log.calls.find((c) => c.level === "warn" && typeof c.args[1] === "string" && (c.args[1] as string).includes("rebase conflict"));
+    expect(conflictWarn?.args[1]).not.toContain("rt team publish");
+    expect(conflictWarn?.args[1]).toContain("reset it to origin or ask the team's owner");
+    handle.stop();
+  });
+
   test("a rebase conflict cancels the armed push timer, so a due push never fires while suspended", async () => {
     const dirty = " M mattstack/settings.team.jsonc\0";
     const exec = makeSwitchableExec([...pullResponders({ behind: 0, ahead: 1 }), ...defaultResponders({ statusZ: dirty })]);
@@ -2590,6 +2609,59 @@ describe("startSnapshot: pull", () => {
     await handle.ready;
     expect((await handle.pullNow()).outcome).toBe("skipped");
     expect(execCalls.some((c) => gitVerb(c) === "fetch")).toBe(false);
+    handle.stop();
+  });
+
+  test("a pull-only spec fetches and fast-forwards but never commits or pushes", async () => {
+    // Dirty for the same reason as the control test below: a clean tree would
+    // not commit anyway.
+    const dirty = " M mattstack/settings.team.jsonc\0";
+    const { fn, calls } = makeFakeExec([...pullResponders({ behind: 1, ahead: 0 }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot({ ...teamSpecFor(), pullOnly: true }, specDeps);
+    await handle.ready;
+
+    await handle.pullNow();
+    await handle.runNow("watch");
+
+    expect(calls.some((c) => gitVerb(c) === "fetch")).toBe(true);
+    expect(calls.some((c) => gitVerb(c) === "merge")).toBe(true);
+    expect(calls.some((c) => gitVerb(c) === "commit")).toBe(false);
+    expect(calls.some((c) => gitVerb(c) === "push")).toBe(false);
+    expect(handle.status().pullOnly).toBe(true);
+    handle.stop();
+  });
+
+  test("a pull-only spec reports its skip reason rather than looking idle", async () => {
+    const dirty = " M mattstack/settings.team.jsonc\0";
+    const { fn } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot({ ...teamSpecFor(), pullOnly: true }, specDeps);
+    await handle.ready;
+
+    const run = await handle.runNow("watch");
+
+    expect(run.skipped).toBe("pull-only");
+    handle.stop();
+  });
+
+  test("a spec without pullOnly is unchanged and still commits and pushes", async () => {
+    // The fixture must report DIRTY in-scope paths from git status, or this
+    // passes vacuously: a clean tree does not commit either, so it would prove
+    // nothing about pullOnly.
+    const dirty = " M mattstack/settings.team.jsonc\0";
+    const { fn, calls } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+
+    await handle.runNow("watch");
+
+    expect(calls.some((c) => gitVerb(c) === "commit")).toBe(true);
+    expect(handle.status().pullOnly).toBe(false);
     handle.stop();
   });
 });

@@ -9,6 +9,7 @@ import { readIntent } from "../../setup/intent.ts";
 import { resetCltCacheForTests } from "../../setup/home-git.ts";
 import { createRealProbes } from "../../setup/probes.ts";
 import { getSetting } from "../../settings/resolve.ts";
+import { readTeamLocal, updateTeamLocal } from "../team-local.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
 
 const FAKE_PUBLIC_KEY = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
@@ -189,6 +190,17 @@ describe("createTeam", () => {
 
     expect(p.calls.exec[0]).toEqual(["gh", "repo", "create", "o/mattstack-team-acme", "--private"]);
     expect(result.remote).toBe("https://github.com/o/mattstack-team-acme");
+  });
+
+  test("a stale joinedByRt from an earlier joined-then-deleted clone of the same slug is cleared, not merged forward", async () => {
+    const p = gitAwareFakeProbes("/home/x", (argv) => (argv[0] === "gh" ? { code: 0, stdout: "https://github.com/o/mattstack-team-acme\n", stderr: "" } : undefined));
+    // Simulates: joined "acme" earlier (stamping joinedByRt), then deleted
+    // ~/.mattstack/teams/acme by hand; the local record survives the delete.
+    updateTeamLocal(p, "acme", { joinedByRt: true });
+
+    await createTeam(p, { name: "Acme", remote: null, createRepoOwner: "o", others: false }, new FakeAgeKeySeam());
+
+    expect(readTeamLocal(p, "acme")).toEqual({ createdByRt: true, joinedByRt: false, rtMayManageMembership: false });
   });
 
   test("second call with the same remote is idempotent: created:false, zero git calls, intent (re)written", async () => {

@@ -13,6 +13,7 @@
 import { drainStaged } from "../staging.ts";
 import { NoAgeKeyError, writeSecret } from "../../secrets/store.ts";
 import { writeTeamSecret } from "../../secrets/team-store.ts";
+import { UserActionableError } from "../errors.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
 
@@ -42,6 +43,13 @@ async function secretsWriteRun(ctx: ApplyContext): Promise<StepOutcome> {
   } catch (err) {
     if (err instanceof NoAgeKeyError) {
       return { state: "failed", detail: err.message, remedy: "home.init did not mint a key — Retry from home.init" };
+    }
+    // A joined machine's pull-only clone is not a defect Install should block
+    // on: drainStaged leaves the offending domain's staging file untouched on
+    // this throw (same as any other failed write), so the secret stays
+    // staged rather than being silently dropped.
+    if (err instanceof UserActionableError && err.code === "team-pull-only") {
+      return { state: "skipped", detail: `${err.message} Nothing was written.` };
     }
     // Anything else — sops missing/non-zero, no team recipients yet, a
     // malformed .sops.yaml — is an expected store-write failure, not a bug:

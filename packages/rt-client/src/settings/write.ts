@@ -100,6 +100,7 @@ import { dirname } from "path";
 import { machineSettingsPath, teamSettingsPath, userSettingsPath } from "./paths.ts";
 import { getDef, isMigrated, validateValue, type SettingDef, type SettingScope } from "./registry-machinery.ts";
 import { listTeams } from "./stores.ts";
+import { isJoinedTeam } from "./team-local-read.ts";
 
 export interface SetSettingOpts {
   /** Normalized repo identity — required to target a repoScoped key's `repos.<identity>` section. */
@@ -208,6 +209,19 @@ function migratedFalseMessage(key: string, def: SettingDef): string {
   return `"${key}" is not writable through the settings resolver yet${legacyPart}`;
 }
 
+/**
+ * A clone that arrived by redeeming an invite is pull-only, so a write here
+ * would never reach the team AND would leave a tracked file dirty, which is
+ * enough on its own to make the daemon's fast-forward pull fail.
+ */
+function refuseIfJoined(team: string): void {
+  if (isJoinedTeam(team)) {
+    refuse(
+      `this machine joined "${team}" by invite, so its clone is pull-only and team settings cannot be written here. Ask the team's owner to make this change. Member-proposed changes are tracked in MAT-415.`,
+    );
+  }
+}
+
 /** Resolves which store file a write targets, applying the team-selection rule for `scope: "team"`. */
 function resolveStorePath(scope: SettingScope, opts: SetSettingOpts): string {
   if (scope === "user") return userSettingsPath();
@@ -218,6 +232,7 @@ function resolveStorePath(scope: SettingScope, opts: SetSettingOpts): string {
     if (!existsSync(path)) {
       refuse(`team store for "${opts.team}" does not exist (${path}) — clone/seed it before writing to it`);
     }
+    refuseIfJoined(opts.team);
     return path;
   }
 
@@ -228,7 +243,9 @@ function resolveStorePath(scope: SettingScope, opts: SetSettingOpts): string {
   if (teams.length > 1) {
     refuse(`multiple local team stores found (${teams.join(", ")}) — pass opts.team to choose one`);
   }
-  return teamSettingsPath(teams[0] as string);
+  const team = teams[0] as string;
+  refuseIfJoined(team);
+  return teamSettingsPath(team);
 }
 
 /**
@@ -243,7 +260,9 @@ function resolveStorePathForUnset(scope: SettingScope, opts: SetSettingOpts): st
 
   if (opts.team !== undefined) {
     const path = teamSettingsPath(opts.team);
-    return existsSync(path) ? path : null;
+    if (!existsSync(path)) return null;
+    refuseIfJoined(opts.team);
+    return path;
   }
 
   const teams = listTeams();
@@ -251,7 +270,9 @@ function resolveStorePathForUnset(scope: SettingScope, opts: SetSettingOpts): st
   if (teams.length > 1) {
     refuse(`multiple local team stores found (${teams.join(", ")}) — pass opts.team to choose one`);
   }
-  return teamSettingsPath(teams[0] as string);
+  const team = teams[0] as string;
+  refuseIfJoined(team);
+  return teamSettingsPath(team);
 }
 
 /** `// header comment\n{}\n` — see module doc for why the object must be seeded before the first `modify`. */

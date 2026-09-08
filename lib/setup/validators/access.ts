@@ -11,6 +11,7 @@ import { isValidHostname, isValidHttpsUrl } from "../host-validate.ts";
 import type { SetupIntent } from "../intent.ts";
 import type { Probes } from "../probes.ts";
 import { forgeFromRemote, type TeamSnapshot, type UserIntegrationOverrides } from "../team-settings.ts";
+import { readTeamLocal } from "../../team/team-local.ts";
 import type { SecretPresence } from "./accounts.ts";
 import { forgeTokenLookupFromPresence } from "../../team/forge-token.ts";
 import { probeTeamRepoAccess, forgeLabel, type RepoAccessVerdict } from "../../team/repo-access.ts";
@@ -36,7 +37,14 @@ function rowFromVerdict(v: RepoAccessVerdict, ctx: { grantedBy: string; provider
 
 /** The canonical out-of-band row: a different human grants access, or the network/VPN changes — no file rt watches ever reflects that, so this only ever updates on an explicit re-check. */
 async function teamRepoRow(p: Probes, team: TeamSnapshot, intent: SetupIntent | null, secrets: SecretPresence | undefined): Promise<Row> {
-  const base = { id: "access.team-repo", kind: "access" as const, title: "Team repo", why: "rt needs read/write access to your team's home repo to sync settings and packs.", required: true, recheck: "on-activate" as const };
+  // A joined (pull-only) clone never pushes, so claiming write access it will never use would be
+  // false; read the mode from the machine-local record itself, never from daemon status, so this
+  // row still answers with the daemon down.
+  const pullOnly = readTeamLocal(p, team.slug).joinedByRt;
+  const why = pullOnly
+    ? "rt needs read access to your team's home repo to sync settings and packs. Only the team's owner writes it."
+    : "rt needs read/write access to your team's home repo to sync settings and packs.";
+  const base = { id: "access.team-repo", kind: "access" as const, title: "Team repo", why, required: true, recheck: "on-activate" as const };
   const remote = intent?.team?.remote ?? intent?.join?.pointer.remote ?? team.remote;
   // Screen 2 recomputes the whole plan in-band once a remote exists — nothing to re-check here yet.
   if (!remote) return row({ ...base, status: "missing", detail: "no team remote yet (screen 2)" });

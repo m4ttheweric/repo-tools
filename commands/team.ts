@@ -33,6 +33,7 @@ import { readTeamSnapshot, stripUserinfo, type SettingsReader } from "../lib/set
 import { createTeam } from "../lib/team/create.ts";
 import { extractInviteCode } from "../lib/team/invite-crypto.ts";
 import { mintInvite } from "../lib/team/invite.ts";
+import { readTeamLocal, updateTeamLocal } from "../lib/team/team-local.ts";
 import { JoinKeyExchangeError, joinDryRun, joinRedeem, realJoinRedeemSeams, type JoinRedeemSeams, type JoinResult } from "../lib/team/join.ts";
 import { membersRemove, membersSync, teamRemote } from "../lib/team/members.ts";
 import { publishTeam } from "../lib/team/publish.ts";
@@ -57,6 +58,10 @@ export interface TeamDeps {
   forgeToken?: typeof storedForgeToken;
   /** The daemon round trip `teamPull`/`teamStatus` use for the team-snapshot verbs (`team:pull`, `team:snapshot-status`); real `daemonQuery` by default. */
   daemon?: (cmd: string, payload: unknown, timeoutMs?: number) => Promise<unknown>;
+  /** The rt-ui confirm, seamed so a test never spawns the helper. */
+  confirm?: (message: string) => Promise<boolean>;
+  /** The TTY gate, seamed for the same reason. */
+  interactive?: () => boolean;
 }
 
 async function defaultReadCode(json: boolean): Promise<string> {
@@ -227,6 +232,26 @@ export async function teamInvite(args: string[], _ctx: CommandContext = {}, deps
 
   try {
     const slug = resolveTeamSlug(args);
+
+    const local = readTeamLocal(deps.probes, slug);
+    if (local.joinedByRt) {
+      throw new UserActionableError(
+        "team-pull-only",
+        `this machine joined "${slug}" by invite, so its clone is pull-only and cannot add members or write team settings. Ask the team's owner to invite ${handle}. Member-proposed changes are tracked in MAT-415.`,
+      );
+    }
+
+    // Asked here, not inside mintInvite: the mint POSTs to the relay before it
+    // reaches the roster, so a question answered later would arrive after the
+    // world had already changed.
+    const gate = deps.interactive ?? (await import("../lib/ui/gate.ts")).interactive;
+    if (!json && local.createdByRt && !local.rtMayManageMembership && gate()) {
+      const ask = deps.confirm ?? (async (message: string) => (await import("../lib/ui/prompts.ts")).confirm({ message }));
+      if (await ask(`mattstack created this repo. Let it give ${handle} read access on the forge, and manage access for future invites?`)) {
+        updateTeamLocal(deps.probes, slug, { rtMayManageMembership: true });
+      }
+    }
+
     const relay = createRelayClient(deps.probes.fetch, inviteRelayUrl(deps.probes.env));
     const result = await mintInvite(deps.probes, relay, { slug, handle, now: deps.probes.now() });
 
@@ -245,6 +270,45 @@ export async function teamInvite(args: string[], _ctx: CommandContext = {}, deps
     }
   } catch (err) {
     if (err instanceof UserActionableError) exitUserError(err, json, "team invite", deps.print);
+    throw err;
+  }
+}
+
+/**
+ * The permission is machine-local and never synced, so this is the only
+ * non-interactive door to it. `on` is refused rather than ignored where rt did
+ * not create the repo: rt does not administer a repo it was pointed at.
+ */
+export async function teamManageMembership(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
+  const json = args.includes("--json");
+  const state = positional(args, ["--team"])[0];
+  if (state !== undefined && state !== "on" && state !== "off") {
+    usageError(deps, json, "team manage-membership", "rt team manage-membership [on|off] [--team <slug>] [--json]");
+  }
+
+  try {
+    const slug = resolveTeamSlug(args);
+    const before = readTeamLocal(deps.probes, slug);
+    if (state === "on" && !before.createdByRt) {
+      throw new UserActionableError(
+        "not-rt-created",
+        `mattstack did not create the repo behind "${slug}", so it will not administer membership there. Whoever administers that repo grants access.`,
+      );
+    }
+
+    const record = state === undefined ? before : updateTeamLocal(deps.probes, slug, { rtMayManageMembership: state === "on" });
+
+    if (json) {
+      deps.print(JSON.stringify(envelope({ slug, mayManage: record.rtMayManageMembership, offerable: record.createdByRt })));
+      return;
+    }
+    deps.print(
+      record.rtMayManageMembership
+        ? `rt team manage-membership: on for "${slug}" (invites grant forge read access)`
+        : `rt team manage-membership: off for "${slug}"${record.createdByRt ? " (run `rt team manage-membership on` to let invites grant read access)" : " (mattstack did not create this repo, so it cannot be turned on)"}`,
+    );
+  } catch (err) {
+    if (err instanceof UserActionableError) exitUserError(err, json, "team manage-membership", deps.print);
     throw err;
   }
 }
@@ -417,13 +481,15 @@ interface TeamSyncFields {
   lastPushAt: string | null;
   lastPullSkipped: string | null;
   conflicted: { at: string; detail: string } | null;
+  /** Carried straight off the snapshot entry so a member can see why their clone never pushes, without a second daemon round trip. `false` for a daemon that predates the field or is unreachable, the same "absent means false" rule as the machine-local record it mirrors. */
+  pullOnly: boolean;
   /** True only when the daemon answered `team:snapshot-status` and named this slug; never leaked into the JSON envelope, only used to pick the human line's "ok"/"unknown". */
   reachable: boolean;
 }
 
-const NO_SYNC: TeamSyncFields = { lastPull: null, lastPushAt: null, lastPullSkipped: null, conflicted: null, reachable: false };
+const NO_SYNC: TeamSyncFields = { lastPull: null, lastPushAt: null, lastPullSkipped: null, conflicted: null, pullOnly: false, reachable: false };
 
-/** `deps.daemon?.("team:snapshot-status", {})` round trip, reduced to the four fields `teamStatus` shows for `slug`. Any failure (daemon down, malformed response, slug absent from the list) collapses to `NO_SYNC` rather than throwing; sync state is a nicety on top of the local status, never a reason to fail the whole command. */
+/** `deps.daemon?.("team:snapshot-status", {})` round trip, reduced to the five fields `teamStatus` shows for `slug`. Any failure (daemon down, malformed response, slug absent from the list) collapses to `NO_SYNC` rather than throwing; sync state is a nicety on top of the local status, never a reason to fail the whole command. */
 async function readTeamSyncFields(deps: TeamDeps, slug: string): Promise<TeamSyncFields> {
   try {
     const call = deps.daemon ?? daemonQuery;
@@ -436,6 +502,7 @@ async function readTeamSyncFields(deps: TeamDeps, slug: string): Promise<TeamSyn
       lastPushAt: entry.lastPushAt > 0 ? new Date(entry.lastPushAt).toISOString() : null,
       lastPullSkipped: entry.lastPullSkipped,
       conflicted: entry.conflicted ? { at: new Date(entry.conflicted.at).toISOString(), detail: entry.conflicted.detail } : null,
+      pullOnly: entry.pullOnly === true,
       reachable: true,
     };
   } catch {
@@ -473,8 +540,9 @@ export async function teamStatus(args: string[], _ctx: CommandContext = {}, deps
     }
     const syncState = sync.conflicted !== null ? "conflict" : reachable ? "ok" : "unknown";
     const skippedNote = sync.lastPullSkipped ? ` (last pull skipped: ${sync.lastPullSkipped})` : "";
+    const pullOnlyNote = sync.pullOnly ? ", pull-only: this clone fetches and fast-forwards only, it never pushes" : "";
     deps.print(
-      `rt team status: ${name} (${slug}) - remote ${result.remote ?? "(none)"}, last push ${lastPush ?? "never"}, ${members.length} member(s), sync: ${syncState}${skippedNote}`,
+      `rt team status: ${name} (${slug}) - remote ${result.remote ?? "(none)"}, last push ${lastPush ?? "never"}, ${members.length} member(s), sync: ${syncState}${skippedNote}${pullOnlyNote}`,
     );
   } catch (err) {
     if (err instanceof UserActionableError) exitUserError(err, json, "team status", deps.print);

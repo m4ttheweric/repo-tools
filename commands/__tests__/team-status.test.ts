@@ -51,7 +51,7 @@ async function runExpectingProcessExit(fn: () => Promise<void>): Promise<number 
 }
 
 describe("teamStatus", () => {
-  test("--json prints the exact contract envelope: slug, name, remote, lastPush, members, and the four sync fields null without a daemon", async () => {
+  test("--json prints the exact contract envelope: slug, name, remote, lastPush, members, and the five sync fields false/null without a daemon", async () => {
     const deps = clonedDeps({
       exec: async (argv) => {
         if (argv[0] === "git" && argv[2] === TEAM_DIR && argv[3] === "log") {
@@ -78,7 +78,49 @@ describe("teamStatus", () => {
       lastPushAt: null,
       lastPullSkipped: null,
       conflicted: null,
+      pullOnly: false,
     });
+  });
+
+  test("--json carries pullOnly through from the daemon's snapshot-status entry, so a member can see why nothing pushes", async () => {
+    const deps = clonedDeps({
+      exec: async () => ({ code: 0, stdout: "2026-08-21T10:00:00+00:00\n", stderr: "" }),
+    });
+    deps.daemon = async (verb) =>
+      verb === "team:snapshot-status"
+        ? {
+            ok: true,
+            data: [
+              {
+                slug: SLUG,
+                lastPullAt: 900_000,
+                lastPushAt: 0,
+                lastPullSkipped: null,
+                conflicted: null,
+                pullOnly: true,
+              },
+            ],
+          }
+        : null;
+
+    await teamStatus(["--team", SLUG, "--json"], {}, deps);
+
+    const body = JSON.parse(deps.lines[0]!);
+    expect(body.pullOnly).toBe(true);
+  });
+
+  test("human mode notes a pull-only clone never pushes", async () => {
+    const deps = clonedDeps({
+      exec: async () => ({ code: 0, stdout: "2026-08-21T10:00:00+00:00\n", stderr: "" }),
+    });
+    deps.daemon = async (verb) =>
+      verb === "team:snapshot-status"
+        ? { ok: true, data: [{ slug: SLUG, lastPullAt: 900_000, lastPushAt: 0, lastPullSkipped: null, conflicted: null, pullOnly: true }] }
+        : null;
+
+    await teamStatus(["--team", SLUG], {}, deps);
+
+    expect(deps.lines[0]).toContain("pull-only");
   });
 
   test("no board.title -> name falls back to the slug", async () => {

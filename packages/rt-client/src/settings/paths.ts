@@ -28,6 +28,17 @@ export function teamSettingsPath(team: string): string {
 }
 
 /**
+ * ~/.mattstack/rt/teams/<team>.json: the machine-local team record. Mirrored
+ * from repo-tools/lib/team/team-local.ts's teamLocalPath, which is the
+ * authority: rt-client has no dependency on rt's lib/, so this literal is
+ * duplicated here rather than imported (same convention as `teamSettingsPath`
+ * and `userSettingsPath` above).
+ */
+export function teamLocalPath(team: string): string {
+  return join(home(), ".mattstack", "rt", "teams", `${team}.json`);
+}
+
+/**
  * ~/.mattstack/user/local/<machineKey()>/settings.local.jsonc — the machine
  * store, TRACKED and keyed per machine (path literals legal here only).
  */
