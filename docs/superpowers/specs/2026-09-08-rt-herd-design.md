@@ -201,10 +201,10 @@ subject sets the job back to `active` only when it is `at-gate` or
 closes the job's gate after marking it crashed).
 
 **Nudge reliability.** The gate pane push (`pushToPane` in `gate-push.ts`)
-gains the chat delivery's retry with backoff and a 30s sweep that re-pushes
-`answered` gates whose last push was `dead-pane` (never closed ones: a
-closed gate has nothing for the pane to act on), so a worker's wake is as
-reliable as a chat message. A gate that stays `dead-pane` after the sweep
+gains a 30s sweep that re-pushes `answered` gates whose last push was
+`dead-pane`, up to twenty times (never closed ones: a closed gate has
+nothing for the pane to act on), so a worker's wake survives a pane that
+was briefly unreachable. A gate that stays `dead-pane` after the sweep
 renders in `rt herd status` as "answered, worker not woken"; the shepherd
 DMs the worker, which is the only manual step and is prompted by the
 status line. `status` also shows the shepherd's own subscription row (id,
@@ -297,8 +297,10 @@ brief.
 - `herdr: <job> exited`: report the crash to the human with the pane id;
   never silently respawn.
 
-**Shepherd to worker** is `rt chat dm <job>`: rulings that invalidate
-in-flight work, scope changes, reviewer findings. It is on the record, the
+**Shepherd to worker** is `rt chat dm <handle>`, the job's handle as
+`rt herd status` shows it (equal to the job name unless sign-in suffixed
+it): rulings that invalidate in-flight work, scope changes, reviewer
+findings. It is on the record, the
 human reads it in the viewer, and it lands mid-turn. The scope-redirect
 form is unchanged; "kill and respawn" is `rt herd close <job>` then
 `rt herd spawn` with the new brief.
@@ -352,8 +354,8 @@ the chat and gate tests already use):
 - `spawn` composes provision and `rt agent start` with the expected argv
   (including the herd workspace and the job tab label), env, and settings;
   `--dir` reuses a row.
-- `start` creates the workspace unfocused and records its label; a second
-  `start` with the same name mints a new id and a new workspace.
+- `start` records the workspace label; a second `start` with the same
+  name in the same second mints a suffixed id.
 - `ask` opens a gate with subject, refs, nudge, and meta, sets `at-gate`,
   launches nothing.
 - `milestone` posts quietly then opens a gate with the three fixed options.
