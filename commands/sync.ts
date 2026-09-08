@@ -12,7 +12,8 @@
  *   rt sync                  sync current worktree
  *   rt sync all              sync all worktrees with open MRs
  *   rt sync --dry-run        show what would happen
- *   rt sync --json           on conflict: emit a JSON conflict bundle, exit 3, leave rebase paused
+ *   rt sync --json           on conflict: emit a JSON conflict bundle, exit 3, leave rebase paused;
+ *                            on a stack member: emit a JSON refusal, exit 4, touch nothing
  *   rt sync --agent          on conflict: skip the prompt, hand straight to a Claude agent in herdr
  *   rt sync --no-agent       never offer agent escalation (abort on conflict, as before)
  */
@@ -26,7 +27,14 @@ import { repoLabel } from "../lib/repo-label.ts";
 import { rebaseOnto, type RebaseResult } from "./git/rebase.ts";
 import { resetToOrigin, type ResetResult } from "./git/reset.ts";
 import { syncLog } from "../lib/sync-log.ts";
-import { checkStackMembership, createStackGuardRunners, type StackGuardRunners, type StackRefusal } from "../lib/stack-guard.ts";
+import {
+  STACK_REFUSAL_EXIT,
+  checkStackMembership,
+  createStackGuardRunners,
+  renderStackRefusal,
+  type StackGuardRunners,
+  type StackRefusal,
+} from "../lib/stack-guard.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -380,6 +388,8 @@ async function syncAll(
 
   console.log(`\n  ${bold}${cyan}rt sync all${reset} ${dim}(${syncable.length} branches)${reset}\n`);
 
+  const { createRealProbes } = await import("../lib/setup/probes.ts");
+  const stackRunners = createStackGuardRunners(createRealProbes());
   const summaries: SyncSummary[] = [];
 
   for (const wt of syncable) {
@@ -417,6 +427,7 @@ async function syncAll(
       dryRun: opts.dryRun,
       quiet: false,
       onConflict: "abort",
+      stackRunners,
     });
     summaries.push(summary);
     console.log("");
@@ -488,6 +499,7 @@ export async function syncCommand(
       dryRun,
       quiet: mode === "json",
       onConflict: mode === "off" ? "abort" : "pause",
+      strictStackCheck: mode === "json",
     });
 
     const paused =
@@ -509,6 +521,12 @@ export async function syncCommand(
 
   if (escalationExit !== null) {
     process.exit(escalationExit);
+  }
+
+  if (summary.refusal) {
+    if (mode === "json") console.log(renderStackRefusal(summary.refusal, "json"));
+    else console.error(`\n  ${red}${renderStackRefusal(summary.refusal, "human")}${reset}\n`);
+    process.exit(STACK_REFUSAL_EXIT);
   }
 
   if (summary.error) {
