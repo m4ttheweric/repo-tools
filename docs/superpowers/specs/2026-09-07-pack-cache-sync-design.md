@@ -20,8 +20,9 @@ Three further facts, all verified in the code:
 
 **`rt setup status` cannot show it.** The `pack.<pack>` row is built from
 `readPackRequirements`, which finds packs by locating a `requirements.jsonc`
-under the clone. Acme Skills's pack ships none, so there is no `pack.acme-skills`
-row at all, and the rows that do exist report `installed` with no version.
+under the clone. The team pack that motivated this work ships none, so it gets
+no `pack.<name>` row at all, and the rows that do exist report `installed` with
+no version.
 
 **The enable state underneath it is already wrong.** `plugins.install` enforces
 the installed-never-enabled ruling by skipping the `claude plugin enable` call
@@ -61,17 +62,18 @@ That uninstall phrasing matches `isAlreadyGone` (`uninstall.ts:210`) through its
 `not found` alternative, so the rollback reuses that matcher rather than adding
 one. The two editor-specific alternatives in that regex are inert here.
 
-**Measured against the real pack**, not the fixture: `acme-skills@acme-market` from
-`~/.mattstack/teams/acme-skills` (1.1 MB, 106 files across `skills/`,
-`attachments/`, `pack/`, `scripts/`), installed into a throwaway
-`CLAUDE_CONFIG_DIR` so the live install was untouched:
+**Measured against a real team pack**, not the fixture: the largest one on the
+development machine, 1.1 MB over 106 files across `skills/`, `attachments/`,
+`pack/` and `scripts/`, installed from its own team clone into a throwaway
+`CLAUDE_CONFIG_DIR` so the live install was untouched. The pack is not named
+here because this repo is public; the shape is what the numbers depend on.
 
 | Command | Elapsed |
 | --- | --- |
 | `claude plugin marketplace add <clone>` | 0.47 s |
-| `claude plugin install acme-skills@acme-market` | 0.86 s |
-| `claude plugin disable acme-skills@acme-market` | 0.40 s |
-| `claude plugin uninstall acme-skills@acme-market` | 0.41 s |
+| `claude plugin install <pack>@<marketplace>` | 0.86 s |
+| `claude plugin disable <pack>@<marketplace>` | 0.40 s |
+| `claude plugin uninstall <pack>@<marketplace>` | 0.41 s |
 
 A directory-source install is a local copy, so it scales with pack size rather
 than with the network, and the largest real pack lands in under a second. The
@@ -435,7 +437,7 @@ of scope here.
 `packRow` is rebuilt around the union of two sources, keyed by pack name so each
 pack yields exactly one row: packs discovered by `readPackRequirements` (whose
 `.error` row is preserved unchanged), and packs the team marketplace serves,
-which is how Acme Skills gets a row at all.
+which is how a pack with no `requirements.jsonc` gets a row at all.
 
 | Condition | Status | Detail |
 | --- | --- | --- |
