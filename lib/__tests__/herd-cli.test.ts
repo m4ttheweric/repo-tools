@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { buildAskPayload, buildSpawnPayload, buildWrapUpPayload, jobEnv, renderAnswer, renderStatus, workerEnv } from "../../commands/herd.ts";
-import type { Commands, HerdStatusData } from "../../packages/rt-client/src/index.ts";
+import { buildAskPayload, buildSpawnPayload, buildWrapUpPayload, jobEnv, renderAnswer, renderHerdRow, renderStatus, soleHerdId, workerEnv } from "../../commands/herd.ts";
+import type { Commands, HerdListRow, HerdStatusData } from "../../packages/rt-client/src/index.ts";
 
 describe("rt herd payload builders", () => {
   test("workerEnv reads HERD_ID, HERD_JOB, CLAUDE_CODE_SESSION_ID, HERDR_PANE_ID", () => {
@@ -30,6 +30,23 @@ describe("rt herd payload builders", () => {
   test("jobEnv needs the job identity only, not a session", () => {
     expect(jobEnv({ HERD_ID: "h", HERD_JOB: "j" })).toEqual({ herd: "h", job: "j" });
     expect(() => jobEnv({ HERD_JOB: "j" })).toThrow(/HERD_ID/);
+  });
+});
+
+describe("rt herd list", () => {
+  const row = (over: Partial<HerdListRow> = {}): HerdListRow => ({
+    id: "hd-1", repo: "r", room: "herd-hd-1", workspace: "w", shepherdSession: "s", shepherdHandle: "shep",
+    herdrSocket: null, hidden: false, status: "active", createdAt: 0, wrappedAt: null, jobs: 2, ...over,
+  });
+
+  test("a row carries the id, status, room and job count", () => {
+    expect(renderHerdRow(row())).toBe("hd-1  active  room herd-hd-1  2 jobs");
+  });
+
+  test("exactly one herd is the fallback; zero or two are not", () => {
+    expect(soleHerdId([row()])).toBe("hd-1");
+    expect(soleHerdId([])).toBeNull();
+    expect(soleHerdId([row(), row({ id: "hd-2" })])).toBeNull();
   });
 });
 

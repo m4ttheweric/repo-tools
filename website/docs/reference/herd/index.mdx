@@ -21,13 +21,14 @@ rt herd
 | --- | --- |
 | [`start`](start) | Start a herd: registry row, chat room, herdr workspace, gate subscription |
 | [`spawn`](spawn) | Spawn a worker job: worktree, herdr pane, Claude agent |
-| [`ask`](ask) | Worker: open a gate on the shepherd and hold for the answer |
-| [`milestone`](milestone) | Worker: hand an artifact to the shepherd and hold for review |
+| [`ask`](ask) | Worker: opens a gate; end the turn, the answer arrives as a nudge |
+| [`milestone`](milestone) | Worker: posts the artifact and opens a milestone gate; end the turn |
 | [`answer`](answer) | Worker: read the answer to a gate this job is holding at |
 | [`report`](report) | Worker: post a progress report into the herd room |
 | [`gates`](gates) | Open gates across a herd's workers |
 | [`status`](status) | One herd: jobs, panes, gates, subscription, unread |
-| [`resume`](resume) | Re-point a herd's gate subscription at this session and catch up |
+| [`list`](list) | Herds on this machine: id, status, room, job count |
+| [`resume`](resume) | Re-point a herd's gate subscription and chat handle at this session |
 | [`close`](close) | Close a worker job (the pane stays; the row stops being live) |
 | [`attend`](attend) | Attach a worker's pane in a tab of your own workspace |
 | [`wrap-up`](wrap-up) | Wind a herd down: panes, worktrees, job dirs, room |

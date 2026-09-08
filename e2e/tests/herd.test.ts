@@ -314,5 +314,14 @@ describe("rt herd (e2e)", () => {
     expect(status.exitCode).toBe(0);
     const statusData = JSON.parse(status.stdout) as { jobs: Array<Record<string, unknown>> };
     expect(statusData.jobs[0]).toMatchObject({ name: "cv-1", status: "active", pane: "w1:p1", paneStatus: "idle" });
+
+    const listed = await finished(runRt(["herd", "list"], home));
+    expect(listed.exitCode).toBe(0);
+    expect(listed.stdout.trim()).toBe(`${herd.herd}  active  room ${herd.room}  1 jobs`);
+
+    // One active herd, so the id is a lookup the verb can do itself.
+    const bare = await finished(runRt(["herd", "status", "--json"], home));
+    expect(bare.exitCode).toBe(0);
+    expect(JSON.parse(bare.stdout)).toMatchObject({ herd: { id: herd.herd } });
   }, 60_000);
 });

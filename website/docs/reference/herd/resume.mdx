@@ -7,19 +7,19 @@ sidebar_label: resume
 
 `rt › herd › resume`
 
-Re-point a herd's gate subscription at this session and catch up
+Re-point a herd's gate subscription and chat handle at this session
 
 ## Usage
 
 ```bash
-rt herd resume <herd-id> [flags]
+rt herd resume [<herd-id>] [flags]
 ```
 
 ## Arguments & flags
 
 | Flag / Arg | Type | Default | Description |
 | --- | --- | --- | --- |
-| `<herd-id>` | text |  | Herd to resume |
+| `<herd-id>` | text |  | Herd to resume (default: the single active herd) |
 | `--session` | text |  | Shepherd session id (default: CLAUDE_CODE_SESSION_ID) |
 | [`--json`](/guides/common-flags) | boolean | `false` | Emit the resume record as JSON |
 

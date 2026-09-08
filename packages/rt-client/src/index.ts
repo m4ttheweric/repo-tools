@@ -62,6 +62,7 @@ export {
   herdReport,
   herdGates,
   herdStatus,
+  herdList,
   herdResume,
   herdClose,
   herdAttend,
@@ -114,6 +115,7 @@ export type {
   GateRow,
   GateSubscription,
   HerdInfo,
+  HerdListRow,
   HerdJobInfo,
   HerdStatusData,
 } from "./commands.ts";

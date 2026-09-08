@@ -189,7 +189,7 @@ const herdSubcommands: Record<string, CommandNode> = {
     ],
   },
   ask: {
-    description: "Worker: open a gate on the shepherd and hold for the answer",
+    description: "Worker: opens a gate; end the turn, the answer arrives as a nudge",
     module: "./commands/herd.ts",
     fn: "ask",
     omitBehavior: { exempt: "agent-facing; the worker writes its own questions" },
@@ -200,7 +200,7 @@ const herdSubcommands: Record<string, CommandNode> = {
     ],
   },
   milestone: {
-    description: "Worker: hand an artifact to the shepherd and hold for review",
+    description: "Worker: posts the artifact and opens a milestone gate; end the turn",
     module: "./commands/herd.ts",
     fn: "milestone",
     omitBehavior: { exempt: "agent-facing; the worker names the artifact it just wrote" },
@@ -250,13 +250,23 @@ const herdSubcommands: Record<string, CommandNode> = {
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the status as JSON" },
     ],
   },
+  list: {
+    description: "Herds on this machine: id, status, room, job count",
+    module: "./commands/herd.ts",
+    fn: "list",
+    omitBehavior: "list",
+    args: [
+      { name: "All", flag: "--all", type: "boolean", default: false, hint: "Include wrapped herds, not just active ones" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the herd rows as JSON" },
+    ],
+  },
   resume: {
-    description: "Re-point a herd's gate subscription at this session and catch up",
+    description: "Re-point a herd's gate subscription and chat handle at this session",
     module: "./commands/herd.ts",
     fn: "resume",
-    omitBehavior: { exempt: "agent-facing; the shepherd names the herd it started" },
+    omitBehavior: { exempt: "agent-facing; falls back to the single active herd, else rt herd list" },
     args: [
-      { name: "Herd id", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd to resume" },
+      { name: "Herd id", type: "text", optional: true, placeholder: "hd-1a2b3c4d", hint: "Herd to resume (default: the single active herd)" },
       { name: "Session", flag: "--session", type: "text", placeholder: "abc123", hint: "Shepherd session id (default: CLAUDE_CODE_SESSION_ID)" },
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the resume record as JSON" },
     ],

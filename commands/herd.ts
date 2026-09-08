@@ -10,7 +10,8 @@
  *   rt herd report [--file <path>]
  *   rt herd gates [--herd <id>]
  *   rt herd status [--herd <id>]
- *   rt herd resume <id>
+ *   rt herd list [--all]
+ *   rt herd resume [<id>]
  *   rt herd close <job> --herd <id>
  *   rt herd attend <job> --herd <id>
  *   rt herd wrap-up <id> [--close-panes] [--dispose <job>...] [--delete-job-dirs] [--archive-room]
@@ -20,9 +21,9 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import {
   herdStart, herdSpawn, herdAsk, herdMilestone, herdAnswer, herdReport, herdGates,
-  herdStatus, herdResume, herdClose, herdAttend, herdWrapUp, herdStopHidden,
+  herdStatus, herdList, herdResume, herdClose, herdAttend, herdWrapUp, herdStopHidden,
 } from "../packages/rt-client/src/index.ts";
-import type { Commands, HerdStatusData, RtResponse } from "../packages/rt-client/src/index.ts";
+import type { Commands, HerdListRow, HerdStatusData, RtResponse } from "../packages/rt-client/src/index.ts";
 import { resolveRepoArg, currentRepoIdentity } from "../lib/repo-arg.ts";
 
 function fail(msg: string): never {
@@ -128,6 +129,22 @@ export function buildWrapUpPayload(args: string[]): Commands["herd:wrap-up"]["pa
     deleteJobDirs: has(args, "--delete-job-dirs"),
     archiveRoom: has(args, "--archive-room"),
   };
+}
+
+/** A shepherd usually runs one herd, and an id it could have looked up is
+    friction; two or none is genuinely ambiguous and gets the usage instead. */
+export function soleHerdId(herds: Array<{ id: string }>): string | null {
+  return herds.length === 1 ? herds[0]!.id : null;
+}
+
+export function renderHerdRow(h: HerdListRow): string {
+  return `${h.id}  ${h.status}  room ${h.room}  ${h.jobs} jobs`;
+}
+
+async function soleHerd(usage: string): Promise<string> {
+  const id = soleHerdId(unwrap(await herdList({}), "list").herds);
+  if (id) return id;
+  fail(`${usage} (rt herd list shows the herds)`);
 }
 
 async function repoFor(args: string[]): Promise<string> {
@@ -236,8 +253,7 @@ export async function report(args: string[]): Promise<void> {
 
 export async function gates(args: string[]): Promise<void> {
   const json = has(args, "--json");
-  const herd = flagValue(args, "--herd") ?? process.env.HERD_ID;
-  if (!herd) fail("usage: rt herd gates --herd <id>");
+  const herd = flagValue(args, "--herd") ?? process.env.HERD_ID ?? await soleHerd("usage: rt herd gates --herd <id>");
   const data = unwrap(await herdGates({ herd }), "gates");
   if (json) {
     emit(true, data, "");
@@ -266,16 +282,28 @@ export function renderStatus(data: HerdStatusData): string {
 
 export async function status(args: string[]): Promise<void> {
   const json = has(args, "--json");
-  const herd = flagValue(args, "--herd") ?? process.env.HERD_ID;
-  if (!herd) fail("usage: rt herd status --herd <id>");
+  const herd = flagValue(args, "--herd") ?? process.env.HERD_ID ?? await soleHerd("usage: rt herd status --herd <id>");
   const data = unwrap(await herdStatus({ herd }), "status");
   emit(json, data, renderStatus(data));
 }
 
+export async function list(args: string[]): Promise<void> {
+  const json = has(args, "--json");
+  const data = unwrap(await herdList({ all: has(args, "--all") }), "list");
+  if (json) {
+    emit(true, data, "");
+    return;
+  }
+  if (data.herds.length === 0) {
+    console.log("no herds");
+    return;
+  }
+  for (const h of data.herds) console.log(renderHerdRow(h));
+}
+
 export async function resume(args: string[]): Promise<void> {
   const json = has(args, "--json");
-  const herd = positional(args);
-  if (!herd) fail("usage: rt herd resume <id>");
+  const herd = positional(args) ?? process.env.HERD_ID ?? await soleHerd("usage: rt herd resume <id>");
   const session = flagValue(args, "--session") ?? process.env.CLAUDE_CODE_SESSION_ID;
   if (!session) fail("run inside a Claude Code session (or pass --session <id>)");
   const data = unwrap(await herdResume({ herd, session }), "resume");
@@ -283,7 +311,7 @@ export async function resume(args: string[]): Promise<void> {
     emit(true, data, "");
     return;
   }
-  console.log(`resumed ${herd}: subscription ${data.subscription}, ${data.gates.length} open gate(s), ${data.unread} unread`);
+  console.log(`resumed ${herd} as ${data.handle}: subscription ${data.subscription}, ${data.gates.length} open gate(s), ${data.unread} unread`);
   for (const g of data.gates) console.log(`  ${g.id}  ${g.kind}  ${g.subject}`);
 }
 
