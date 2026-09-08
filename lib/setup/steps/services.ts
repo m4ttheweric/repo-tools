@@ -5,7 +5,9 @@
  * (`ctx.need`) and wait for its answer.
  */
 
-import { appBundlePath, bundledToolPath } from "../../deps/resolve.ts";
+import { join } from "path";
+import { HELPERS_DIR } from "../../bundle-layout.ts";
+import { appBundlePath } from "../../deps/resolve.ts";
 import { currentMode } from "../../dev-mode.ts";
 import { markDaemonInstalled } from "../../daemon-config.ts";
 import type { ApplyContext } from "../apply.ts";
@@ -52,9 +54,12 @@ async function proxyInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
 
   // The app answers this need by running its bundled privileged helper; a
   // bundle without one can only refuse, which used to end the whole Install
-  // here. Until the helper ships (deps.lock: pending), apps serve on ports
-  // instead of .localhost/.mattstack domains — a degradation, not a stop.
-  if (appBundlePath(ctx.p) && !bundledToolPath(ctx.p, "mattstack-proxy-install")) {
+  // here. deps.lock no longer carries a "mattstack-proxy-install" row (the
+  // helper ships as its own file, not a deps.lock-tracked tool), so the gate
+  // checks the file directly instead of going through bundledToolPath, which
+  // would now always report a miss.
+  const bundleRoot = appBundlePath(ctx.p);
+  if (bundleRoot && !ctx.p.exists(join(bundleRoot, HELPERS_DIR, "mattstack-proxy-install"))) {
     return { state: "skipped", detail: "local proxy installer not bundled in this build — .localhost and .mattstack domains arrive with it; apps serve on their ports meanwhile" };
   }
 

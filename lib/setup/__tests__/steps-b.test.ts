@@ -266,6 +266,24 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(outcome.detail).toContain("not bundled");
     });
 
+    // The gate now checks the helper's own existence in the bundle directly
+    // (deps.lock no longer carries a "mattstack-proxy-install" row once the
+    // helper ships, so bundledToolPath has nothing left to resolve), so a
+    // bundle that genuinely contains the helper file must fall through to
+    // ctx.need rather than reading the deps.lock miss as "not bundled".
+    test("helper present first-party -> the need runs (no skip)", async () => {
+      const p = bundledProbes({ overrides: { files: { [join(appRoot, "Contents/Helpers/mattstack-proxy-install")]: "bin" } } });
+      const { ctx } = makeCtx(p, { need: needViaTray({ "GET /setup/need/proxy.install": () => ({ status: 200, json: { state: "done", detail: "installed" } }) }) });
+      expect(await proxyInstallStep.run(ctx)).toEqual({ state: "done", detail: "installed" });
+    });
+
+    test("bundle without the helper file -> skipped with reason", async () => {
+      const p = bundledProbes();
+      const { ctx } = makeCtx(p);
+      const out = await proxyInstallStep.run(ctx);
+      expect(out.state).toBe("skipped");
+    });
+
     test("no-app + nonInteractive -> skipped; interactive -> failed with remedy", async () => {
       const { ctx: nonInteractive } = makeCtx(fakeProbes({ home }), { nonInteractive: true, need: async () => "no-app" });
       expect(await proxyInstallStep.run(nonInteractive)).toEqual({

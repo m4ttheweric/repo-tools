@@ -16,7 +16,8 @@
  * never collide with this file's own built-in row ids.
  */
 
-import { resolveTool } from "../../deps/resolve.ts";
+import { readDepsLock } from "../../bundle-layout.ts";
+import { appBundlePath, resolveTool } from "../../deps/resolve.ts";
 import { detectEditors } from "../../editors.ts";
 import { BASE_PLUGINS } from "../base-plugins.ts";
 import { row, type Action, type Row } from "../contract.ts";
@@ -25,6 +26,7 @@ import { callableBySkills, claudeJsonPath, linearServerNames, nameTaken, readCla
 import type { ExecResult, Probes } from "../probes.ts";
 import type { PackRequirements, ToolRequirement } from "../requirements.ts";
 import { atLeast } from "../semver.ts";
+import { PORTLESS_LAUNCHD_PLIST } from "../steps/services.ts";
 import { isValidBrewFormula } from "../tools-install.ts";
 import type { SecretPresence } from "./accounts.ts";
 
@@ -559,6 +561,44 @@ function pluginsRow(pluginList: ExecResult): Row {
   return row({ ...base, status: "ready", detail: `${BASE_PLUGINS.length} plugins installed` });
 }
 
+// ─── tool.proxy ─────────────────────────────────────────────────────────────
+
+/** Written by the privileged proxy-install helper (Contents/Helpers/mattstack-proxy-install) at install time: the portless version actually running, compared against what the current bundle pins. */
+const PROXY_VERSION_PATH = "/Library/Application Support/mattstack/proxy/VERSION";
+
+function reRunProxyInstallAction(label: string): Action {
+  return { type: "run", label, verb: ["setup", "apply", "--from", "proxy.install"] };
+}
+
+/** The portless version this bundle's deps.lock pins, or null when there's no resolvable bundle or no portless row. deps.lock is read off real disk (see bundle-layout.ts), not through the Probes seam. */
+function pinnedPortlessVersion(p: Probes): string | null {
+  const root = appBundlePath(p);
+  if (!root) return null;
+  return readDepsLock(root)?.tools.find((t) => t.name === "portless")?.version ?? null;
+}
+
+function proxyRow(p: Probes): Row {
+  const base = {
+    id: "tool.proxy",
+    kind: "tool" as const,
+    title: "Local proxy",
+    why: "Serves apps on .localhost/.mattstack domains instead of raw ports.",
+    required: false,
+    optionalNote: "Works without this; apps serve on their ports meanwhile.",
+    recheck: "on-activate" as const,
+  };
+  if (!p.exists(PORTLESS_LAUNCHD_PLIST)) return row({ ...base, status: "missing", detail: "not installed", action: reRunProxyInstallAction("Install proxy") });
+
+  const deployed = p.readFile(PROXY_VERSION_PATH);
+  if (deployed === null) return row({ ...base, status: "error", detail: `${PROXY_VERSION_PATH} could not be read` });
+  const deployedVersion = deployed.trim();
+
+  const pinned = pinnedPortlessVersion(p);
+  if (!pinned) return row({ ...base, status: "error", detail: "bundle's deps.lock has no pinned portless version" });
+  if (deployedVersion === pinned) return row({ ...base, status: "ready", detail: `portless ${deployedVersion}` });
+  return row({ ...base, status: "needs-you", detail: `proxy runs portless ${deployedVersion}, bundle pins ${pinned}`, action: reRunProxyInstallAction("Update proxy") });
+}
+
 // ─── tool.linear-mcp ────────────────────────────────────────────────────────
 
 const CONNECT_LINEAR_ACTION: Action = { type: "connect", label: "Connect Linear", integration: "linear", fields: integrationDef("linear").fields };
@@ -623,6 +663,7 @@ export async function toolRows(p: Probes, reqs: PackRequirements[], opts: { hasB
   if (chromeSignin) rows.push(chromeSignin);
 
   rows.push(await missionControlRow(p));
+  rows.push(proxyRow(p));
 
   for (const tool of dedupeTeamTools(reqs)) rows.push(await teamToolRow(p, tool, opts.hasBrew));
 

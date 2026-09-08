@@ -1,6 +1,9 @@
-import { describe, test, expect } from "bun:test";
-import { readFileSync } from "fs";
+import { afterEach, beforeEach, describe, test, expect } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
+import { __test__ as bundleLayoutTest } from "../../bundle-layout.ts";
+import { setSetting } from "../../settings/write.ts";
 import { toolRows, extractVersion } from "../validators/tools.ts";
 import type { ToolsSeams } from "../validators/tools.ts";
 import { fakeProbes, ok, missing } from "./fakes.ts";
@@ -11,6 +14,7 @@ import type { DetectedEditor } from "../../editors.ts";
 import type { ExecResult } from "../probes.ts";
 import type { Row } from "../contract.ts";
 import type { SecretPresence } from "../validators/accounts.ts";
+import { PORTLESS_LAUNCHD_PLIST } from "../steps/services.ts";
 
 // ─── ground truth, shaped from the real CLIs captured on 2026-09-03 ───
 // The fixtures under ./fixtures/ preserve the captured shape exactly (every field,
@@ -1052,5 +1056,114 @@ describe("toolRows: tool.linear-mcp", () => {
       const r = await rowFor(conf({}), secrets);
       expect([r.required, r.optionalNote]).toEqual([false, "Installed by Install (linear.mcp)."]);
     }
+  });
+});
+
+// ─── toolRows: tool.proxy ────────────────────────────────────────────────────
+// pinnedPortlessVersion reads deps.lock off REAL disk (bundle-layout.ts's
+// readDepsLock, not the Probes seam; same rule steps-b.test.ts documents for
+// appBundlePath/bundledToolPath), so a "bundle pins version X" case needs a
+// real temp bundle root, not just fakeProbes state.
+
+describe("toolRows: tool.proxy", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+  let appRoot: string;
+
+  beforeEach(() => {
+    bundleLayoutTest.resetBundleLayoutMemo();
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-tool-proxy-home-")));
+    process.env.HOME = home;
+    appRoot = join(realpathSync(mkdtempSync(join(tmpdir(), "rt-tool-proxy-app-"))), "mattstack.app");
+    mkdirSync(join(appRoot, "Contents", "Resources"), { recursive: true });
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+    bundleLayoutTest.resetBundleLayoutMemo();
+  });
+
+  /** Writes a real deps.lock pinning portless at `version` to the real bundle fixture. */
+  function writePinnedPortless(version: string): void {
+    writeFileSync(
+      join(appRoot, "Contents", "Resources", "deps.lock"),
+      JSON.stringify({
+        schema: 1,
+        arch: "arm64",
+        tools: [
+          {
+            name: "portless",
+            version,
+            license: "MIT",
+            url: "https://x/portless.tgz",
+            sha256: "a".repeat(64),
+            archive: "raw",
+            extract: "",
+            bundlePath: "Contents/Helpers/portless",
+            exec: ["Contents/Helpers/portless"],
+            exposeByDefault: true,
+            entitlements: "none",
+            status: "bundled",
+            kind: "helper",
+          },
+        ],
+      }),
+    );
+  }
+
+  /** Points `mattstack.appPath` at the real fixture bundle and mirrors it into fakeProbes' `dirs` so appBundlePath's own `p.exists(appRoot)` check agrees. */
+  function bundledProxyProbes(overrides: Partial<Parameters<typeof fakeProbes>[0]> = {}): ReturnType<typeof fakeProbes> {
+    setSetting("mattstack.appPath", appRoot, "machine");
+    return fakeProbes({ home, env: { PATH: "" }, ...overrides, dirs: { [appRoot]: [], ...overrides.dirs } });
+  }
+
+  test("plist absent -> missing, with the install action", async () => {
+    writePinnedPortless("0.15.6");
+    const p = bundledProxyProbes();
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("missing");
+    expect(r.required).toBe(false);
+    expect(r.action).toEqual({ type: "run", label: "Install proxy", verb: ["setup", "apply", "--from", "proxy.install"] });
+  });
+
+  test("plist present, VERSION == pinned -> ready", async () => {
+    writePinnedPortless("0.15.6");
+    const p = bundledProxyProbes({
+      files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", "/Library/Application Support/mattstack/proxy/VERSION": "0.15.6\n" },
+    });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("ready");
+    expect(r.detail).toBe("portless 0.15.6");
+  });
+
+  test("plist present, VERSION != pinned -> needs-you, with the update action re-running proxy.install", async () => {
+    writePinnedPortless("0.16.0");
+    const p = bundledProxyProbes({
+      files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", "/Library/Application Support/mattstack/proxy/VERSION": "0.15.6\n" },
+    });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toBe("proxy runs portless 0.15.6, bundle pins 0.16.0");
+    expect(r.action).toEqual({ type: "run", label: "Update proxy", verb: ["setup", "apply", "--from", "proxy.install"] });
+  });
+
+  test("plist present, VERSION unreadable -> error", async () => {
+    writePinnedPortless("0.15.6");
+    const versionPath = "/Library/Application Support/mattstack/proxy/VERSION";
+    const p = bundledProxyProbes({
+      files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", [versionPath]: "0.15.6" },
+      unreadable: [versionPath],
+    });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain(versionPath);
+  });
+
+  test("never required, so it can neither block Install nor fail verify", async () => {
+    writePinnedPortless("0.15.6");
+    const p = bundledProxyProbes();
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.required).toBe(false);
   });
 });
