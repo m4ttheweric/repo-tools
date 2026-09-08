@@ -93,5 +93,39 @@ export async function checkStackMembership(opts: {
       },
     };
   }
+  const forge = await opts.runners.forgeOpenMrs(opts.cwd);
+  if (!forge.ok) {
+    return {
+      verdict: "unverified",
+      refusal: {
+        kind: "stack-check-unavailable",
+        branch: opts.branch,
+        source: "forge",
+        stack: null,
+        mrs: null,
+        tool: "",
+        hint: `could not list open MRs to rule out a stack: ${forge.error}`,
+      },
+    };
+  }
+  const own = forge.mrs.filter((mr) => mr.source === opts.branch && mr.target !== opts.defaultBranch);
+  const dependents = forge.mrs.filter((mr) => mr.target === opts.branch);
+  if (own.length > 0 || dependents.length > 0) {
+    const detail = own.length > 0
+      ? `its open MR !${own[0]!.iid} targets ${own[0]!.target}`
+      : `open MR${dependents.length === 1 ? "" : "s"} ${dependents.map((mr) => `!${mr.iid} (${mr.source})`).join(", ")} target it`;
+    return {
+      verdict: "refuse",
+      refusal: {
+        kind: "stack-refusal",
+        branch: opts.branch,
+        source: "forge",
+        stack: null,
+        mrs: [...own, ...dependents],
+        tool: "gitq track",
+        hint: `${opts.branch} is part of an untracked stack: ${detail}. Track it with gitq track, then run gitq sync`,
+      },
+    };
+  }
   return { verdict: "clear" };
 }
