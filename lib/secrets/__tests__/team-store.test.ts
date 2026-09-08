@@ -21,8 +21,8 @@ import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
 import { teamsDir } from "../../rt-paths.ts";
 import { join } from "path";
 import { secretsList } from "../../../commands/secrets.ts";
-import { createRealProbes } from "../../setup/probes.ts";
-import { teamLocalPath, writeTeamLocal } from "../../team/team-local.ts";
+import { fakeProbes } from "../../setup/__tests__/fakes.ts";
+import { teamLocalPath } from "../../team/team-local.ts";
 
 function teamCloneRootFor(slug: string): string {
   return join(teamsDir(), slug);
@@ -285,18 +285,16 @@ describe("writeTeamSecret", () => {
   });
 
   test("writeTeamSecret refuses on a joined clone", async () => {
-    // A slug this suite never uses elsewhere, so the real-HOME record this test
-    // plants can't leak the "joined" state into any other test in this file.
+    // "joined-clone-guard-team" (not "acme") so the slug's own text can never
+    // satisfy the /pull-only/ assertion by accident.
     const slug = "joined-clone-guard-team";
     const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-X"), execSeam: new FakeTeamExecSeam() };
-    const probes = createRealProbes();
-    writeTeamLocal(probes, slug, { createdByRt: false, joinedByRt: true, rtMayManageMembership: false });
+    const probes = fakeProbes({
+      home: "/home/x",
+      files: { [teamLocalPath("/home/x", slug)]: JSON.stringify({ createdByRt: false, joinedByRt: true, rtMayManageMembership: false }) },
+    });
 
-    try {
-      await expect(writeTeamSecret(slug, "rt", "k", "v", seams)).rejects.toThrow(/pull-only/);
-    } finally {
-      probes.removeFile(teamLocalPath(probes.home, slug));
-    }
+    await expect(writeTeamSecret(slug, "rt", "k", "v", seams, probes)).rejects.toThrow(/pull-only/);
   });
 
   test("no age key on this machine -> NoAgeKeyError (the interim seam's staging-fallback trigger)", async () => {
