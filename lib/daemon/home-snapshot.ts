@@ -62,7 +62,8 @@ export type SkipReason =
   | "index-locked"
   | "add-failed"
   | "no-changes"
-  | "conflict";
+  | "conflict"
+  | "pull-only";
 
 export interface SnapshotResult {
   committed: boolean;
@@ -98,6 +99,8 @@ export interface SnapshotStatus {
   lastPullSkipped: string | null;
   /** A rebase that stopped mid-way. Cleared once the clone is no longer ahead of origin (a hand rebase then `rt team publish`, or a reset to origin); pushes and the applying of pulls stay suspended until then, while the fetch itself keeps running, since that is what observes the clearing condition. */
   conflicted: { at: number; detail: string } | null;
+  /** True when this clone only fetches and fast-forwards. */
+  pullOnly: boolean;
   claimedZones: string[];
   firstSeenDirty: Record<string, number>;
   /** Set (and cleared) each time status() re-reads the owners file — surfaces a fail-closed readOwners throw without hiding it behind a stale cache. */
@@ -151,6 +154,13 @@ export interface SnapshotSpec {
   scope?: (relPath: string) => boolean;
   /** Fetch + rebase policy; absent = never pull (the home repo is single-writer). */
   pull?: { intervalSec: number };
+  /**
+   * This machine may not write the remote, so the engine only fetches and
+   * fast-forwards: no commit, no push. A clean tree is what keeps
+   * fast-forward always sufficient, so a member can never reach the rebase
+   * conflict path at all.
+   */
+  pullOnly?: boolean;
   /** The forge token rt holds for origin; absent = git's own credentials. */
   tokenFor?: () => Promise<string | null>;
   /** The retired pre-kv state file to import once; home only. */
@@ -847,6 +857,10 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       deps.log.debug(`${label}: disabled via ${settingsKey}.enabled=false; skipping a due push`);
       return;
     }
+    // Backstop. A pull-only spec never commits, so nothing should ever arm a
+    // push, but the timer is armed from more than one place and this costs
+    // nothing.
+    if (spec.pullOnly) return;
     // Local-only (rt home init with no remote attached) is a permanent,
     // supported state — not a push failure: no exec, no retry, no broadcast.
     // Clearing pushPending/lastPushError here matters for a remote that
@@ -978,6 +992,9 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
     // deeper: nothing more lands until the marker clears (see doPull).
     if (conflicted) {
       return { committed: false, sha: null, paths: [], reason, skipped: "conflict" };
+    }
+    if (spec.pullOnly) {
+      return { committed: false, sha: null, paths: [], reason, skipped: "pull-only" };
     }
 
     let owners: Owners;
@@ -1216,6 +1233,7 @@ export function startSnapshot(spec: SnapshotSpec, rawDeps: SnapshotDeps): Snapsh
       lastPullError,
       lastPullSkipped,
       conflicted,
+      pullOnly: spec.pullOnly === true,
       claimedZones,
       firstSeenDirty: { ...firstSeenDirty },
       ownersError,

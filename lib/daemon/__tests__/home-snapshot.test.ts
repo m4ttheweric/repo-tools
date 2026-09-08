@@ -2592,4 +2592,57 @@ describe("startSnapshot: pull", () => {
     expect(execCalls.some((c) => gitVerb(c) === "fetch")).toBe(false);
     handle.stop();
   });
+
+  test("a pull-only spec fetches and fast-forwards but never commits or pushes", async () => {
+    // Dirty for the same reason as the control test below: a clean tree would
+    // not commit anyway.
+    const dirty = " M mattstack/settings.team.jsonc\0";
+    const { fn, calls } = makeFakeExec([...pullResponders({ behind: 1, ahead: 0 }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot({ ...teamSpecFor(), pullOnly: true }, specDeps);
+    await handle.ready;
+
+    await handle.pullNow();
+    await handle.runNow("watch");
+
+    expect(calls.some((c) => gitVerb(c) === "fetch")).toBe(true);
+    expect(calls.some((c) => gitVerb(c) === "merge")).toBe(true);
+    expect(calls.some((c) => gitVerb(c) === "commit")).toBe(false);
+    expect(calls.some((c) => gitVerb(c) === "push")).toBe(false);
+    expect(handle.status().pullOnly).toBe(true);
+    handle.stop();
+  });
+
+  test("a pull-only spec reports its skip reason rather than looking idle", async () => {
+    const dirty = " M mattstack/settings.team.jsonc\0";
+    const { fn } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot({ ...teamSpecFor(), pullOnly: true }, specDeps);
+    await handle.ready;
+
+    const run = await handle.runNow("watch");
+
+    expect(run.skipped).toBe("pull-only");
+    handle.stop();
+  });
+
+  test("a spec without pullOnly is unchanged and still commits and pushes", async () => {
+    // The fixture must report DIRTY in-scope paths from git status, or this
+    // passes vacuously: a clean tree does not commit either, so it would prove
+    // nothing about pullOnly.
+    const dirty = " M mattstack/settings.team.jsonc\0";
+    const { fn, calls } = makeFakeExec([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps } = baseDeps({ exec: fn });
+    const { repoDir: _r, ...specDeps } = deps;
+    const handle = startSnapshot(teamSpecFor(), specDeps);
+    await handle.ready;
+
+    await handle.runNow("watch");
+
+    expect(calls.some((c) => gitVerb(c) === "commit")).toBe(true);
+    expect(handle.status().pullOnly).toBe(false);
+    handle.stop();
+  });
 });
