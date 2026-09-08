@@ -1127,14 +1127,48 @@ describe("toolRows: tool.proxy", () => {
     expect(r.action).toEqual({ type: "run", label: "Install proxy", verb: ["setup", "apply", "--from", "proxy.install"] });
   });
 
-  test("plist present, VERSION == pinned -> ready", async () => {
+  /** Installed at the pinned version, with the CA portless mints at daemon start. `trusted` drives the `security verify-cert` probe the row runs over it. */
+  function installedProxyProbes(trusted: boolean): ReturnType<typeof fakeProbes> {
+    return bundledProxyProbes({
+      files: {
+        [PORTLESS_LAUNCHD_PLIST]: "<plist/>",
+        "/Library/Application Support/mattstack/proxy/VERSION": "0.15.6\n",
+        [join(home, ".portless", "ca.pem")]: "-----BEGIN CERTIFICATE-----",
+      },
+      exec: async (argv) => ({ code: argv[0] === "security" && !trusted ? 1 : 0, stdout: "", stderr: "" }),
+    });
+  }
+
+  test("plist present, VERSION == pinned, CA trusted -> ready", async () => {
+    writePinnedPortless("0.15.6");
+    const p = installedProxyProbes(true);
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("ready");
+    expect(r.detail).toBe("portless 0.15.6");
+    expect(p.calls.exec).toContainEqual(["security", "verify-cert", "-c", join(home, ".portless", "ca.pem"), "-L", "-p", "ssl"]);
+  });
+
+  // macOS will not let any process write CA trust without its own dialog, so a
+  // user who declined it lands here: the proxy runs, browsers warn, and the row
+  // is the only place that says so.
+  test("plist present, VERSION == pinned, CA untrusted -> needs-you, with the trust action", async () => {
+    writePinnedPortless("0.15.6");
+    const r = await pickRow(toolRows(installedProxyProbes(false), [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toBe("Browsers will warn until the proxy certificate is trusted");
+    expect(r.action).toEqual({ type: "run", label: "Trust certificate", verb: ["setup", "apply", "--from", "proxy.install"] });
+  });
+
+  // No CA at all is the same story for the user (nothing browsers trust), and
+  // the same remedy: the helper's trust verb reports what it found.
+  test("plist present, VERSION == pinned, no CA on disk -> needs-you", async () => {
     writePinnedPortless("0.15.6");
     const p = bundledProxyProbes({
       files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", "/Library/Application Support/mattstack/proxy/VERSION": "0.15.6\n" },
     });
     const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
-    expect(r.status).toBe("ready");
-    expect(r.detail).toBe("portless 0.15.6");
+    expect(r.status).toBe("needs-you");
+    expect(p.calls.exec).not.toContainEqual(expect.arrayContaining(["verify-cert"]));
   });
 
   test("plist present, VERSION != pinned -> needs-you, with the update action re-running proxy.install", async () => {

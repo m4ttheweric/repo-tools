@@ -348,6 +348,61 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(needCalled).toBe(false);
     });
 
+    // macOS refuses to cache the trust-settings authorization, so an install
+    // whose second dialog was declined leaves a working proxy with an
+    // untrusted CA. Reinstalling it would fix nothing; trusting is its own op.
+    test("installed but the CA is untrusted: raises the proxy-trust op, not proxy-install", async () => {
+      const ca = join(home, ".portless", "ca.pem");
+      const p = fakeProbes({
+        home,
+        files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", [ca]: "-----BEGIN CERTIFICATE-----" },
+        exec: async (argv) => ({ code: argv[0] === "security" ? 1 : 0, stdout: "", stderr: "" }),
+      });
+      let captured: unknown;
+      const { ctx } = makeCtx(p, {
+        need: async (_id, request) => {
+          captured = request;
+          return { ok: true, detail: "trust: ok\nMATTSTACK_TRUST=ok" };
+        },
+      });
+
+      expect((await proxyInstallStep.run(ctx)).state).toBe("done");
+      expect(captured).toEqual({ type: "app-privileged", op: "proxy-trust" });
+      expect(p.calls.exec).toContainEqual(["security", "verify-cert", "-c", ca, "-L", "-p", "ssl"]);
+    });
+
+    test("installed and the CA is already trusted: done without ever calling ctx.need", async () => {
+      const p = fakeProbes({
+        home,
+        files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", [join(home, ".portless", "ca.pem")]: "-----BEGIN CERTIFICATE-----" },
+        exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+      });
+      let needCalled = false;
+      const { ctx } = makeCtx(p, { need: async () => { needCalled = true; return { ok: true, detail: "" }; } });
+
+      expect(await proxyInstallStep.run(ctx)).toEqual({ state: "done", detail: "already installed" });
+      expect(needCalled).toBe(false);
+    });
+
+    // A declined certificate is still a successful install: the step says what
+    // happened and stays done, and tool.proxy carries the remedy.
+    test("a declined certificate keeps the step done and names the outcome", async () => {
+      const { ctx } = makeCtx(fakeProbes({ home }), {
+        need: async () => ({ ok: true, detail: "copy: ok\nbootstrap: ok\ntrust: declined cancelled\nMATTSTACK_TRUST=declined" }),
+      });
+      const outcome = await proxyInstallStep.run(ctx);
+      expect(outcome.state).toBe("done");
+      expect(outcome.detail).toContain("certificate not trusted (declined)");
+      expect(outcome.detail).toContain("bootstrap: ok");
+    });
+
+    test("a trusted install reports the helper's own output unchanged", async () => {
+      const { ctx } = makeCtx(fakeProbes({ home }), {
+        need: async () => ({ ok: true, detail: "copy: ok\nMATTSTACK_TRUST=ok" }),
+      });
+      expect(await proxyInstallStep.run(ctx)).toEqual({ state: "done", detail: "copy: ok\nMATTSTACK_TRUST=ok" });
+    });
+
     test("the portless LaunchDaemon is absent: falls through to ctx.need as normal", async () => {
       const p = fakeProbes({ home });
       let requested = false;

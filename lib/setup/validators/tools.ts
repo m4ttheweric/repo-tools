@@ -26,7 +26,7 @@ import { callableBySkills, claudeJsonPath, linearServerNames, nameTaken, readCla
 import type { ExecResult, Probes } from "../probes.ts";
 import type { PackRequirements, ToolRequirement } from "../requirements.ts";
 import { atLeast } from "../semver.ts";
-import { PORTLESS_LAUNCHD_PLIST } from "../steps/services.ts";
+import { PORTLESS_LAUNCHD_PLIST, proxyCaIsTrusted } from "../steps/services.ts";
 import { isValidBrewFormula } from "../tools-install.ts";
 import type { SecretPresence } from "./accounts.ts";
 
@@ -566,6 +566,7 @@ function pluginsRow(pluginList: ExecResult): Row {
 /** Written by the privileged proxy-install helper (Contents/Helpers/mattstack-proxy-install) at install time: the portless version actually running, compared against what the current bundle pins. */
 const PROXY_VERSION_PATH = "/Library/Application Support/mattstack/proxy/VERSION";
 
+/** Every remedy this row offers runs the same step, which decides from the machine's own state whether it installs the proxy or only trusts its certificate (lib/setup/steps/services.ts). */
 function reRunProxyInstallAction(label: string): Action {
   return { type: "run", label, verb: ["setup", "apply", "--from", "proxy.install"] };
 }
@@ -577,7 +578,7 @@ function pinnedPortlessVersion(p: Probes): string | null {
   return readDepsLock(root)?.tools.find((t) => t.name === "portless")?.version ?? null;
 }
 
-function proxyRow(p: Probes): Row {
+async function proxyRow(p: Probes): Promise<Row> {
   const base = {
     id: "tool.proxy",
     kind: "tool" as const,
@@ -595,8 +596,18 @@ function proxyRow(p: Probes): Row {
 
   const pinned = pinnedPortlessVersion(p);
   if (!pinned) return row({ ...base, status: "error", detail: "bundle's deps.lock has no pinned portless version" });
-  if (deployedVersion === pinned) return row({ ...base, status: "ready", detail: `portless ${deployedVersion}` });
-  return row({ ...base, status: "needs-you", detail: `proxy runs portless ${deployedVersion}, bundle pins ${pinned}`, action: reRunProxyInstallAction("Update proxy") });
+  if (deployedVersion !== pinned) {
+    return row({ ...base, status: "needs-you", detail: `proxy runs portless ${deployedVersion}, bundle pins ${pinned}`, action: reRunProxyInstallAction("Update proxy") });
+  }
+
+  // The right version, running, but untrusted: macOS gates the trust write
+  // behind its own uncacheable authorization, so an install where the user
+  // declined that second dialog lands here. The proxy serves either way; only
+  // browser trust is missing, which is why this is needs-you and not an error.
+  if (!(await proxyCaIsTrusted(p))) {
+    return row({ ...base, status: "needs-you", detail: "Browsers will warn until the proxy certificate is trusted", action: reRunProxyInstallAction("Trust certificate") });
+  }
+  return row({ ...base, status: "ready", detail: `portless ${deployedVersion}` });
 }
 
 // ─── tool.linear-mcp ────────────────────────────────────────────────────────
@@ -663,7 +674,7 @@ export async function toolRows(p: Probes, reqs: PackRequirements[], opts: { hasB
   if (chromeSignin) rows.push(chromeSignin);
 
   rows.push(await missionControlRow(p));
-  rows.push(proxyRow(p));
+  rows.push(await proxyRow(p));
 
   for (const tool of dedupeTeamTools(reqs)) rows.push(await teamToolRow(p, tool, opts.hasBrew));
 
