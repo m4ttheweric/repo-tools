@@ -49,8 +49,10 @@ Update story).
 
 `rt-tray/proxy-helper/` — a SwiftPM executable target built by
 `rt-tray/build.sh` into `Contents/Helpers/mattstack-proxy-install`, signed
-inside the seal like every helper. Swift, not a Bun compile: a root binary
-must not carry `allow-jit`, and Swift shares the repo's toolchain.
+inside the seal like every helper. Swift, not a Bun compile: the ESCALATED
+INSTALLER binary should not need `allow-jit` (the bundled node the daemon
+runs keeps its `jit` entitlement from deps.lock — do not strip it), and
+Swift shares the repo's toolchain.
 
 Why in-repo rather than a bundle-apps release row: the helper's argv/ops
 contract is consumed by `PrivilegedInstaller.swift` in the same repo, so
@@ -62,7 +64,9 @@ schema), and `check-bundle.sh` gets an explicit first-party assertion — the
 same allowance rt-ui has, plus the runs-from-the-seal smoke the deps.lock
 loop gives fetched helpers.
 
-Ops (argv, no flags, no paths from argv — every path is compiled in):
+Ops (argv; the only flag is an unprivileged `--version`, for
+check-bundle's runs-from-the-seal smoke; no paths from argv — every path is
+compiled in):
 
 - `install` — idempotent, runs as root:
   1. Copy `Contents/Helpers/portless-dist` and the bundled `node` binary
@@ -70,34 +74,57 @@ Ops (argv, no flags, no paths from argv — every path is compiled in):
      proxy/` (root-owned, 755 dirs / 644 files, binaries 755). The
      LaunchDaemon never execs from `/Applications`: a user-writable bundle
      path executed as root is an escalation. The copy source is the
-     helper's own bundle root (derived from its executable path), and the
-     copy VERIFIES the expected layout before replacing the previous root
-     copy (stage + rename, never in-place).
+     helper's own bundle root (derived from its executable path), and
+     before anything is staged the helper verifies the SOURCE CONTENT, not
+     just layout: the portless-dist tree and node binary must match
+     sha256s compiled into the helper at build time from deps.lock — a
+     swapped tree in the user-writable bundle must fail the op, or root
+     runs attacker code forever under KeepAlive. The target chain is
+     guarded too: `/Library/Application Support` is admin-group writable,
+     so the helper refuses a pre-existing `mattstack/` path segment that
+     is non-root-owned or a symlink before creating/using it. Then stage +
+     rename (staging sibling to the target, same filesystem), never
+     in-place.
   2. Write `/Library/LaunchDaemons/sh.portless.proxy.plist`: label
      `sh.portless.proxy`, program the root-copied node + portless
      entrypoint, port 443, `KeepAlive`, `RunAtLoad`, state under the
-     invoking user's `~/.portless` (`UserName` stays root for 443;
-     portless's state dir is passed explicitly — the contract keeps
-     `~/.portless` as the state home).
+     invoking user's `~/.portless` (`UserName` stays root for 443; the
+     state dir is passed via `PORTLESS_STATE_DIR` in the plist
+     environment — verified supported by portless's cli — pointing at the
+     invoking user's `~/.portless` per the deck-lane contract; the trust
+     run gets the same variable).
   3. Trust the portless CA: run the root-copied portless's own trust
      routine (`portless trust`), which installs the local CA into the
      system keychain so `https://<app>.mattstack` is green.
-  4. Write `/etc/sudoers.d/mattstack-portless` with the NOPASSWD rule for
-     the deck-reload kickstart (`launchctl kickstart -k
-     system/sh.portless.proxy`), `visudo -c`-validated before install;
-     a failed validation removes the candidate file and fails the op.
+  4. Write `/etc/sudoers.d/mattstack-portless` granting exactly the
+     invoking user (the console user who ran Install, resolved by the
+     helper from the authorization context, never `%admin`) NOPASSWD for
+     the one command `launchctl kickstart -k system/sh.portless.proxy`;
+     `visudo -c`-validated via a sibling temp file on the same filesystem;
+     a failed validation removes the candidate and fails the op.
   5. `launchctl bootstrap system` the plist (bootout first when present —
      re-install is the update path).
-  Output: one line per sub-step to stdout; non-zero exit + stderr detail on
-  the first failure. The app relays stdout/stderr into `NeedResult` today.
+  Output contract (dictated by the escalator, PrivilegedInstaller.swift
+  93-106): `AuthorizationExecuteWithPrivileges` pipes ONLY the child's
+  stdout and recovers no real exit code — the helper must end every run
+  with a `MATTSTACK_EXIT=<n>` trailer on stdout, and a missing trailer
+  parses as success. So: one line per sub-step to stdout, failure detail to
+  stdout (there is no stderr channel), and the trailer is written on every
+  path the helper can catch. The app relays that stdout into `NeedResult`.
 - `remove` — bootout + delete the plist, the sudoers file, the CA trust,
   and the root copy. Wired into `rt uninstall` (installer ruling 14) and
   the app's existing `proxyRemove()`.
 
 ### 3. Wiring
 
-- `proxy.install` runs the need instead of skipping; the skip-with-reason
-  path stays for the genuinely-not-bundled case (old bundles).
+- `proxy.install` runs the need instead of skipping. The skip gate at
+  lib/setup/steps/services.ts:57 resolves today through `bundledToolPath`,
+  which reads the bundle's deps.lock and returns null without a
+  `status: "bundled"` row — with the row removed it would skip forever. The
+  gate is re-pointed at a direct first-party existence check of
+  `Contents/Helpers/mattstack-proxy-install` under the resolved bundle
+  (rt-ui-style resolution), and the skip-with-reason path remains for
+  bundles where that file genuinely is absent (old installs).
 - The `proxy.install` validator compares the root copy's portless version
   (`/Library/Application Support/mattstack/proxy/VERSION`, written by the
   helper at install) against the bundle's pinned version: match = ready,
