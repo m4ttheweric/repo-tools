@@ -62,8 +62,9 @@ interface GitqStackJson {
 
 function parseGitqStacks(stdout: string): GitqStackJson[] {
   try {
-    const parsed = JSON.parse(stdout) as { stacks?: GitqStackJson[] };
-    return Array.isArray(parsed.stacks) ? parsed.stacks : [];
+    const parsed = JSON.parse(stdout) as { stacks?: Partial<GitqStackJson>[] } | null;
+    if (!Array.isArray(parsed?.stacks)) return [];
+    return parsed.stacks.filter((stack): stack is GitqStackJson => Array.isArray(stack?.nodes));
   } catch {
     return [];
   }
@@ -83,10 +84,18 @@ function gitqMembership(stacks: GitqStackJson[], branch: string): StackMembershi
   return null;
 }
 
+function unavailable(branch: string, hint: string): StackVerdict {
+  return {
+    verdict: "unverified",
+    refusal: { kind: "stack-check-unavailable", branch, source: "forge", stack: null, mrs: null, tool: "", hint },
+  };
+}
+
 export async function checkStackMembership(opts: {
   cwd: string;
   branch: string;
-  defaultBranch: string;
+  /** Null when discovery failed; the forge check then cannot classify MR targets and reports unverified. */
+  defaultBranch: string | null;
   runners: StackGuardRunners;
 }): Promise<StackVerdict> {
   const gitqOut = await opts.runners.gitqStacks(opts.cwd);
@@ -102,24 +111,16 @@ export async function checkStackMembership(opts: {
         stack: membership,
         mrs: null,
         tool,
-        hint: `${opts.branch} is a member of stack ${membership.name} (parent ${membership.parent}); rebasing it alone onto ${opts.defaultBranch} would break the stack`,
+        hint: `${opts.branch} is a member of stack ${membership.name} (parent ${membership.parent}); rebasing it alone onto ${opts.defaultBranch ?? membership.root} would break the stack`,
       },
     };
   }
+  if (opts.defaultBranch === null) {
+    return unavailable(opts.branch, "could not determine the default branch (no origin/main or origin/master), so open MRs cannot be classified as stacked");
+  }
   const forge = await opts.runners.forgeOpenMrs(opts.cwd);
   if (!forge.ok) {
-    return {
-      verdict: "unverified",
-      refusal: {
-        kind: "stack-check-unavailable",
-        branch: opts.branch,
-        source: "forge",
-        stack: null,
-        mrs: null,
-        tool: "",
-        hint: `could not list open MRs to rule out a stack: ${forge.error}`,
-      },
-    };
+    return unavailable(opts.branch, `could not list open MRs to rule out a stack: ${forge.error}`);
   }
   const own = forge.mrs.filter((mr) => mr.source === opts.branch && mr.target !== opts.defaultBranch);
   const dependents = forge.mrs.filter((mr) => mr.target === opts.branch);
@@ -145,6 +146,9 @@ export async function checkStackMembership(opts: {
 
 type ForgeListing = { ok: true; mrs: ForgeMr[] } | { ok: false; error: string };
 
+/** A hung gitq or forge CLI must not hold the sync before its first ref move. */
+const CLI_TIMEOUT_MS = 30_000;
+
 function failure(prefix: string, r: { code: number; stdout: string; stderr: string }): ForgeListing {
   const detail = (r.stderr.trim() || r.stdout.trim() || `exit ${r.code}`).split("\n")[0];
   return { ok: false, error: `${prefix}: ${detail}` };
@@ -152,8 +156,9 @@ function failure(prefix: string, r: { code: number; stdout: string; stderr: stri
 
 function parseListing<T>(stdout: string, map: (row: T) => ForgeMr): ForgeListing {
   try {
-    const rows = JSON.parse(stdout) as T[];
-    return { ok: true, mrs: Array.isArray(rows) ? rows.map(map) : [] };
+    const rows = JSON.parse(stdout) as unknown;
+    if (!Array.isArray(rows)) return { ok: false, error: "forge listing was not a JSON array" };
+    return { ok: true, mrs: (rows as T[]).map(map) };
   } catch {
     return { ok: false, error: "forge listing was not JSON" };
   }
@@ -163,13 +168,13 @@ async function listOpenMrs(p: Probes, remote: string): Promise<ForgeListing> {
   const forge = forgeFromRemote(remote);
   if (!forge) return { ok: false, error: `origin ${remote} is not a GitHub or GitLab remote` };
   if (forge.provider === "github") {
-    const r = await p.exec([...forgeArgv(p, "gh"), "pr", "list", "--state", "open", "--limit", "100", "--json", "number,headRefName,baseRefName,url"]);
+    const r = await p.exec([...forgeArgv(p, "gh"), "pr", "list", "--state", "open", "--limit", "100", "--json", "number,headRefName,baseRefName,url"], { timeoutMs: CLI_TIMEOUT_MS });
     if (r.code !== 0) return failure("gh pr list failed", r);
     return parseListing<{ number: number; headRefName: string; baseRefName: string; url: string }>(r.stdout, (row) => ({
       iid: row.number, source: row.headRefName, target: row.baseRefName, url: row.url,
     }));
   }
-  const r = await p.exec([...forgeArgv(p, "glab"), "mr", "list", "--output", "json", "--per-page", "100"], { env: glabEnv(forge.host) });
+  const r = await p.exec([...forgeArgv(p, "glab"), "mr", "list", "--output", "json", "--per-page", "100"], { env: glabEnv(forge.host), timeoutMs: CLI_TIMEOUT_MS });
   if (r.code !== 0) return failure("glab mr list failed", r);
   return parseListing<{ iid: number; source_branch: string; target_branch: string; web_url: string }>(r.stdout, (row) => ({
     iid: row.iid, source: row.source_branch, target: row.target_branch, url: row.web_url,
@@ -185,11 +190,11 @@ export function createStackGuardRunners(p: Probes): StackGuardRunners {
   const listings = new Map<string, Promise<ForgeListing>>();
   return {
     async gitqStacks(cwd) {
-      const r = await p.exec([...(bundledToolExec(p, "gitq") ?? ["gitq"]), "stacks", "--json", "-C", cwd]);
+      const r = await p.exec([...(bundledToolExec(p, "gitq") ?? ["gitq"]), "stacks", "--json", "-C", cwd], { timeoutMs: CLI_TIMEOUT_MS });
       return r.code === 0 ? r.stdout : null;
     },
     async forgeOpenMrs(cwd) {
-      const remote = await p.exec(["git", "remote", "get-url", "origin"], { cwd });
+      const remote = await p.exec(["git", "remote", "get-url", "origin"], { cwd, timeoutMs: CLI_TIMEOUT_MS });
       if (remote.code !== 0) return failure("no origin remote", remote);
       const url = remote.stdout.trim();
       let pending = listings.get(url);

@@ -191,7 +191,7 @@ export async function syncBranch(
   // Stack guard: a stack member rebased alone onto the default branch lands
   // on master and strands its chain, so this runs before the first ref move.
   const stackRunners = opts.stackRunners ?? createStackGuardRunners((await import("../lib/setup/probes.ts")).createRealProbes());
-  const stack = await checkStackMembership({ cwd, branch, defaultBranch: defaultBranchName, runners: stackRunners });
+  const stack = await checkStackMembership({ cwd, branch, defaultBranch: defaultBranch ? defaultBranchName : null, runners: stackRunners });
   syncLog.phase("stack-guard", { verdict: stack.verdict, ...(stack.verdict === "clear" ? {} : { kind: stack.refusal.kind, source: stack.refusal.source }) });
   if (stack.verdict === "refuse" || (stack.verdict === "unverified" && opts.strictStackCheck)) {
     const line = renderStackRefusal(stack.refusal, "human");

@@ -154,6 +154,41 @@ describe("checkStackMembership", () => {
     expect(verdict.refusal.hint).toContain("gh: not logged in");
   });
 
+  test("default branch unknown: unverified, never a refusal built on a guessed master", async () => {
+    const verdict = await checkStackMembership({
+      cwd: "/repo",
+      branch: "feat",
+      defaultBranch: null,
+      runners: runners({
+        forgeOpenMrs: async () => ({ ok: true, mrs: [{ iid: 3, source: "feat", target: "develop", url: "u" }] }),
+      }),
+    });
+
+    expect(verdict.verdict).toBe("unverified");
+    if (verdict.verdict !== "unverified") return;
+    expect(verdict.refusal.kind).toBe("stack-check-unavailable");
+    expect(verdict.refusal.hint).toContain("default branch");
+  });
+
+  test("a gitq stack entry without nodes is skipped, not fatal", async () => {
+    const store = JSON.stringify({
+      stacks: [
+        { stackName: "broken", root: "master" },
+        { stackName: "s1", root: "master", nodes: [{ branch: "feat", parent: "master" }] },
+      ],
+    });
+    const verdict = await checkStackMembership({
+      cwd: "/repo",
+      branch: "feat",
+      defaultBranch: "master",
+      runners: runners({ gitqStacks: async () => store }),
+    });
+
+    expect(verdict.verdict).toBe("refuse");
+    if (verdict.verdict !== "refuse") return;
+    expect(verdict.refusal.stack?.name).toBe("s1");
+  });
+
   test("gitq unavailable and no open MRs involve the branch: clear", async () => {
     const verdict = await checkStackMembership({
       cwd: "/repo",
@@ -229,6 +264,28 @@ describe("createStackGuardRunners", () => {
     const res = await createStackGuardRunners(p).forgeOpenMrs("/wt");
     expect(res.ok).toBe(false);
     expect(p.calls.exec).toHaveLength(1);
+  });
+
+  test("forgeOpenMrs treats a non-array payload as a failure, not an empty listing", async () => {
+    const p = fakeProbes({ exec: scripted(GITHUB, () => ok("null")) });
+    const res = await createStackGuardRunners(p).forgeOpenMrs("/wt");
+    expect(res.ok).toBe(false);
+  });
+
+  test("gitq and forge calls carry a timeout so a hung CLI cannot block the sync", async () => {
+    const timeouts: Record<string, number | undefined> = {};
+    const p = fakeProbes({
+      exec: (argv, opts) => {
+        if (argv[0] === "git") return ok(GITHUB + "\n");
+        timeouts[argv[0]!] = opts?.timeoutMs;
+        return ok(argv[0] === "gitq" ? '{"stacks":[]}' : "[]");
+      },
+    });
+    const r = createStackGuardRunners(p);
+    await r.gitqStacks("/wt");
+    await r.forgeOpenMrs("/wt");
+    expect(timeouts.gitq).toBeGreaterThan(0);
+    expect(timeouts.gh).toBeGreaterThan(0);
   });
 
   test("forgeOpenMrs lists once per remote across worktrees", async () => {
