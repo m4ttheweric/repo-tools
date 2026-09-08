@@ -1848,12 +1848,23 @@ export const TREE: Record<string, CommandNode> = {
         ],
       },
       invite: {
-        description: "Mint an opaque invite code for a handle, and grant them forge read access",
+        description: "Mint an opaque invite code for a handle, granting forge read access where mattstack manages membership",
         module: "./commands/team.ts",
         fn: "teamInvite",
         args: [
           { name: "Handle", flag: "--handle", type: "text", placeholder: "octocat", hint: "The invitee's forge username" },
           { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to invite into; omit when only one is cloned" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      "manage-membership": {
+        description: "Let mattstack add and remove teammates' read access on a team repo it created",
+        module: "./commands/team.ts",
+        fn: "teamManageMembership",
+        omitBehavior: "list",
+        args: [
+          { name: "State", type: "select", optional: true, hint: "Omit to show the current state", options: [{ value: "on", label: "on", hint: "invites grant forge read access" }, { value: "off", label: "off", hint: "invites print manual steps" }] },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team; omit when only one is cloned" },
           SETUP_JSON_ARG,
         ],
       },

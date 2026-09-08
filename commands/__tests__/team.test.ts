@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, test, expect, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { teamCreate, teamInvite, teamPublish, teamPull, teamStatus, type TeamDeps } from "../team.ts";
+import { teamCreate, teamInvite, teamManageMembership, teamPublish, teamPull, teamStatus, type TeamDeps } from "../team.ts";
 import { fakeProbes } from "../../lib/setup/__tests__/fakes.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../lib/home/age-key.ts";
 import type { ExecScript } from "../../lib/setup/__tests__/fakes.ts";
 import type { Probes } from "../../lib/setup/probes.ts";
 import { pasteBlock } from "../../lib/team/invite.ts";
+import { readTeamLocal, writeTeamLocal, type TeamLocalRecord } from "../../lib/team/team-local.ts";
 
 const FAKE_PUBLIC_KEY = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 const FAKE_PRIVATE_KEY = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ";
@@ -287,6 +288,56 @@ describe("teamInvite", () => {
     expect(rest).toContain("forge access is skipped");
     expect(rest).toContain("Ask whoever administers");
     expect(rest).toContain("zaphod");
+  });
+});
+
+describe("teamManageMembership", () => {
+  function manageDeps(record: TeamLocalRecord): TeamDeps & { lines: string[]; exitCodes: number[] } {
+    const deps = baseDeps();
+    writeTeamLocal(deps.probes, "acme", record);
+    return deps;
+  }
+
+  test("bare form reports the state and whether it can be offered at all", async () => {
+    const deps = manageDeps({ createdByRt: true, joinedByRt: false, rtMayManageMembership: false });
+    await teamManageMembership(["--team", "acme", "--json"], {}, deps);
+
+    const parsed = JSON.parse(deps.lines[0]!);
+    expect(parsed.mayManage).toBe(false);
+    expect(parsed.offerable).toBe(true);
+  });
+
+  test("on writes the permission", async () => {
+    const deps = manageDeps({ createdByRt: true, joinedByRt: false, rtMayManageMembership: false });
+    await teamManageMembership(["on", "--team", "acme", "--json"], {}, deps);
+
+    expect(readTeamLocal(deps.probes, "acme").rtMayManageMembership).toBe(true);
+  });
+
+  test("on is refused where rt did not create the repo, and writes nothing", async () => {
+    const deps = manageDeps({ createdByRt: false, joinedByRt: false, rtMayManageMembership: false });
+    const code = await runExpectingProcessExit(() => teamManageMembership(["on", "--team", "acme", "--json"], {}, deps));
+
+    expect(code).toBe(2);
+    expect(JSON.parse(deps.lines[0]!).error.code).toBe("not-rt-created");
+    expect(readTeamLocal(deps.probes, "acme").rtMayManageMembership).toBe(false);
+  });
+
+  test("off clears it", async () => {
+    const deps = manageDeps({ createdByRt: true, joinedByRt: false, rtMayManageMembership: true });
+    await teamManageMembership(["off", "--team", "acme", "--json"], {}, deps);
+
+    expect(readTeamLocal(deps.probes, "acme").rtMayManageMembership).toBe(false);
+  });
+
+  test("an unrecognized state token is a usage error, not silently ignored", async () => {
+    const deps = manageDeps({ createdByRt: true, joinedByRt: false, rtMayManageMembership: false });
+    const code = await runExpectingProcessExit(() => teamManageMembership(["sideways", "--team", "acme", "--json"], {}, deps));
+
+    expect(code).toBe(2);
+    const body = JSON.parse(deps.lines[0]!);
+    expect(body.error.code).toBe("usage");
+    expect(body.error.message).toContain("usage:");
   });
 });
 

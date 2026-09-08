@@ -32,6 +32,7 @@ import { createRealProbes, readStdinJson, type Probes } from "../lib/setup/probe
 import { readTeamSnapshot, stripUserinfo, type SettingsReader } from "../lib/setup/team-settings.ts";
 import { createTeam } from "../lib/team/create.ts";
 import { mintInvite } from "../lib/team/invite.ts";
+import { readTeamLocal, updateTeamLocal } from "../lib/team/team-local.ts";
 import { JoinKeyExchangeError, joinDryRun, joinRedeem, realJoinRedeemSeams, type JoinRedeemSeams, type JoinResult } from "../lib/team/join.ts";
 import { membersRemove, membersSync, teamRemote } from "../lib/team/members.ts";
 import { publishTeam } from "../lib/team/publish.ts";
@@ -240,6 +241,45 @@ export async function teamInvite(args: string[], _ctx: CommandContext = {}, deps
     }
   } catch (err) {
     if (err instanceof UserActionableError) exitUserError(err, json, "team invite", deps.print);
+    throw err;
+  }
+}
+
+/**
+ * The permission is machine-local and never synced, so this is the only
+ * non-interactive door to it. `on` is refused rather than ignored where rt did
+ * not create the repo: rt does not administer a repo it was pointed at.
+ */
+export async function teamManageMembership(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
+  const json = args.includes("--json");
+  const state = positional(args, ["--team"])[0];
+  if (state !== undefined && state !== "on" && state !== "off") {
+    usageError(deps, json, "team manage-membership", "rt team manage-membership [on|off] [--team <slug>] [--json]");
+  }
+
+  try {
+    const slug = resolveTeamSlug(args);
+    const before = readTeamLocal(deps.probes, slug);
+    if (state === "on" && !before.createdByRt) {
+      throw new UserActionableError(
+        "not-rt-created",
+        `mattstack did not create the repo behind "${slug}", so it will not administer membership there. Whoever administers that repo grants access.`,
+      );
+    }
+
+    const record = state === undefined ? before : updateTeamLocal(deps.probes, slug, { rtMayManageMembership: state === "on" });
+
+    if (json) {
+      deps.print(JSON.stringify(envelope({ slug, mayManage: record.rtMayManageMembership, offerable: record.createdByRt })));
+      return;
+    }
+    deps.print(
+      record.rtMayManageMembership
+        ? `rt team manage-membership: on for "${slug}" (invites grant forge read access)`
+        : `rt team manage-membership: off for "${slug}"${record.createdByRt ? " (run `rt team manage-membership on` to let invites grant read access)" : " (mattstack did not create this repo, so it cannot be turned on)"}`,
+    );
+  } catch (err) {
+    if (err instanceof UserActionableError) exitUserError(err, json, "team manage-membership", deps.print);
     throw err;
   }
 }
