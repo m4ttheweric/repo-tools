@@ -341,3 +341,38 @@ describe("gate-push onClosed (supersede/close, W4 final-review M4)", () => {
     expect(events.length).toBe(0);
   });
 });
+
+describe("retryDeadPanes", () => {
+  test("re-pushes dead-pane rows, marks delivered on success, gives up after the cap", async () => {
+    const store = freshStore();
+    let ok = false;
+    const delivered: string[] = [];
+    const push = createGatePush({
+      store,
+      deliver: async (_s, body) => { delivered.push(body); return ok ? { ok: true } : { ok: false, error: "dead" }; },
+      resolveSession: (id) => ({ socketPath: id }),
+      log,
+      maxPaneRetries: 2,
+    });
+    const row = store.open({ subject: "herd:h/j", kind: "question", questions: qs(), nudge: { session: "w" } }).row;
+    store.answer(row.id, { q: "a" }, "shepherd");
+    await push.onAnswered(store.get(row.id)!);
+    expect(store.get(row.id)!.delivery!.outcome).toBe("dead-pane");
+    expect(await push.retryDeadPanes()).toEqual({ retried: 1, delivered: 0, gaveUp: 0 });
+    ok = true;
+    expect(await push.retryDeadPanes()).toEqual({ retried: 1, delivered: 1, gaveUp: 0 });
+    expect(store.get(row.id)!.delivery!.outcome).toBe("delivered");
+    expect(delivered.at(-1)).toBe(wrapCrossSession("gate-facility", GATE_ANSWERED_PHRASE(row.id)));
+  });
+
+  test("gives up after maxPaneRetries and stops retrying that gate", async () => {
+    const store = freshStore();
+    const push = createGatePush({ store, deliver: async () => ({ ok: false, error: "dead" }), resolveSession: (id) => ({ socketPath: id }), log, maxPaneRetries: 2 });
+    const row = store.open({ subject: "herd:h/j", kind: "question", questions: qs(), nudge: { session: "w" } }).row;
+    store.answer(row.id, { q: "a" }, "shepherd");
+    await push.onAnswered(store.get(row.id)!);
+    expect(await push.retryDeadPanes()).toEqual({ retried: 1, delivered: 0, gaveUp: 0 });
+    expect(await push.retryDeadPanes()).toEqual({ retried: 1, delivered: 0, gaveUp: 1 });
+    expect(await push.retryDeadPanes()).toEqual({ retried: 0, delivered: 0, gaveUp: 0 });
+  });
+});

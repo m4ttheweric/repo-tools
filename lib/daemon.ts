@@ -649,6 +649,12 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           log,
         ));
         sweepHandles.push(scheduleSweep(
+          "gate-nudge-retry",
+          () => { void gatePush.retryDeadPanes(); },
+          { bootDelayMs: 30_000, intervalMs: 30_000 },
+          log,
+        ));
+        sweepHandles.push(scheduleSweep(
           "runs-prune",
           () => {
             const { removed } = pruneRuns();
