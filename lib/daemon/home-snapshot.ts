@@ -362,7 +362,7 @@ export function homeSnapshotSpec(repoDir: string = join(mattstackHome(), "user")
 export function teamSnapshotSpec(
   slug: string,
   repoDir: string,
-  opts: { pullIntervalSec: number; originUrl: string; probes: Probes; readToken?: (p: Probes, remote: string) => Promise<string | null> },
+  opts: { pullIntervalSec: number; originUrl: string; probes: Probes; pullOnly?: boolean; readToken?: (p: Probes, remote: string) => Promise<string | null> },
 ): SnapshotSpec {
   const readToken = opts.readToken ?? storedForgeToken;
   return {
@@ -372,6 +372,7 @@ export function teamSnapshotSpec(
     eventPrefix: "team",
     scope: teamScope,
     pull: { intervalSec: opts.pullIntervalSec },
+    pullOnly: opts.pullOnly === true,
     tokenFor: () => readToken(opts.probes, opts.originUrl),
   };
 }
