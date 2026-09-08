@@ -110,7 +110,7 @@ export function readServedPacks(p: Pick<Probes, "readFile" | "home">, slug: stri
   return { packs, error: null };
 }
 
-/** Measured against the real ClaimView pack (1.1 MB, 106 files): install 0.86s, disable 0.40s, uninstall 0.41s. */
+/** Measured against a real-world pack (1.1 MB, 106 files): install 0.86s, disable 0.40s, uninstall 0.41s. */
 export const SETTLE_EXEC_TIMEOUT_MS = 30_000;
 /** Three settlement execs. A settlement never starts without this much budget left, so it can never abort part-way and strand a pack installed-and-enabled. */
 export const SETTLEMENT_MAX_MS = 3 * SETTLE_EXEC_TIMEOUT_MS;

@@ -20,7 +20,7 @@ Three further facts, all verified in the code:
 
 **`rt setup status` cannot show it.** The `pack.<pack>` row is built from
 `readPackRequirements`, which finds packs by locating a `requirements.jsonc`
-under the clone. ClaimView's pack ships none, so there is no `pack.claimview`
+under the clone. Acme Skills's pack ships none, so there is no `pack.acme-skills`
 row at all, and the rows that do exist report `installed` with no version.
 
 **The enable state underneath it is already wrong.** `plugins.install` enforces
@@ -61,17 +61,17 @@ That uninstall phrasing matches `isAlreadyGone` (`uninstall.ts:210`) through its
 `not found` alternative, so the rollback reuses that matcher rather than adding
 one. The two editor-specific alternatives in that regex are inert here.
 
-**Measured against the real pack**, not the fixture: `claimview@assured` from
-`~/.mattstack/teams/claimview` (1.1 MB, 106 files across `skills/`,
+**Measured against the real pack**, not the fixture: `acme-skills@acme-market` from
+`~/.mattstack/teams/acme-skills` (1.1 MB, 106 files across `skills/`,
 `attachments/`, `pack/`, `scripts/`), installed into a throwaway
 `CLAUDE_CONFIG_DIR` so the live install was untouched:
 
 | Command | Elapsed |
 | --- | --- |
 | `claude plugin marketplace add <clone>` | 0.47 s |
-| `claude plugin install claimview@assured` | 0.86 s |
-| `claude plugin disable claimview@assured` | 0.40 s |
-| `claude plugin uninstall claimview@assured` | 0.41 s |
+| `claude plugin install acme-skills@acme-market` | 0.86 s |
+| `claude plugin disable acme-skills@acme-market` | 0.40 s |
+| `claude plugin uninstall acme-skills@acme-market` | 0.41 s |
 
 A directory-source install is a local copy, so it scales with pack size rather
 than with the network, and the largest real pack lands in under a second. The
@@ -435,7 +435,7 @@ of scope here.
 `packRow` is rebuilt around the union of two sources, keyed by pack name so each
 pack yields exactly one row: packs discovered by `readPackRequirements` (whose
 `.error` row is preserved unchanged), and packs the team marketplace serves,
-which is how ClaimView gets a row at all.
+which is how Acme Skills gets a row at all.
 
 | Condition | Status | Detail |
 | --- | --- | --- |

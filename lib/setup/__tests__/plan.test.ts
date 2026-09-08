@@ -230,7 +230,7 @@ test("a skipped pack row never lands in requiredMissing, so it cannot block Inst
 test("on a machine with no claude, the skipped plugin rows do not block Install either", () => {
   const plan = statusPlan([
     row({ id: "tool.plugins", kind: "tool", title: "Claude plugins", why: "x", required: false, status: "skipped", detail: "claude not installed" }),
-    row({ id: "pack.claimview", kind: "tool", title: "claimview", why: "x", required: false, status: "skipped", detail: "claude not installed" }),
+    row({ id: "pack.acme-skills", kind: "tool", title: "acme-skills", why: "x", required: false, status: "skipped", detail: "claude not installed" }),
   ]);
   expect(plan.requiredMissing).toEqual([]);
   expect(plan.canInstall).toBe(true);

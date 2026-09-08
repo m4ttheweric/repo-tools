@@ -1068,7 +1068,7 @@ async function toolRowsFor(opts: {
     files[`${TEAM_CLONE}/.claude-plugin/marketplace.json`] = "{ broken";
   } else {
     files[`${TEAM_CLONE}/.claude-plugin/marketplace.json`] = JSON.stringify({
-      name: "assured",
+      name: "acme-market",
       // A readable served version needs a string source with a plugin.json behind it;
       // a null one is expressed as the object form, exactly as a real marketplace would.
       plugins: packs.map((s) => (s.servedVersion === null ? { name: s.name, source: { source: "github", repo: "o/r" } } : { name: s.name, source: `./packs/${s.name}` })),
@@ -1089,21 +1089,21 @@ async function toolRowsFor(opts: {
 
 test("a team-served pack gets a row even with no requirements.jsonc, naming its version", async () => {
   const rows = await toolRowsFor({
-    servedPacks: [{ id: "claimview@assured", name: "claimview", servedVersion: "0.5.28" }],
-    pluginList: [{ id: "claimview@assured", version: "0.5.28", enabled: false }],
+    servedPacks: [{ id: "acme-skills@acme-market", name: "acme-skills", servedVersion: "0.5.28" }],
+    pluginList: [{ id: "acme-skills@acme-market", version: "0.5.28", enabled: false }],
   });
-  const row = rows.find((r) => r.id === "pack.claimview")!;
+  const row = rows.find((r) => r.id === "pack.acme-skills")!;
   expect(row.status).toBe("ready");
   expect(row.detail).toContain("0.5.28");
-  expect(row.detail).toContain("claude plugin enable claimview@assured");
+  expect(row.detail).toContain("claude plugin enable acme-skills@acme-market");
 });
 
 test("a stale pack is needs-you and names both versions, with no restart caveat", async () => {
   const rows = await toolRowsFor({
-    servedPacks: [{ id: "claimview@assured", name: "claimview", servedVersion: "0.5.28" }],
-    pluginList: [{ id: "claimview@assured", version: "0.5.18", enabled: false }],
+    servedPacks: [{ id: "acme-skills@acme-market", name: "acme-skills", servedVersion: "0.5.28" }],
+    pluginList: [{ id: "acme-skills@acme-market", version: "0.5.18", enabled: false }],
   });
-  const row = rows.find((r) => r.id === "pack.claimview")!;
+  const row = rows.find((r) => r.id === "pack.acme-skills")!;
   expect(row.status).toBe("needs-you");
   expect(row.detail).toContain("installed 0.5.18");
   expect(row.detail).toContain("team serves 0.5.28");
@@ -1112,15 +1112,15 @@ test("a stale pack is needs-you and names both versions, with no restart caveat"
 
 test("the restart caveat sits on the converged row, where the cache has already moved", async () => {
   const rows = await toolRowsFor({
-    servedPacks: [{ id: "claimview@assured", name: "claimview", servedVersion: "0.5.28" }],
-    pluginList: [{ id: "claimview@assured", version: "0.5.28", enabled: true }],
+    servedPacks: [{ id: "acme-skills@acme-market", name: "acme-skills", servedVersion: "0.5.28" }],
+    pluginList: [{ id: "acme-skills@acme-market", version: "0.5.28", enabled: true }],
   });
-  expect(rows.find((r) => r.id === "pack.claimview")!.detail).toContain("restarts");
+  expect(rows.find((r) => r.id === "pack.acme-skills")!.detail).toContain("restarts");
 });
 
 test("an object-form pack that is not installed says rt does not manage it, never 'installed by Install'", async () => {
   const rows = await toolRowsFor({
-    servedPacks: [{ id: "remote@assured", name: "remote", servedVersion: null }],
+    servedPacks: [{ id: "remote@acme-market", name: "remote", servedVersion: null }],
     pluginList: [],
   });
   const row = rows.find((r) => r.id === "pack.remote")!;

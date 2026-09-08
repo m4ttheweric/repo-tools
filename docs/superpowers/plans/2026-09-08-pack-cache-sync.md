@@ -89,12 +89,12 @@ describe("readServedPacks", () => {
     const p = fakeProbes({
       home,
       files: {
-        [marketplacePath]: JSON.stringify({ name: "assured", plugins: [{ name: "claimview", source: "./packs/claimview" }] }),
-        [join(clone, "packs", "claimview", ".claude-plugin", "plugin.json")]: JSON.stringify({ version: "0.5.28" }),
+        [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills", source: "./packs/acme-skills" }] }),
+        [join(clone, "packs", "acme-skills", ".claude-plugin", "plugin.json")]: JSON.stringify({ version: "0.5.28" }),
       },
     });
     expect(readServedPacks(p, "acme")).toEqual({
-      packs: [{ id: "claimview@assured", name: "claimview", servedVersion: "0.5.28" }],
+      packs: [{ id: "acme-skills@acme-market", name: "acme-skills", servedVersion: "0.5.28" }],
       error: null,
     });
   });
@@ -102,10 +102,10 @@ describe("readServedPacks", () => {
   test("an object-form source is listed with a null served version", () => {
     const p = fakeProbes({
       home,
-      files: { [marketplacePath]: JSON.stringify({ name: "assured", plugins: [{ name: "remote", source: { source: "github", repo: "o/r" } }] }) },
+      files: { [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "remote", source: { source: "github", repo: "o/r" } }] }) },
     });
     expect(readServedPacks(p, "acme")).toEqual({
-      packs: [{ id: "remote@assured", name: "remote", servedVersion: null }],
+      packs: [{ id: "remote@acme-market", name: "remote", servedVersion: null }],
       error: null,
     });
   });
@@ -113,9 +113,9 @@ describe("readServedPacks", () => {
   test("a missing or unparsable plugin.json yields a null served version, not a dropped pack", () => {
     const p = fakeProbes({
       home,
-      files: { [marketplacePath]: JSON.stringify({ name: "assured", plugins: [{ name: "claimview", source: "./packs/claimview" }] }) },
+      files: { [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills", source: "./packs/acme-skills" }] }) },
     });
-    expect(readServedPacks(p, "acme").packs).toEqual([{ id: "claimview@assured", name: "claimview", servedVersion: null }]);
+    expect(readServedPacks(p, "acme").packs).toEqual([{ id: "acme-skills@acme-market", name: "acme-skills", servedVersion: null }]);
   });
 
   test("the marketplace name falls back to the slug when the file omits it", () => {
@@ -394,7 +394,7 @@ Append:
 Add `ExecResult` to the existing `./probes.ts` type import at the top of the file, then append:
 
 ```ts
-/** Measured against the real ClaimView pack (1.1 MB, 106 files): install 0.86s, disable 0.40s, uninstall 0.41s. */
+/** Measured against the real Acme Skills pack (1.1 MB, 106 files): install 0.86s, disable 0.40s, uninstall 0.41s. */
 export const SETTLE_EXEC_TIMEOUT_MS = 30_000;
 /** Three settlement execs. A settlement never starts without this much budget left, so it can never abort part-way and strand a pack installed-and-enabled. */
 export const SETTLEMENT_MAX_MS = 3 * SETTLE_EXEC_TIMEOUT_MS;
@@ -512,7 +512,7 @@ const marketplacePath = join(clone, ".claude-plugin", "marketplace.json");
 const quietLog = { info: () => {}, warn: () => {}, error: () => {} } as never;
 
 function served(plugins: { name: string; source?: unknown }[]): Record<string, string> {
-  return { [marketplacePath]: JSON.stringify({ name: "assured", plugins }) };
+  return { [marketplacePath]: JSON.stringify({ name: "acme-market", plugins }) };
 }
 
 function pluginJson(pack: string, version: string): Record<string, string> {
@@ -539,30 +539,30 @@ const listing = (entries: unknown[]): ExecResult => ({ code: 0, stdout: JSON.str
 describe("convergePackCache", () => {
   test("a pack already at the served version issues no update", async () => {
     const { p, execs } = probesWith(
-      { ...served([{ name: "claimview", source: "./packs/claimview" }]), ...pluginJson("claimview", "0.5.28") },
-      () => listing([{ id: "claimview@assured", version: "0.5.28", enabled: false }]),
+      { ...served([{ name: "acme-skills", source: "./packs/acme-skills" }]), ...pluginJson("acme-skills", "0.5.28") },
+      () => listing([{ id: "acme-skills@acme-market", version: "0.5.28", enabled: false }]),
     );
     const result = await convergePackCache(p, "acme", quietLog);
-    expect(result.current).toEqual(["claimview@assured"]);
+    expect(result.current).toEqual(["acme-skills@acme-market"]);
     expect(execs.filter((a) => a.includes("update"))).toEqual([]);
   });
 
   test("a stale pack is updated", async () => {
     const { p, execs } = probesWith(
-      { ...served([{ name: "claimview", source: "./packs/claimview" }]), ...pluginJson("claimview", "0.5.28") },
+      { ...served([{ name: "acme-skills", source: "./packs/acme-skills" }]), ...pluginJson("acme-skills", "0.5.28") },
       (argv) =>
         argv.includes("list")
-          ? listing([{ id: "claimview@assured", version: "0.5.18", enabled: false }])
+          ? listing([{ id: "acme-skills@acme-market", version: "0.5.18", enabled: false }])
           : { code: 0, stdout: "", stderr: "" },
     );
     const result = await convergePackCache(p, "acme", quietLog);
-    expect(result.updated).toEqual([{ id: "claimview@assured", to: "0.5.28" }]);
+    expect(result.updated).toEqual([{ id: "acme-skills@acme-market", to: "0.5.28" }]);
     expect(execs.some((a) => a[1] === "plugin" && a[2] === "update")).toBe(true);
   });
 
   test("an unreadable listing records every pack failed and writes nothing", async () => {
     const { p, execs } = probesWith(
-      { ...served([{ name: "claimview", source: "./packs/claimview" }]), ...pluginJson("claimview", "0.5.28") },
+      { ...served([{ name: "acme-skills", source: "./packs/acme-skills" }]), ...pluginJson("acme-skills", "0.5.28") },
       () => ({ code: 0, stdout: "not json", stderr: "" }),
     );
     const result = await convergePackCache(p, "acme", quietLog);
@@ -572,24 +572,24 @@ describe("convergePackCache", () => {
 
   test("a pack the listing does not carry is installed, then disabled", async () => {
     const { p, execs } = probesWith(
-      { ...served([{ name: "claimview", source: "./packs/claimview" }]), ...pluginJson("claimview", "0.5.28") },
+      { ...served([{ name: "acme-skills", source: "./packs/acme-skills" }]), ...pluginJson("acme-skills", "0.5.28") },
       (argv) => {
         if (argv.includes("list")) return listing([]);
-        if (argv.includes("update")) return { code: 1, stdout: "", stderr: 'Plugin "claimview" not found' };
+        if (argv.includes("update")) return { code: 1, stdout: "", stderr: 'Plugin "acme-skills" not found' };
         return { code: 0, stdout: "", stderr: "" };
       },
     );
     const result = await convergePackCache(p, "acme", quietLog);
-    expect(result.installed).toEqual(["claimview@assured"]);
+    expect(result.installed).toEqual(["acme-skills@acme-market"]);
     const verbs = execs.filter((a) => a[1] === "plugin").map((a) => a[2]);
     expect(verbs).toEqual(["list", "update", "install", "disable"]);
   });
 
   test("a null served version is skipped whether or not it is listed", async () => {
-    for (const entries of [[], [{ id: "remote@assured", version: "1.0.0", enabled: false }]]) {
+    for (const entries of [[], [{ id: "remote@acme-market", version: "1.0.0", enabled: false }]]) {
       const { p, execs } = probesWith(served([{ name: "remote", source: { source: "github", repo: "o/r" } }]), () => listing(entries));
       const result = await convergePackCache(p, "acme", quietLog);
-      expect(result.skipped).toEqual([{ id: "remote@assured", reason: "version unknown" }]);
+      expect(result.skipped).toEqual([{ id: "remote@acme-market", reason: "version unknown" }]);
       expect(execs.filter((a) => a[2] === "update" || a[2] === "install")).toEqual([]);
     }
   });
@@ -597,20 +597,20 @@ describe("convergePackCache", () => {
   test("a settlement that does not fit the remaining budget is skipped whole", async () => {
     let clock = 0;
     const { p, execs } = probesWith(
-      { ...served([{ name: "claimview", source: "./packs/claimview" }]), ...pluginJson("claimview", "0.5.28") },
+      { ...served([{ name: "acme-skills", source: "./packs/acme-skills" }]), ...pluginJson("acme-skills", "0.5.28") },
       (argv) => {
         if (argv.includes("list")) return listing([]);
         clock += 100_000;
-        return { code: 1, stdout: "", stderr: 'Plugin "claimview" not found' };
+        return { code: 1, stdout: "", stderr: 'Plugin "acme-skills" not found' };
       },
     );
     const result = await convergePackCache(p, "acme", quietLog, { now: () => clock });
-    expect(result.skipped).toEqual([{ id: "claimview@assured", reason: "settlement did not fit the remaining budget" }]);
+    expect(result.skipped).toEqual([{ id: "acme-skills@acme-market", reason: "settlement did not fit the remaining budget" }]);
     expect(execs.some((a) => a[2] === "install")).toBe(false);
   });
 
   test("no claude on the machine is a skip, not a failure", async () => {
-    const p = fakeProbes({ home, env: {}, files: served([{ name: "claimview", source: "./packs/claimview" }]) });
+    const p = fakeProbes({ home, env: {}, files: served([{ name: "acme-skills", source: "./packs/acme-skills" }]) });
     const result = await convergePackCache(p, "acme", quietLog);
     expect(result.skipped).toEqual([{ id: "*", reason: "claude not found" }]);
   });
@@ -618,35 +618,35 @@ describe("convergePackCache", () => {
   test("a pack reached after the budget is spent is skipped as budget-exhausted", async () => {
     let clock = 0;
     const { p, execs } = probesWith(
-      { ...served([{ name: "claimview", source: "./packs/claimview" }]), ...pluginJson("claimview", "0.5.28") },
+      { ...served([{ name: "acme-skills", source: "./packs/acme-skills" }]), ...pluginJson("acme-skills", "0.5.28") },
       (argv) => {
-        if (argv.includes("list")) { clock += 200_000; return listing([{ id: "claimview@assured", version: "0.5.18", enabled: false }]); }
+        if (argv.includes("list")) { clock += 200_000; return listing([{ id: "acme-skills@acme-market", version: "0.5.18", enabled: false }]); }
         return { code: 0, stdout: "", stderr: "" };
       },
     );
     const result = await convergePackCache(p, "acme", quietLog, { now: () => clock });
-    expect(result.skipped).toEqual([{ id: "claimview@assured", reason: "converge budget exhausted" }]);
+    expect(result.skipped).toEqual([{ id: "acme-skills@acme-market", reason: "converge budget exhausted" }]);
     expect(execs.some((a) => a[2] === "update")).toBe(false);
   });
 
   test("an update failure that is not not-found never reaches install", async () => {
     const { p, execs } = probesWith(
-      { ...served([{ name: "claimview", source: "./packs/claimview" }]), ...pluginJson("claimview", "0.5.28") },
+      { ...served([{ name: "acme-skills", source: "./packs/acme-skills" }]), ...pluginJson("acme-skills", "0.5.28") },
       (argv) => {
-        if (argv.includes("list")) return listing([{ id: "claimview@assured", version: "0.5.18", enabled: false }]);
+        if (argv.includes("list")) return listing([{ id: "acme-skills@acme-market", version: "0.5.18", enabled: false }]);
         return { code: 1, stdout: "", stderr: "registry exploded" };
       },
     );
     const result = await convergePackCache(p, "acme", quietLog);
-    expect(result.failed).toEqual([{ id: "claimview@assured", detail: "registry exploded" }]);
+    expect(result.failed).toEqual([{ id: "acme-skills@acme-market", detail: "registry exploded" }]);
     expect(execs.some((a) => a[2] === "install")).toBe(false);
   });
 
   test("a timed-out update records failed, never 'not installed'", async () => {
     const { p, execs } = probesWith(
-      { ...served([{ name: "claimview", source: "./packs/claimview" }]), ...pluginJson("claimview", "0.5.28") },
+      { ...served([{ name: "acme-skills", source: "./packs/acme-skills" }]), ...pluginJson("acme-skills", "0.5.28") },
       (argv) => {
-        if (argv.includes("list")) return listing([{ id: "claimview@assured", version: "0.5.18", enabled: false }]);
+        if (argv.includes("list")) return listing([{ id: "acme-skills@acme-market", version: "0.5.18", enabled: false }]);
         return { code: 124, stdout: "", stderr: "" };
       },
     );
@@ -832,10 +832,10 @@ state". Add it to the same file, with an exec that models the real claude:
 
 ```ts
 test("a stale pack updates and keeps its disabled state", async () => {
-  const enabled: Record<string, boolean> = { "claimview@assured": false };
-  const versions: Record<string, string> = { "claimview@assured": "0.5.18" };
+  const enabled: Record<string, boolean> = { "acme-skills@acme-market": false };
+  const versions: Record<string, string> = { "acme-skills@acme-market": "0.5.18" };
   const { p } = probesWith(
-    { ...served([{ name: "claimview", source: "./packs/claimview" }]), ...pluginJson("claimview", "0.5.28") },
+    { ...served([{ name: "acme-skills", source: "./packs/acme-skills" }]), ...pluginJson("acme-skills", "0.5.28") },
     (argv) => {
       const [, , verb, id] = argv;
       if (verb === "list") return listing(Object.keys(versions).map((k) => ({ id: k, version: versions[k], enabled: enabled[k] })));
@@ -848,8 +848,8 @@ test("a stale pack updates and keeps its disabled state", async () => {
 
   await convergePackCache(p, "acme", quietLog);
 
-  expect(versions["claimview@assured"]).toBe("0.5.28");
-  expect(enabled["claimview@assured"]).toBe(false);
+  expect(versions["acme-skills@acme-market"]).toBe("0.5.28");
+  expect(enabled["acme-skills@acme-market"]).toBe(false);
 });
 ```
 
@@ -1595,21 +1595,21 @@ Add to `lib/setup/__tests__/validators-tools.test.ts`:
 ```ts
 test("a team-served pack gets a row even with no requirements.jsonc, naming its version", async () => {
   const rows = await toolRowsFor({
-    servedPacks: [{ id: "claimview@assured", name: "claimview", servedVersion: "0.5.28" }],
-    pluginList: [{ id: "claimview@assured", version: "0.5.28", enabled: false }],
+    servedPacks: [{ id: "acme-skills@acme-market", name: "acme-skills", servedVersion: "0.5.28" }],
+    pluginList: [{ id: "acme-skills@acme-market", version: "0.5.28", enabled: false }],
   });
-  const row = rows.find((r) => r.id === "pack.claimview")!;
+  const row = rows.find((r) => r.id === "pack.acme-skills")!;
   expect(row.status).toBe("ready");
   expect(row.detail).toContain("0.5.28");
-  expect(row.detail).toContain("claude plugin enable claimview@assured");
+  expect(row.detail).toContain("claude plugin enable acme-skills@acme-market");
 });
 
 test("a stale pack is needs-you and names both versions, with no restart caveat", async () => {
   const rows = await toolRowsFor({
-    servedPacks: [{ id: "claimview@assured", name: "claimview", servedVersion: "0.5.28" }],
-    pluginList: [{ id: "claimview@assured", version: "0.5.18", enabled: false }],
+    servedPacks: [{ id: "acme-skills@acme-market", name: "acme-skills", servedVersion: "0.5.28" }],
+    pluginList: [{ id: "acme-skills@acme-market", version: "0.5.18", enabled: false }],
   });
-  const row = rows.find((r) => r.id === "pack.claimview")!;
+  const row = rows.find((r) => r.id === "pack.acme-skills")!;
   expect(row.status).toBe("needs-you");
   expect(row.detail).toContain("installed 0.5.18");
   expect(row.detail).toContain("team serves 0.5.28");
@@ -1618,15 +1618,15 @@ test("a stale pack is needs-you and names both versions, with no restart caveat"
 
 test("the restart caveat sits on the converged row, where the cache has already moved", async () => {
   const rows = await toolRowsFor({
-    servedPacks: [{ id: "claimview@assured", name: "claimview", servedVersion: "0.5.28" }],
-    pluginList: [{ id: "claimview@assured", version: "0.5.28", enabled: true }],
+    servedPacks: [{ id: "acme-skills@acme-market", name: "acme-skills", servedVersion: "0.5.28" }],
+    pluginList: [{ id: "acme-skills@acme-market", version: "0.5.28", enabled: true }],
   });
-  expect(rows.find((r) => r.id === "pack.claimview")!.detail).toContain("restarts");
+  expect(rows.find((r) => r.id === "pack.acme-skills")!.detail).toContain("restarts");
 });
 
 test("an object-form pack that is not installed says rt does not manage it, never 'installed by Install'", async () => {
   const rows = await toolRowsFor({
-    servedPacks: [{ id: "remote@assured", name: "remote", servedVersion: null }],
+    servedPacks: [{ id: "remote@acme-market", name: "remote", servedVersion: null }],
     pluginList: [],
   });
   const row = rows.find((r) => r.id === "pack.remote")!;
@@ -1661,7 +1661,7 @@ async function toolRowsFor(opts: {
     files[`${TEAM_CLONE}/.claude-plugin/marketplace.json`] = "{ broken";
   } else {
     files[`${TEAM_CLONE}/.claude-plugin/marketplace.json`] = JSON.stringify({
-      name: "assured",
+      name: "acme-market",
       // A readable served version needs a string source with a plugin.json behind it;
       // a null one is expressed as the object form, exactly as a real marketplace would.
       plugins: packs.map((s) => (s.servedVersion === null ? { name: s.name, source: { source: "github", repo: "o/r" } } : { name: s.name, source: `./packs/${s.name}` })),
@@ -1684,7 +1684,7 @@ async function toolRowsFor(opts: {
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `bun test lib/setup/__tests__/validators-tools.test.ts -t pack`
-Expected: FAIL, `toolRows` takes no `teamSlug` and no `pack.claimview` row exists.
+Expected: FAIL, `toolRows` takes no `teamSlug` and no `pack.acme-skills` row exists.
 
 - [ ] **Step 3: Thread the slug and rebuild `packRow`**
 
@@ -1825,7 +1825,7 @@ test("a skipped pack row never lands in requiredMissing, so it cannot block Inst
 test("on a machine with no claude, the skipped plugin rows do not block Install either", () => {
   const plan = statusPlan([
     row({ id: "tool.plugins", kind: "tool", title: "Claude plugins", why: "x", required: false, status: "skipped", detail: "claude not installed" }),
-    row({ id: "pack.claimview", kind: "tool", title: "claimview", why: "x", required: false, status: "skipped", detail: "claude not installed" }),
+    row({ id: "pack.acme-skills", kind: "tool", title: "acme-skills", why: "x", required: false, status: "skipped", detail: "claude not installed" }),
   ]);
   expect(plan.requiredMissing).toEqual([]);
   expect(plan.canInstall).toBe(true);
@@ -2007,7 +2007,7 @@ Expected: all pass. No command was added, so `picker:check` is unaffected.
 
 - [ ] **Step 4: Confirm no dash characters entered the diff**
 
-Run: `git diff main...HEAD | grep -n "[—–]"`
+Run: `git diff main...HEAD | grep -n` for the em dash (U+2014) and en dash (U+2013) characters.
 Expected: no output.
 
 - [ ] **Step 5: Commit any fixes**
