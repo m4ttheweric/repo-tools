@@ -134,6 +134,19 @@ export interface GateSubscription {
   dead: boolean;
 }
 
+export interface HerdInfo { id: string; repo: string; room: string; workspace: string; shepherdSession: string; shepherdHandle: string; herdrSocket: string | null; hidden: boolean; status: "active" | "wrapped"; createdAt: number; wrappedAt: number | null }
+export interface HerdJobInfo { herd: string; name: string; worktree: string; branch: string | null; tree: string | null; pane: string | null; agentSession: string | null; agentId: string | null; handle: string; status: "spawning" | "active" | "at-gate" | "at-milestone" | "done" | "closed" | "crashed"; disposable: boolean; lastGate: string | null; lastReport: number | null; createdAt: number; updatedAt: number }
+/** `lastGateStatus`/`lastGateDelivery` come from the job's `lastGate` row: an `answered` gate whose delivery is `dead-pane` is the "answered, worker not woken" case the shepherd must act on. */
+export interface HerdStatusData {
+  herd: HerdInfo;
+  jobs: Array<HerdJobInfo & { openGate: string | null; paneStatus: string | null; lastGateStatus: GateStatus | null; lastGateDelivery: "delivered" | "dead-pane" | null }>;
+  unread: number;
+  lifecycleConnected: boolean;
+  hiddenUp: boolean | null;
+  /** The shepherd session's own `herd:<id>/` subscription row, or null when none is live. */
+  subscription: { id: string; dead: boolean; lastDelivery: GateSubscription["lastDelivery"] } | null;
+}
+
 /**
  * Duplicated shape on purpose, same reasoning as EventsBusEvent above:
  * these mirror lib/state/chat-store.ts's types, which rt-client cannot
@@ -612,6 +625,12 @@ export interface Commands {
    *  onto delivery outcomes (dead marks included). */
   "gate:subscriptions": { payload: { session?: string; live?: boolean }; data: { subscriptions: GateSubscription[] } };
 
+  // ─── Herd (shepherd run registry) ────────────────────────────────────────
+  "herd:start":  { payload: { name: string; repo: string; session: string; hidden?: boolean }; data: { herd: string; room: string; workspace: string; subscription: string; handle: string; hidden: boolean } };
+  "herd:resume": { payload: { herd: string; session: string }; data: { subscription: string; gates: GateRow[]; unread: number; status: HerdStatusData } };
+  "herd:status": { payload: { herd: string }; data: HerdStatusData };
+  "herd:close":  { payload: { herd: string; job: string }; data: { job: string; status: "closed" } };
+
   /** Wire reply on success is always `{ok:true, repaired}` (no `data`
    *  wrapper) — `data` here documents the extra field the same way PingData
    *  does for `ping`, not the literal wire nesting (R3). */
@@ -715,6 +734,10 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "gate:subscribe",
   "gate:unsubscribe",
   "gate:subscriptions",
+  "herd:start",
+  "herd:resume",
+  "herd:status",
+  "herd:close",
   "hooks:repair",
   "hooks:watch",
   "sdm:catalog",

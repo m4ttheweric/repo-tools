@@ -90,6 +90,8 @@ import { createDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { installSignalHandlers, removeRuntimeFiles } from "./daemon/shutdown.ts";
 import { createEventsBus, type EventsBus } from "./daemon/events-bus.ts";
 import { createGatesStore, type GatesStore } from "./daemon/gates-store.ts";
+import { createHerdStore, type HerdStore } from "./daemon/herd-store.ts";
+import { hiddenSocketPath } from "./daemon/herd-session.ts";
 import { createGatePush, type GatePush } from "./daemon/gate-push.ts";
 import { createEscapeInjector } from "./daemon/gate-escape.ts";
 import { deliverToInbox } from "./daemon/inbox.ts";
@@ -277,6 +279,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
   let log: Logger = ctx.log;
   let eventsBus: EventsBus;
   let gatesStore: GatesStore;
+  let herdStore: HerdStore;
   let gatePush: GatePush;
   let identity: {
     flavor: "dev" | "prod";
@@ -553,6 +556,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         mkdirSync(RT_DIR, { recursive: true });
         eventsBus = createEventsBus({ dbPath: join(RT_DIR, "events.db"), log });
         gatesStore = createGatesStore({ dbPath: join(RT_DIR, "gates.db"), log });
+        herdStore = createHerdStore({ dbPath: join(RT_DIR, "herds.db"), log });
         // Session id -> socket resolution goes through the claude-registry
         // (pane inboxes), never a bespoke lookup: it's the same binding
         // rt chat delivery already resolves through.
@@ -572,6 +576,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         // from stop() reaching into an undefined variable.
         eventsBus?.close();
         gatesStore?.close_();
+        herdStore?.close_();
       },
     },
 
@@ -866,6 +871,18 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           eventsBus,
           gatesStore,
           gatePush,
+          herdStore,
+          // No hidden herdr server exists yet, so `ensure` throws rather than
+          // handing back a socket path nothing serves: `herd:start --hidden`
+          // must fail loudly instead of registering an undeliverable herd.
+          herdLifecycle: { connected: () => false, watch: () => {} },
+          herdHidden: {
+            socketPath: () => hiddenSocketPath(),
+            ensure: async () => { throw new Error("hidden mode not wired yet"); },
+            up: async () => false,
+            stop: async () => {},
+          },
+          herdJobsRoot: join(RT_DIR, "herds"),
           homeSnapshot,
           teamSnapshots,
           repos: {
