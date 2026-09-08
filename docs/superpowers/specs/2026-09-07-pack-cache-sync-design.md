@@ -50,6 +50,9 @@ pack:
 | `claude plugin update` when already current | exit 0, "already at the latest version" |
 | `claude plugin update` for a plugin that is not installed | exit 1, stderr `Plugin "<name>" not found` |
 | `claude plugin list --json --available` after a source bump | `available: []`, so it cannot detect the newer version |
+| `claude plugin disable <id>` on an enabled pack | exit 0, `Successfully disabled` |
+| `claude plugin disable <id>` on an already-disabled pack | exit **1**, stderr `Plugin "<id>" is already disabled` |
+| `claude plugin disable <id>` on a pack that is not installed | exit **1**, stderr `Plugin "<id>" is already disabled` (identical to the line above) |
 
 Three consequences drive the whole design. The converge verb is `update`, never
 `install`, because only `update` preserves the disabled state. The served
@@ -226,27 +229,64 @@ pack installed **and enabled**, forever: every later converge takes the `update`
 path, which by design leaves enablement alone. That is precisely the ruling
 violation this spec exists to prevent, so it may not be left to a log line.
 
-`SetupState` (`~/.mattstack/rt/setup-state.json`, already the record of what
-`plugins.install` installed) gains one optional field:
+An id is recorded when this run installed the pack and its `disable` did not
+confirm, and every converge and every `plugins.install` begins by retrying the
+ids it already holds.
 
-```ts
-/** Packs rt installed whose disable did not confirm; retried until it does. */
-pendingDisable?: string[];
-```
+**The retry has bounded exits, which the probes above determine.** `disable`
+exits 1 both when the pack is already disabled and when it is not installed at
+all, with the same stderr line, so an unconditional retry would fail forever.
+Since both of those mean the goal state (not enabled) already holds, both clear
+the id:
 
-An id is added when this run installed the pack and its `disable` did not
-succeed, and removed the moment a `disable` succeeds. Every converge and every
-`plugins.install` begins by retrying `disable` for the ids already there.
+| Outcome | Action |
+| --- | --- |
+| `disable` exit 0 | clear |
+| exit 1, stderr matches "already disabled" | clear (the goal state holds, whether the pack is off or gone) |
+| unknown subcommand | clear, terminal, logged once. A claude build without `disable` can never satisfy the retry, and `plugins.ts:187` already tolerates exactly this for `enable`. |
+| the listing shows the pack absent, or present with `enabled: false` | clear without calling `disable` at all |
+| any other non-zero | keep, retry next converge |
 
-The field is optional, so it needs no `v` bump and old state files stay valid.
-It is reachable from both callers, which is why it lives here rather than in the
-daemon's per-clone kv: the daemon and the CLI must not keep two disagreeing
-records of the same fact.
+No id can outlive the condition it describes, so the list cannot strand.
 
-This can never stomp a deliberate enable, because an id only enters the list on
-the branch where this run itself created the pack, and leaves it as soon as the
-disable lands. A pack the member enabled after a successful disable is not in
-the list and is never touched again.
+**Where it lives, and why that is two records rather than one.** Round 2 put
+this in `setup-state.json` to avoid two records of one fact. That was wrong for
+a different reason: `updateSetupState` is a lock-free read-modify-write
+(`state.ts:41-53`), so a daemon converge and a `rt setup apply` running together
+would silently lose one writer's entries, and a lost entry is a pack left
+enabled.
+
+So each writer keeps only what it installed and never writes the other's store:
+
+- `plugins.install` records into `SetupState.pendingDisable` and retries at the
+  start of every run (which is exactly when `rt setup apply` and `rt setup pack`
+  execute).
+- the daemon converge records into its existing per-clone kv
+  (`team-snapshot:<slug>`, sqlite-backed and therefore atomic) and retries every
+  converge.
+
+These cannot disagree about anything that matters. Each drives the same terminal
+state, and either can verify it independently, so whichever gets there first
+turns the other's retry into a call that reports "already disabled" and clears.
+No lock is needed because neither writer ever needs the other's entries.
+
+`SetupState` gains `pendingDisable: string[]` as a required field with an
+`EMPTY_STATE` default, not an optional one. `readSetupState` spreads
+`EMPTY_STATE` under the parsed value specifically so an older file backfills a
+new field (`state.ts:32-35` names `forcedLinks` as that precedent), so old files
+stay valid with no `v` bump. It must also be added to the dedupe block in
+`updateSetupState`, which enumerates its arrays explicitly (`state.ts:43-48`);
+omitting it there would append duplicates on every run, without bound.
+
+**The window is real, and stated rather than papered over.** Between a failed
+`disable` and the retry that clears it, the pack is installed and enabled, which
+is indistinguishable from a pack the member enabled deliberately. rt's intent for
+that pack is "not enabled", so a member who chooses to enable it inside that
+window will see it turned off once, at the next converge. The window is bounded
+by one pull interval, and it is visible rather than silent: a pending id renders
+its pack as `needs-you` in `rt setup status` (see the row table), detail
+`rt could not disable this pack; retrying`. Enabling after that row clears is
+never overridden.
 
 `install` on a fresh pack is what delivers the 2026-09-07 ruling that a pack
 added to the team after a member joined installs through the converge, disabled,
@@ -280,6 +320,13 @@ is null is never treated as stale and never triggers an update. Unknown is not a
 mismatch. It renders as `version unknown` on its row, and the converge records
 it as `skipped` with that reason. This keeps an object-form source from
 provoking an update loop it can never satisfy.
+
+**"Version unknown" and "absent" are different states and must not be
+conflated.** A pack the listing carries with a null version is installed, and is
+skipped. A pack with no entry in the listing at all is not installed, and takes
+the update-then-install branch. Collapsing the two would drop the ruling that a
+pack added after a member joined installs on the next converging pull, because
+every such pack arrives with no listing entry.
 
 ### The parser, shared not duplicated
 
@@ -329,6 +376,11 @@ pack yields exactly one row:
 | installed, versions match, enabled | `ready` | `<v> installed and enabled`, plus the restart caveat |
 | installed, versions differ | `needs-you` | `installed <a>, team serves <b>` |
 | either version unknown | `ready` | `<v> installed, served version unknown` |
+| id is in either pendingDisable store | `needs-you` | `rt could not disable this pack; retrying` |
+
+The pending row takes precedence over the `ready` rows above it. Without it a
+pending pack would render as `installed and enabled`, which is the opposite of
+both rt's intent and what is about to happen to it.
 
 **The restart caveat sits on the converged row, not the stale one.** On a stale
 row the cache itself still holds the old version, so a restart changes nothing
@@ -405,8 +457,13 @@ version change issues no `update`; an unreadable or unparsable listing performs
 no write of any kind; a stale pack updates and keeps its disabled state; a
 served-but-absent pack installs and ends disabled; an `update` failure that is
 not "not found" never reaches `install` or `disable`; a per-exec timeout records
-`failed` and never `not installed`; a failed `disable` lands in `pendingDisable`
-and the next converge retries it to success; a pack the member enabled after a
+`failed` and never `not installed`; a failed `disable` is recorded and the next
+converge retries it to success; an "already disabled" stderr clears the id
+rather than retrying forever; an unknown-subcommand `disable` clears the id as
+terminal; a listing showing the pack already disabled clears it with no
+`disable` call; repeated failures never grow the stored array (the dedupe case);
+the daemon's store and `SetupState.pendingDisable` are written independently and
+neither run clobbers the other's entries; a pack the member enabled after a
 successful disable is never re-disabled; the budget cap returns and lets the pull
 loop re-arm; and a push-path pull fires no converge.
 
@@ -442,7 +499,13 @@ That work stays in MAT-402's lane.
   `claude plugin update`.
 - A converge whose `claude plugin list --json` could not be read writes nothing.
 - A pack whose `disable` failed is disabled by a later converge without any
-  command typed, and a pack the member enabled deliberately is not.
+  command typed, and a pack the member enabled deliberately (after that pack's
+  pending row cleared) is not.
+- No pending id survives the condition it describes: an uninstalled pack, an
+  already-disabled pack and a claude build without the subcommand each clear it,
+  so the retry list cannot grow without bound.
+- While a pack is pending, `rt setup status` says so rather than reporting it as
+  installed and enabled.
 - A `claude` that never exits cannot stop a clone's pull loop: the converge
   returns within its budget and `schedulePull` re-arms.
 
