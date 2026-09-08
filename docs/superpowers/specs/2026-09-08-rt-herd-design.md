@@ -178,11 +178,17 @@ Every verb records what it did. There is no separate bookkeeping verb.
 
 ### Daemon behaviour (no verb)
 
-**Lifecycle forwarding.** On start the daemon opens one herdr
+**Lifecycle forwarding.** On start the daemon opens one wildcard herdr
 `events.subscribe` per herdr server it knows (the default socket, plus each
-hidden session recorded on an active herd), for `pane.agent_detected`,
-`pane.agent_status_changed`, `pane.closed`, `pane.exited`, reconnecting with
-backoff. For panes in `herd_jobs`:
+hidden session recorded on an active herd) for `pane.agent_detected`,
+`pane.closed`, `pane.exited`, reconnecting with backoff. herdr refuses a
+`pane.agent_status_changed` entry without a `pane_id` (and rejects the whole
+request when one is present), so agent status is a separate per-pane stream
+the daemon opens for every live job pane: at start, on each
+`pane.agent_detected`, and on a 30s reconcile against the registry, closed
+when the job leaves the live set. Pushed frames arrive as `{event, data}`
+with underscored names; the stream client normalizes them. For panes in
+`herd_jobs`:
 
 | herdr event | job status | daemon action |
 |---|---|---|
