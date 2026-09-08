@@ -815,7 +815,7 @@ git commit -m "access rows: read the shared probe, and say connect your account 
 
 **Interfaces:**
 - Consumes: `probeTeamRepoAccess` and `forgeLabel` (Task 4), `forgeTokenLookupReal` (Task 3).
-- Produces: `JoinResult` with `access: "ok" | "deferred" | "no-account" | "denied" | "unreachable" | "undetermined"` and `intent: "written" | "not-written"`. Tasks 7 and 8 decode both.
+- Produces: `JoinResult` with `access: "ok" | "deferred" | "no-account" | "denied" | "unreachable" | "undetermined"` and `intent: "written" | "not-written"`. Tasks 7 and 9 decode both.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1194,7 +1194,7 @@ Expected: PASS, including the "nothing reads the pasteboard without a click" che
 - [ ] **Step 7: Commit**
 
 ```bash
-git add rt-tray/Sources-core/Setup/PasteboardReading.swift rt-tray/Sources/Setup/SystemPasteboard.swift rt-tray/Sources-core/Setup/TeamChoiceModel.swift rt-tray/Sources/Setup/Screens/TeamScreen.swift rt-tray/Sources/Setup/SetupWindowController.swift rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift
+git add rt-tray/Sources-core/Setup/PasteboardReading.swift rt-tray/Sources/Setup/SystemPasteboard.swift rt-tray/Sources-core/Setup/TeamChoiceModel.swift rt-tray/Sources/Setup/Screens/TeamScreen.swift rt-tray/Sources/AccessibilityIDs.swift rt-tray/Sources/Setup/SetupWindowController.swift rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift
 git commit -m "join screen: paste invite reads the clipboard only on a click, through a seam"
 ```
 
@@ -1204,6 +1204,7 @@ git commit -m "join screen: paste invite reads the clipboard only on a click, th
 
 **Files:**
 - Modify: `rt-tray/Sources-core/Setup/TeamChoiceModel.swift:104-110`
+- Modify: `rt-tray/Sources/Setup/Screens/TeamScreen.swift` (the warning row), `rt-tray/Sources/AccessibilityIDs.swift:6` (its id)
 - Test: `rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift`
 
 **Interfaces:**
@@ -1272,7 +1273,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add rt-tray/Sources-core/Setup/TeamChoiceModel.swift rt-tray/Sources/Setup/Screens/TeamScreen.swift rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift
+git add rt-tray/Sources-core/Setup/TeamChoiceModel.swift rt-tray/Sources/Setup/Screens/TeamScreen.swift rt-tray/Sources/AccessibilityIDs.swift rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift
 git commit -m "team continue: warn on a repo verdict, block only when no intent was written"
 ```
 
@@ -1399,6 +1400,7 @@ git commit -m "verification: full gate green"
 
 ## Notes for the executor
 
+- **Task 6's staged-token test leans on `readSecret` throwing `NoAgeKeyError`** under the isolated test HOME, which is what makes the lookup fall through to the stage. If it ever comes back `unreadable` instead, the cause is the store seam, not the fixture.
 - **The clipboard alert behavior on macOS 15/26 is unconfirmed on a real machine.** The button copy assumes an alert may appear. If a real-machine check shows otherwise, the copy changes; the seam and the click-only rule do not.
 - **`repoRow` deliberately still probes unauthenticated**, but its mapping does change: "could not read Username" on a tracked repo moves from `error` to `needs-you` with a Connect action, because that is the same honest statement there. Passing it a token is what stays out of scope.
 - **Do not touch the forge grant path.** `rtMayManageMembership`, `createdByRt`, `grantRead`/`revokeRead` belong to MAT-409 and another worktree.
