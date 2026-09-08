@@ -102,9 +102,10 @@ administer a repo it was pointed at.
 
 Its `on|off` positional is declared `optional: true` in
 `lib/command-tree-def.ts`, because the bare form is a real reading verb rather
-than an omission. `bun run picker:check` fails on a visible leaf with a
-required positional and no `omitBehavior`, so the declaration is a build gate,
-not a nicety.
+than an omission. It also carries `omitBehavior: "list"`, which is the honest
+declaration of what the bare form does. Note that `picker:check` does not
+verify this: the conformance gate covers leaves with a REQUIRED positional, so
+an optional-positional leaf is outside its scope and passes either way.
 
 **A TTY prompt at invite time** is the door an owner actually walks through,
 because that is the moment the question is concrete ("add luke to this repo?")
