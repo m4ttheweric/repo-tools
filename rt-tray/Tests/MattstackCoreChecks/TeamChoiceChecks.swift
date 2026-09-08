@@ -194,4 +194,36 @@ let teamChoiceChecks: [Check] = [
             c.expectEqual(m.normalizedInviteCode, "nope")
         }
     },
+
+    Check("a denial warns and lets Continue through; the checklist holds the line") { c in
+        let rt = ScriptedRt(); rt.answers["team join --dry-run --json"] = (0, #"{"contract":1,"team":{"slug":"acme","name":"Acme","owner":"matt"},"access":"denied","intent":"written","message":"Joining Acme. Your GitHub account cannot see acme/team yet: ask matt or your org admin to grant read access."}"#)
+        rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
+        let m = await MainActor.run { TeamChoiceModel(rt: rt, pasteboard: FakePasteboard(nil)) }
+        await MainActor.run { m.choice = .join; m.inviteCode = "ABCD-EFGH" }
+        let err = await m.validateAndPrepare()
+        c.expectEqual(err, nil)
+        c.expect(await MainActor.run { m.joinWarning?.contains("ask matt") == true })
+    },
+
+    Check("an access value this build does not know still lets Continue through") { c in
+        let rt = ScriptedRt(); rt.answers["team join --dry-run --json"] = (0, #"{"contract":1,"team":{"slug":"acme","name":"Acme","owner":"matt"},"access":"something-new","intent":"written","message":"Joining Acme."}"#)
+        rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
+        let m = await MainActor.run { TeamChoiceModel(rt: rt, pasteboard: FakePasteboard(nil)) }
+        await MainActor.run { m.choice = .join; m.inviteCode = "ABCD-EFGH" }
+        c.expectEqual(await m.validateAndPrepare(), nil)
+    },
+
+    Check("no intent written still blocks") { c in
+        let rt = ScriptedRt(); rt.answers["team join --dry-run --json"] = (0, #"{"contract":1,"access":"unreachable","intent":"not-written","message":"could not reach the invite relay"}"#)
+        let m = await MainActor.run { TeamChoiceModel(rt: rt, pasteboard: FakePasteboard(nil)) }
+        await MainActor.run { m.choice = .join; m.inviteCode = "ABCD-EFGH" }
+        c.expect(await m.validateAndPrepare() != nil)
+    },
+
+    Check("an older CLI with no intent field keeps the old rule") { c in
+        let rt = ScriptedRt(); rt.answers["team join --dry-run --json"] = (0, #"{"contract":1,"team":{"slug":"acme","name":"Acme","owner":"matt"},"access":"denied","message":"no access"}"#)
+        let m = await MainActor.run { TeamChoiceModel(rt: rt, pasteboard: FakePasteboard(nil)) }
+        await MainActor.run { m.choice = .join; m.inviteCode = "ABCD-EFGH" }
+        c.expect(await m.validateAndPrepare() != nil)
+    },
 ]
