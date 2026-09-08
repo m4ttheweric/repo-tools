@@ -91,6 +91,22 @@ function gitlabManualSteps(reason: FailureReason, host: string, path: string, ha
   return withLead(reasonLeadStep(reason, handle, "glab"), gitlabBaseSteps(host, path, handle, action));
 }
 
+/**
+ * The forge's own "add a member" steps for a handle, with no CLI call and no
+ * claim that anything was done. This is what an invite prints where rt is not
+ * permitted to grant, so it must never guess: a remote it cannot parse yields
+ * nothing, and the caller supplies the sentence that is always true.
+ */
+export function membershipSteps(remote: string, handle: string): string[] {
+  const parsed = parseForgeRemote(remote);
+  if (!parsed) return [];
+  if (parsed.provider === "github") {
+    const { owner, repo } = splitOwnerRepo(parsed.path);
+    return githubBaseSteps(owner, repo, handle, "Invite");
+  }
+  return gitlabBaseSteps(parsed.host, parsed.path, handle, "Invite");
+}
+
 type GitlabUserLookup = { id: number } | { id: null; reason: FailureReason };
 
 async function lookupGitlabUserId(p: Probes, host: string, handle: string, token: string | null | undefined): Promise<GitlabUserLookup> {
