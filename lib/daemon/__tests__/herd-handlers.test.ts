@@ -418,13 +418,21 @@ describe("herd:spawn", () => {
     const { h, socketCalls, order, screen, trust, herd } = await started();
     screen.text = "Do you trust the files in this folder?\n1. Yes, proceed\n";
     trust.registerFailures = 2;
+    // The shepherd's own sign-in is already in the log, so only the calls this
+    // spawn adds can say anything about the worker's ordering.
+    const mark = order.length;
     const res = await h["herd:spawn"]({ herd, job: "cv-1", brief: "b", dir: "/t" });
     expect(res.ok).toBe(true);
     expect(socketCalls.filter((c) => c.method === "agent.get")).toHaveLength(3);
     expect(socketCalls.find((c) => c.method === "agent.wait")!.params).toMatchObject({ target: "w9:p1", until: ["idle", "blocked", "done"], timeout_ms: 15_000 });
     expect(socketCalls.find((c) => c.method === "pane.send_keys")!.params).toEqual({ pane_id: "w9:p1", keys: ["enter"] });
     // The worker must be reachable in chat whatever the trust wait costs.
-    expect(order.indexOf("chat:sign-in")).toBeLessThan(order.indexOf("herdr:agent.get"));
+    const spawned = order.slice(mark);
+    const signedIn = spawned.indexOf("chat:sign-in");
+    const firstGet = spawned.indexOf("herdr:agent.get");
+    expect(signedIn).toBeGreaterThanOrEqual(0);
+    expect(firstGet).toBeGreaterThanOrEqual(0);
+    expect(signedIn).toBeLessThan(firstGet);
   });
 
   test("an idle agent whose brief merely says trust is sent nothing", async () => {

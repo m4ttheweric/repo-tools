@@ -51,9 +51,9 @@ const HERD_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const REGISTER_BUDGET_MS = 10_000;
 const REGISTER_POLL_MS = 250;
 const TRUST_BUDGET_MS = 15_000;
-// `done` belongs here and not in pane:spawn's list: agent:start puts the brief
-// on claude's command line, so a trusted directory can finish a whole turn
-// while this waits.
+// `done` is in the list because agent:start puts the brief on claude's command
+// line: an already-trusted directory can finish a whole turn before anything
+// else settles.
 const SETTLE_UNTIL = ["idle", "blocked", "done"];
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
 
