@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { getSetting } from "../settings/resolve.ts";
 import { setSetting } from "../settings/write.ts";
 import { teamSettingsPath } from "../rt-paths.ts";
+import { teamLocalPath } from "../team/team-local.ts";
 import {
   loadVariations,
   saveVariation,
@@ -163,6 +164,43 @@ describe("variations", () => {
         throw new Error(`expected a write-failed refusal, got ${JSON.stringify(result)}`);
       }
       expect(loadVariations(IDENTITY)).toEqual({});
+    });
+  });
+
+  describe("saveVariation on a joined (pull-only) clone", () => {
+    const origHome = process.env.HOME;
+    let home: string;
+
+    beforeEach(() => {
+      home = realpathSync(mkdtempSync(join(tmpdir(), "rt-variations-joined-")));
+      process.env.HOME = home;
+      seedTeam();
+      const recordPath = teamLocalPath(home, "acme");
+      mkdirSync(dirname(recordPath), { recursive: true });
+      writeFileSync(
+        recordPath,
+        JSON.stringify({ createdByRt: false, joinedByRt: true, rtMayManageMembership: false }),
+      );
+    });
+
+    afterEach(() => {
+      process.env.HOME = origHome;
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    // lib/variations.ts:96 already wraps the write in try/catch — this proves
+    // the existing degrade path, it does not add new behavior.
+    test("degrades to a structured failure, never a crash", () => {
+      const result = saveVariation(IDENTITY, "/repo", "/repo/pkg/a", "build", {
+        name: "debug",
+        command: "DEBUG=1 pnpm run build",
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok && result.reason === "write-failed") {
+        expect(result.message).toContain("pull-only");
+      } else {
+        throw new Error(`expected a write-failed refusal, got ${JSON.stringify(result)}`);
+      }
     });
   });
 });
