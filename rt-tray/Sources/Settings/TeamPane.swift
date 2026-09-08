@@ -33,6 +33,15 @@ struct TeamPane: View {
                 }
                 if let inv = model.invite {
                     VStack(alignment: .leading, spacing: 6) {
+                        if let link = inv.link {
+                            HStack {
+                                Button("Copy invite link") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(link, forType: .string) }
+                                    .accessibilityIdentifier(AXID.settingsTeamCopyLink)
+                                Button("Share...") { share(link) }
+                                    .accessibilityIdentifier(AXID.settingsTeamShareInvite)
+                            }
+                            Text(link).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        }
                         Text(inv.pasteBlock).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                         HStack {
                             Button("Copy paste block") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(inv.pasteBlock, forType: .string) }
@@ -48,5 +57,10 @@ struct TeamPane: View {
         }
         .formStyle(.grouped)
         .task { await model.load() }
+    }
+
+    private func share(_ link: String) {
+        guard let view = NSApp.keyWindow?.contentView else { return }
+        NSSharingServicePicker(items: [link]).show(relativeTo: .zero, of: view, preferredEdge: .minY)
     }
 }

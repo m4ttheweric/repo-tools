@@ -83,6 +83,8 @@ enum AXID {
     static let settingsTeamInvite = "settings.team.invite"
     static let settingsTeamCopyRemote = "settings.team.copyRemote"
     static let settingsTeamCopyPaste = "settings.team.copyPasteBlock"
+    static let settingsTeamCopyLink = "settings.team.copyLink"
+    static let settingsTeamShareInvite = "settings.team.shareInvite"
     static let settingsTeamJoinAnother = "settings.team.joinAnother"
     static let settingsUninstall = "settings.uninstall.button"
     static let settingsUninstallCancel = "settings.uninstall.cancel"
