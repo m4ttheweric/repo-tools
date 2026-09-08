@@ -32,7 +32,7 @@
 - Test: `lib/__tests__/deps-lock-live.test.ts`
 
 **Interfaces:**
-- Produces: deps.lock row `portless` (kind `helper`, `archive: "tar.gz"`, `extract: "package"`, `bundlePath: "Contents/Helpers/portless-dist"`, `exec: []`, `exposeByDefault: false`, `entitlements: "none"`, `status: "bundled"`); NO `mattstack-proxy-install` row (first-party from Task 2 on).
+- Produces: deps.lock row `portless` (kind `helper`, `archive: "npm"`, `extract: "package"`, `bundlePath: "Contents/Helpers/portless-dist"`, `exec: ["Contents/Helpers/node/bin/node", "Contents/Helpers/portless-dist/dist/cli.js"]`, `exposeByDefault: false`, `entitlements: "none"`, `status: "bundled"`); the check-bundle smoke's directory-skip case gains `portless`; NO `mattstack-proxy-install` row (first-party from Task 2 on).
 
 - [ ] **Step 1: Write the failing test** — in `deps-lock-live.test.ts`, add to the live-lock describe:
 
