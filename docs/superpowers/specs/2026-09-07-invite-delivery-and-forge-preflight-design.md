@@ -30,7 +30,7 @@ wrong thing at the one moment that matters:
   no way forward, when the true and actionable statement is "connect your GitHub
   account".
 - Any non-`ok` verdict blocks Team Continue today
-  (`TeamChoiceModel.swift:107`), including a denial only the repo's owner can
+  (`TeamChoiceModel.swift:108`), including a denial only the repo's owner can
   clear.
 
 ## Decisions
@@ -75,8 +75,16 @@ the same class of value (a mattstack-hosted endpoint with a working default),
 it is read only by rt itself, and the VM harness needs to point it at a local
 fixture without touching a team store.
 
-The code goes in the fragment. Nothing else about the URL is per-invite, so
-there is no query string to get wrong.
+The code goes in the fragment, verbatim as `encodeCode` produced it ... dashes
+included, since `join.js` normalizes them away before validating. Nothing else
+about the URL is per-invite, so there is no query string to get wrong.
+
+That fragment is a cross-repo contract with a page rt cannot see, so it gets
+pinned on rt's side: a test asserts the fragment satisfies mattstack.dev's
+`isValidCode` rules (77 chars once `-` and whitespace are stripped, every
+character in the Crockford alphabet `0123456789ABCDEFGHJKMNPQRSTVWXYZ`) rather
+than merely that a link was built. The page holds the mirror of this test
+already.
 
 ### `InviteResult` and the paste block
 
@@ -109,10 +117,14 @@ user can click it.
 `TeamPane.swift` renders the minted invite as today, plus:
 
 - **Copy invite link** (primary) ... copies `inv.link`.
+  `AXID.settingsTeamCopyLink`.
 - **Share...** ... `NSSharingServicePicker` over `inv.link`, anchored to the
   button, which is how the link reaches Messages, Mail, or AirDrop without rt
-  ever handling a recipient.
+  ever handling a recipient. `AXID.settingsTeamShareInvite`.
 - **Copy paste block** stays, unchanged, for a chat that wants the whole thing.
+
+Both ids join `AXID` beside the existing `settingsTeamCopyPaste`, so the pane's
+UI checks can drive them.
 
 `InviteResult` in `Sources-core/Contract/OtherResults.swift` gains an optional
 `link` so an older CLI still decodes; the buttons that need it are hidden when
@@ -140,12 +152,12 @@ export type RepoAccessVerdict =
   | { kind: "no-account"; detail: string }    // rt holds no token and git offered none
   | { kind: "denied"; detail: string }        // 403 / Authentication failed / Permission denied
   | { kind: "unreachable"; detail: string }   // timeout or network
-  | { kind: "indeterminate"; detail: string }; // rt had a token and git still could not ask
+  | { kind: "indeterminate"; detail: string }; // git could not ask, and rt cannot say why: a token was held, or the store was unreadable
 
 export async function probeTeamRepoAccess(
   p: Probes,
   remote: string,
-  token: string | null,
+  lookup: ForgeTokenLookup,
 ): Promise<RepoAccessVerdict>;
 ```
 
@@ -154,15 +166,63 @@ It runs `git ls-remote --exit-code <remote> HEAD` through `gitWithToken`
 reaches git through the inline helper's env and never through argv or the URL.
 
 The `no-account` verdict is the one new judgement, and it is deliberately
-narrow: it is returned only when git reports "could not read Username" *and* rt
-holds no token for that host. When rt holds no token but git answers anyway (the
+narrow: it is returned only when git reports "could not read Username" *and* the
+token lookup came back `absent`. When rt holds no token but git answers anyway (the
 user's own credential helper, for instance the one `gh auth setup-git` writes),
 the probe reports what git found. rt does not claim a credential is missing on
 the strength of its own store alone.
 
-Token precedence is the existing stored-then-staged rule, factored out of
-`lib/setup/steps/forge-token.ts:12` so the probe, the Install step, and the row
-share one implementation instead of three.
+### The one token lookup
+
+Three readers implement stored-then-staged today and disagree about failure:
+`lib/setup/steps/forge-token.ts:13` returns null on any store error other than
+`NoAgeKeyError`, `lib/team/stored-forge-token.ts:12` swallows every error and
+never consults the stage, and `lib/setup/validators/access.ts:34` delegates to
+`SecretPresence.has` (whose real implementation, `plan.ts:172`, rethrows
+anything that is not `NoAgeKeyError`) and then swallows it anyway.
+
+One survivor, in `lib/team/forge-token.ts`:
+
+```ts
+export type ForgeTokenLookup =
+  | { kind: "token"; token: string }
+  | { kind: "absent" }                        // no key for this host, or store and stage both empty
+  | { kind: "unreadable"; reason: string };   // the store failed for a reason that is not a missing age key
+
+export interface ForgeTokenSeams {
+  readStored: (domain: string, key: string) => Promise<string | null>; // throws NoAgeKeyError before the key exists
+  readStaged: (domain: string, key: string) => string | null;
+}
+
+export async function forgeTokenLookup(remote: string, seams: ForgeTokenSeams): Promise<ForgeTokenLookup>;
+export function tokenOrNull(lookup: ForgeTokenLookup): string | null;
+```
+
+Error policy, one rule for every caller: `NoAgeKeyError` means "nothing
+decryptable yet" and falls through to the stage; any other store error is
+`unreadable` and is carried, not swallowed. The distinction is what keeps the
+probe honest ... `absent` is what licenses the `no-account` verdict, while
+`unreadable` can only ever produce `indeterminate`, because a store rt cannot
+read is not evidence that the joiner has no account.
+
+`tokenOrNull` keeps the Install-step callers (`lib/setup/steps/repos.ts:112`)
+on their existing `string | null` shape, so clone behavior is unchanged.
+
+### One classifier, not two
+
+`lsRemoteOutcome` (`lib/setup/validators/access.ts:50`) is deleted. It is the
+second classifier of the same git output, which is the thing D3 exists to
+prevent. Both of its callers ... `teamRepoRow` (`:80`) and `repoRow` (`:116`) ...
+re-implement on `probeTeamRepoAccess` plus a shared
+
+```ts
+function rowFromVerdict(verdict: RepoAccessVerdict, ctx: { remote: string; grantedBy: string }): Pick<Row, "status" | "detail" | "action">;
+```
+
+`grantedBy` is the caller's answer to "who can grant this": the team's owner for
+`access.team-repo`, the repo's own admin for the per-repo `access.repo.<slug>`
+rows, which have no team owner to name. `repoRow` stays optional and keeps its
+own title and `why`; only the classification and the status mapping are shared.
 
 ### `access.team-repo`
 
@@ -175,7 +235,7 @@ share one implementation instead of three.
 | `no-account` | `needs-you` | "connect your GitHub account so rt can prove access", with the same connect action `account.<forge>` offers |
 | `denied` | `needs-you` | "your `<forge>` account cannot see `<repo>` yet ... ask `<owner>` or your org admin to grant read access" |
 | `unreachable` | `error` | the network detail |
-| `indeterminate` | `error` | today's "couldn't determine access" wording, now reachable only when rt did hold a token |
+| `indeterminate` | `error` | today's "couldn't determine access" wording, now reachable only when rt held a token or could not read its own store (the store failure named in the detail) |
 
 The denial wording never promises rt will fix it (D4). The row stays `required`,
 so a joiner still cannot reach Install without access.
@@ -184,34 +244,61 @@ so a joiner still cannot reach Install without access.
 
 Three changes:
 
-1. It attaches rt's token (same precedence) before probing, so Team Continue
-   gives a real answer instead of always deferring.
+1. It passes the `ForgeTokenLookup` to the probe, so rt's own token is offered
+   and Team Continue gives a real answer instead of always deferring.
 2. It writes the setup intent whenever the pointer is valid, including when
    access is not yet `ok`. The intent is per-machine state under
    `~/.mattstack/rt/`; nothing here writes team scope.
 3. `JoinResult` gains `intent: "written" | "not-written"` and widens `access` to
-   `"ok" | "deferred" | "no-account" | "denied" | "unreachable"`.
+   the six values below.
 
 `intent` is the field the app gates Continue on, and it separates the two
 failures that today both arrive as `access: "unreachable"`: a bad or expired
 invite (no pointer, nothing to continue with, still blocks) from a repo the
 joiner cannot read yet (pointer in hand, Continue proceeds).
 
-Messages the CLI and the app share:
+Every verdict maps, and every value carries copy. The message is one string,
+written once and shown by both the CLI and the app:
 
-- `deferred` ... "access to the team repo is checked on the next screen" (CLT
-  not installed yet; unchanged copy).
-- `no-account` ... "connect your GitHub account on the next screen so rt can
-  reach `<repo>`".
-- `denied` ... "your GitHub account cannot see `<repo>` yet ... ask `<owner>` to
-  add you".
+| verdict | `access` | `intent` | message |
+| --- | --- | --- | --- |
+| `ok` | `ok` | written | "Joining `<name>` (owner `<owner>`)" |
+| `no-clt` | `deferred` | written | "Joining `<name>` (owner `<owner>`) ... access to the team repo is checked on the next screen" (today's copy) |
+| `no-account` | `no-account` | written | "Joining `<name>`. Connect your `<GitHub\|GitLab>` account on the next screen so rt can reach `<repo>`." |
+| `denied` | `denied` | written | "Joining `<name>`. Your `<GitHub\|GitLab>` account cannot see `<repo>` yet ... ask `<owner>` or your org admin to grant read access." |
+| `unreachable` | `unreachable` | written | "Joining `<name>`. Could not reach `<repo>`: `<detail>`. The next screen re-checks it." |
+| `indeterminate` | `undetermined` | written | "Joining `<name>`. Could not determine access to `<repo>` yet: `<detail>`. The next screen re-checks it." |
+
+A pointer that never resolved (relay unreachable, invite gone) is the one
+`intent: "not-written"` case; it keeps `access: "unreachable"` and today's
+blocking copy.
+
+`unreachable` and `indeterminate` read as re-checked-later here and as `error`
+on the checklist row, and that asymmetry is deliberate: at Team Continue a later
+check genuinely is coming, while the row *is* that later check, so the same fact
+is a dead end there.
+
+The `access` enumeration is mirrored in a trailing comment on
+`TeamJoinResult.access` (`rt-tray/Sources-core/Contract/OtherResults.swift:32`,
+today `ok | denied | unreachable`); it moves with this change.
 
 ### Team screen
 
-`TeamChoiceModel.prepare` stops gating on `access == "ok"` and gates on
+`TeamChoiceModel.prepare` stops gating on `access == "ok"`
+(`rt-tray/Sources-core/Setup/TeamChoiceModel.swift:108`) and gates on
 `intent == "written"`. A non-`ok` verdict becomes a warning carried alongside
 `joinSummary` and rendered under the code field; Continue stays enabled. A
 result with `intent: "not-written"` keeps today's blocking failure copy.
+
+Version skew, both directions, because dev-mode runs an app and a CLI that are
+not built together:
+
+- **Newer CLI, older app.** An `access` value the app does not know must never
+  block: the gate is `intent`, and any unrecognized value renders as a plain
+  warning carrying the CLI's own `message`.
+- **Older CLI, newer app.** `intent` is absent. The app falls back to today's
+  rule ... treat it as `written` only when `access == "ok"`, blocking otherwise ...
+  so an old CLI cannot silently wave a joiner past a denial.
 
 ## What this deliberately does not change
 
@@ -230,26 +317,42 @@ token into rt's store is a separate decision about where credentials live.
 Unit (`bun run test`):
 
 - `joinLink` / `joinLinkBase`: default, env override, fragment placement, no
-  code in the query string.
+  code in the query string, plus the `isValidCode` contract assertion above.
 - `pasteBlock`: contains the link, the deep link, and the bare code.
-- `mintInvite`: `link` present in `InviteResult`.
-- `probeTeamRepoAccess`: one case per verdict off a seamed exec, including the
-  two "could not read Username" cases (token held, no token held) that separate
-  `indeterminate` from `no-account`.
-- `teamRepoRow`: verdict-to-row table above, including the connect action.
-- `joinDryRun`: intent written on `denied` / `no-account`; not written on an
-  unreachable relay; `access` and `message` per verdict.
+- `mintInvite`: `link` present in `InviteResult`, built from the same code the
+  result carries.
+- `forgeTokenLookup`: `token` from the store, `token` from the stage after a
+  `NoAgeKeyError`, `absent` when both are empty, `unreadable` when the store
+  throws anything else.
+- `probeTeamRepoAccess`: one case per verdict off a seamed exec, including all
+  three "could not read Username" cases (`token` held, `absent`, `unreadable`)
+  that separate `indeterminate` from `no-account`.
+- `teamRepoRow` and `repoRow`: the verdict-to-row table above, including the
+  connect action and each row's own `grantedBy` clause.
+- `joinDryRun`: the full verdict table ... `intent` written on every resolved
+  pointer, not written on an unreachable relay, and `access` plus `message` per
+  verdict.
 
 Swift (`MattstackCoreChecks`):
 
 - `InviteResult` decodes with and without `link`.
-- `TeamChoiceModel` proceeds on `access: "denied"` with `intent: "written"` and
-  still blocks when `intent: "not-written"`.
+- `TeamChoiceModel` proceeds on `access: "denied"` with `intent: "written"`,
+  proceeds on an unrecognized `access` value, and blocks both when
+  `intent: "not-written"` and when `intent` is absent with a non-`ok` access.
+- `rt-tray/Tests/stub-rt/stub.ts:166`'s invite fixture gains `link` so the
+  pane's checks exercise the new buttons.
 
-E2E (`bun run test:e2e`): `rt team invite --json` envelope carries `link`.
+No e2e leg: `rt team invite` needs a live relay and a cloned team store, which
+no e2e fixture provides today, so the `--json` shape is proven at unit level
+through `mintInvite` with a stub relay. Standing that fixture up is not this
+ticket's work.
 
-Docs: `website/docs/reference/team/invite.mdx` regenerates for the new field
-(`bun run docs:check` gates it).
+Docs: the generated `website/docs/reference/team/invite.mdx` is usage and flags
+only, so a new result field produces no diff there and `docs:check` cannot gate
+it. The link belongs in prose: a hand-written
+`website/docs/reference/_partials/team/invite.mdx`, which `gen-docs` includes
+via `hasPartial` (`scripts/gen-docs.ts:30`), describing the link as the thing
+you send and the code as the fallback.
 
 ## Verification
 
