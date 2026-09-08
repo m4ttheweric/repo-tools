@@ -4,7 +4,8 @@ Two halves of the same trip: how an invite reaches a teammate, and how that
 teammate finds out their forge account cannot see the team repo *before* the
 clone fails.
 
-Rulings from Matt, 2026-09-07, are binding here and are quoted where they land.
+Rulings from Matt, 2026-09-07 and 2026-09-08, are binding here and are quoted
+where they land.
 
 ## Where this starts
 
@@ -56,6 +57,16 @@ the org admin as the people who grant it. rt manages forge membership only on
 repos it created itself (the `createdByRt` latch in `lib/team/team-local.ts`);
 that path belongs to MAT-409 and is out of scope here. Nothing in this design
 writes team scope or pushes the team repo: members are pull-only.
+
+**D5. The clipboard leg is built.** Matt, 2026-09-08: the live landing page
+already copies `mattstack://join/<code>` on the Download click, so the app owes
+the other half of that promise. Two constraints ride with the ruling. macOS
+shows a "pasted from" notice whenever an app reads the pasteboard, so the read
+happens only when the user arrives on the Team/Join surface and never on a
+background timer. And the Join field must accept the deep link itself: today
+pasting the copied link there fails `decodeCode`, because
+`normalizedInviteCode` (`rt-tray/Sources-core/Setup/TeamChoiceModel.swift:53`)
+only strips whitespace.
 
 ## Half 1: delivery
 
@@ -129,6 +140,58 @@ UI checks can drive them.
 `InviteResult` in `Sources-core/Contract/OtherResults.swift` gains an optional
 `link` so an older CLI still decodes; the buttons that need it are hidden when
 it is absent rather than copying an empty string.
+
+### Joiner UI: the clipboard hand-off
+
+The landing page copies `mattstack://join/<code>` on the Download click. The
+joiner then installs, launches, and lands on the Team screen with a code sitting
+in their clipboard that nothing asks for. This closes that loop (D5).
+
+**One extractor, three shapes.** Anywhere rt accepts a pasted invite it accepts
+the bare code (dashed or not), `mattstack://join/<code>`, and
+`https://mattstack.dev/join#<code>`. Whichever arrives, the bare code is what
+reaches `decodeCode`.
+
+```ts
+// lib/team/invite-crypto.ts, beside normalizeCode
+export function extractInviteCode(input: string): string | null;
+```
+
+Swift gets the mirror: `JoinLink.code(fromText:)` in
+`rt-tray/Sources-core/Launch/LaunchGuard.swift`, reusing the existing
+`code(from: URL)` for the deep-link shape, and `normalizedInviteCode`
+(`TeamChoiceModel.swift:53`) routes through it instead of only stripping
+whitespace. The CLI's own code reader (`commands/team.ts:61`, `defaultReadCode`)
+routes through the TS one, so a terminal user pasting a link is no worse off
+than one pasting a code.
+
+Three implementations of the same rule now exist across two repos (the page's
+`isValidCode` is the third), so the accepted and rejected shapes live in a
+shared fixture file that both rt suites assert against, the way `ui/fixtures/`
+is golden-tested from Go and TypeScript. Drift becomes a red test rather than an
+invite that works in one field and not another.
+
+**The offer.** On arriving at the Team screen with Join selected ... first
+launch through `--resume-setup`, a `mattstack://join` link, or the user picking
+Join ... the app reads `NSPasteboard.general` once and, if the string yields a
+code and the field is empty, shows a card above it:
+
+> Join a team? We found an invite on your clipboard. [Use it] [Ignore]
+
+**Use it** fills the field; nothing else happens, so Continue still runs the
+same dry-run gate and no join is ever automatic. **Ignore** dismisses the card
+for that pasteboard `changeCount`, so switching away and back does not nag with
+content the user already refused.
+
+Constraints that are not negotiable, per D5 and the estate's honesty rules:
+
+- The read happens on arrival at that surface and nowhere else. No timer, no
+  `onChange` poll, no read from a background service. macOS shows a "pasted
+  from" notice, and that notice must line up with a moment the user caused.
+- The card is the disclosure. The clipboard is never read into the field
+  silently, which is what makes the notice explicable rather than alarming.
+- The code never reaches a log. `TrayLog` records that an invite was offered,
+  never its value.
 
 ### Deploy dependency (not a design input)
 
@@ -319,6 +382,10 @@ Unit (`bun run test`):
 - `joinLink` / `joinLinkBase`: default, env override, fragment placement, no
   code in the query string, plus the `isValidCode` contract assertion above.
 - `pasteBlock`: contains the link, the deep link, and the bare code.
+- `extractInviteCode`: every shape in the shared fixture ... bare code with and
+  without dashes, `mattstack://join/<code>`, `https://mattstack.dev/join#<code>`,
+  surrounding whitespace ... plus the rejections (a bare URL with no code, a
+  wrong scheme, a truncated code).
 - `mintInvite`: `link` present in `InviteResult`, built from the same code the
   result carries.
 - `forgeTokenLookup`: `token` from the store, `token` from the stage after a
@@ -341,6 +408,12 @@ Swift (`MattstackCoreChecks`):
   `intent: "not-written"` and when `intent` is absent with a non-`ok` access.
 - `rt-tray/Tests/stub-rt/stub.ts:166`'s invite fixture gains `link` so the
   pane's checks exercise the new buttons.
+- `JoinLink.code(fromText:)` against the same shared fixture as the TS
+  extractor, which is what keeps the two from drifting.
+- The clipboard offer: a card appears when the pasteboard holds a usable invite
+  and the field is empty, `Use it` fills the field without joining, `Ignore`
+  suppresses it for that `changeCount`, and a pasteboard holding anything else
+  produces no card and no read beyond the one on arrival.
 
 No e2e leg: `rt team invite` needs a live relay and a cloned team store, which
 no e2e fixture provides today, so the `--json` shape is proven at unit level
