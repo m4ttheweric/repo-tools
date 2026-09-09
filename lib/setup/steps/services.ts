@@ -59,12 +59,14 @@ export function portlessCaPath(home: string): string {
  * Parity anchor: isCATrustedMacOS in portless's own dist/cli.js, and
  * TrustStep.verifyArgv in the privileged helper. All three must answer "is
  * this CA trusted" the same way or they disagree about a machine none of them
- * changed. `-L` keeps it local, so the answer never depends on the network.
+ * changed. `-L` keeps it local, so the answer never depends on the network;
+ * `-l` allows a CA as the leaf, which is what a root certificate checked on
+ * its own is. portless omits `-l`.
  */
 export async function proxyCaIsTrusted(p: Pick<Probes, "home" | "exists" | "exec">): Promise<boolean> {
   const ca = portlessCaPath(p.home);
   if (!p.exists(ca)) return false;
-  const res = await p.exec(["security", "verify-cert", "-c", ca, "-L", "-p", "ssl"], { timeoutMs: 5000 });
+  const res = await p.exec(["security", "verify-cert", "-c", ca, "-L", "-l", "-p", "ssl"], { timeoutMs: 5000 });
   return res.code === 0;
 }
 

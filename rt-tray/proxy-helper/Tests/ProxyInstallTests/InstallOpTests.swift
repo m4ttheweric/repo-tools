@@ -9,8 +9,12 @@ import XCTest
 final class RecordingFileOps: FileOps {
     /// Files that already exist. Seed it to model a re-install or upgrade.
     var existingPaths: Set<String> = []
+    /// Paths that exist but are not regular files: what the console user's own
+    /// ca.pem becomes when they point it somewhere else.
+    var symlinkPaths: Set<String> = []
     var failWritesTo: Set<String> = []
     var failRemovesOf: Set<String> = []
+    var failReplacesTo: Set<String> = []
 
     /// Every mutating call, in order, as "<op> <path>". Lets a test assert that
     /// a stage was chmod/chown'd BEFORE it was renamed into place.
@@ -28,7 +32,8 @@ final class RecordingFileOps: FileOps {
     func read(_ path: URL) throws -> Data { Data() }
 
     func stat(_ path: URL) throws -> PathStat? {
-        existingPaths.contains(path.path) ? PathStat(uid: 0, isRegularFile: true) : nil
+        if symlinkPaths.contains(path.path) { return PathStat(uid: 501, isSymlink: true) }
+        return existingPaths.contains(path.path) ? PathStat(uid: 0, isRegularFile: true) : nil
     }
 
     func mkdir(_ path: URL) throws { made.append(path.path); ops.append("mkdir \(path.path)") }
@@ -62,6 +67,7 @@ final class RecordingFileOps: FileOps {
     }
 
     func replaceFile(from: URL, to: URL) throws {
+        if failReplacesTo.contains(to.path) { throw ProxyInstallError("replace refused: \(to.path)") }
         existingPaths.remove(from.path)
         existingPaths.insert(to.path)
         replaced.append((from: from.path, to: to.path))
@@ -102,8 +108,11 @@ final class FakeCommandRunner: CommandRunner {
 }
 
 let caFixturePath = "/Users/tester/.portless/ca.pem"
-let verifyArgv = TrustStep.verifyArgv(caFixturePath)
-let addTrustArgv = TrustStep.addArgv(caFixturePath)
+// Both privileged calls name the root-owned copy, never the console user's own
+// file: that is what makes the bytes that were checked and the bytes that get
+// trusted the same bytes.
+let verifyArgv = TrustStep.verifyArgv(ProxyPaths.trustedCaStage)
+let addTrustArgv = TrustStep.addArgv(ProxyPaths.trustedCaStage)
 private let visudoArgv = ["/usr/sbin/visudo", "-c", "-f", Sudoers.stagePath]
 private let bootoutArgv = ["/bin/launchctl", "bootout", "system/sh.portless.proxy"]
 private let bootstrapArgv = ["/bin/launchctl", "bootstrap", "system", LaunchdPlist.path]
@@ -157,7 +166,7 @@ final class InstallOpTests: XCTestCase {
         XCTAssertEqual(makeOp().execute(), 0)
         XCTAssertEqual(copiedInto?.path, ProxyPaths.root)
         XCTAssertEqual(runner.calls, [visudoArgv, bootoutArgv, bootstrapArgv, verifyArgv, addTrustArgv])
-        XCTAssertEqual(fs.replaced.map(\.to), [LaunchdPlist.path, Sudoers.path])
+        XCTAssertEqual(fs.replaced.map(\.to), [LaunchdPlist.path, Sudoers.path, ProxyPaths.trustedCa])
         XCTAssertEqual(fs.written[LaunchdPlist.stagePath]?.isEmpty, false)
         XCTAssertEqual(
             fs.written[Sudoers.stagePath],
@@ -230,27 +239,38 @@ final class InstallOpTests: XCTestCase {
     func testATrustedInstallRecordsTheCertificateItTrusted() {
         fs.existingPaths.insert(ProxyPaths.trustedCa)
         XCTAssertEqual(makeOp().execute(), 0)
-        XCTAssertEqual(fs.copies.map(\.to), [ProxyPaths.trustedCa])
+        XCTAssertEqual(fs.copies.map(\.to), [ProxyPaths.trustedCaStage])
         XCTAssertEqual(fs.copies.first?.from, caFixturePath)
-        XCTAssertEqual(fs.modes[ProxyPaths.trustedCa], 0o644)
-        XCTAssertEqual(fs.owners[ProxyPaths.trustedCa], "0:0")
+        XCTAssertEqual(fs.modes[ProxyPaths.trustedCaStage], 0o644)
+        XCTAssertEqual(fs.owners[ProxyPaths.trustedCaStage], "0:0")
+        XCTAssertTrue(fs.replaced.contains { $0.from == ProxyPaths.trustedCaStage && $0.to == ProxyPaths.trustedCa })
+    }
+
+    // The console user owns their ca.pem and can replace it between two reads
+    // of it, so neither privileged call may name it: a keychain write checked
+    // against one file and performed against another is the whole hazard.
+    func testTheTrustCallsNameTheRootOwnedCopyAndNotTheUsersFile() {
+        _ = makeOp().execute()
+        XCTAssertTrue(runner.calls.contains(verifyArgv))
+        XCTAssertTrue(runner.calls.contains(addTrustArgv))
+        XCTAssertFalse(runner.calls.contains { $0.contains(caFixturePath) })
     }
 
     // Nothing was written to the keychain, so there is nothing for uninstall to
     // take back out; a record here would name a certificate this run did not
-    // trust.
+    // trust. The staged copy the check read goes with it.
     func testADeclinedCertificateRecordsNothing() {
         answer { $0 == addTrustArgv ? CommandResult(status: 1, output: "The authorization was canceled by the user.") : nil }
         XCTAssertEqual(makeOp().execute(), 0)
-        XCTAssertTrue(fs.copies.isEmpty)
+        XCTAssertFalse(fs.replaced.contains { $0.to == ProxyPaths.trustedCa })
+        XCTAssertTrue(fs.removed.contains(ProxyPaths.trustedCaStage))
     }
 
     // A record that cannot be written costs uninstall its untrust step and
     // nothing else: the install still succeeds and still reports the trust
     // outcome on the line the app reads.
     func testAFailedRecordIsReportedButDoesNotChangeTheTrustOutcome() {
-        fs.failRemovesOf.insert(ProxyPaths.trustedCa)
-        fs.existingPaths.insert(ProxyPaths.trustedCa)
+        fs.failReplacesTo.insert(ProxyPaths.trustedCa)
         XCTAssertEqual(makeOp().execute(), 0)
         XCTAssertEqual(lines.suffix(2), ["trust: ok", "MATTSTACK_TRUST=ok"])
         XCTAssertTrue(lines.contains { $0.hasPrefix("trust record: failed") }, "got: \(lines)")
@@ -288,7 +308,7 @@ final class InstallOpTests: XCTestCase {
         fs.existingPaths.insert(LaunchdPlist.path)
         fs.existingPaths.insert(Sudoers.path)
         XCTAssertEqual(makeOp().execute(), 0)
-        XCTAssertEqual(fs.replaced.map(\.to), [LaunchdPlist.path, Sudoers.path])
+        XCTAssertEqual(fs.replaced.map(\.to), [LaunchdPlist.path, Sudoers.path, ProxyPaths.trustedCa])
     }
 
     // The fake reproduces moveItem, so a test cannot pass against behavior

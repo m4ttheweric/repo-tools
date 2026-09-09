@@ -1146,7 +1146,7 @@ describe("toolRows: tool.proxy", () => {
     const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
     expect(r.status).toBe("ready");
     expect(r.detail).toBe("portless 0.15.6");
-    expect(p.calls.exec).toContainEqual(["security", "verify-cert", "-c", join(home, ".portless", "ca.pem"), "-L", "-p", "ssl"]);
+    expect(p.calls.exec).toContainEqual(["security", "verify-cert", "-c", join(home, ".portless", "ca.pem"), "-L", "-l", "-p", "ssl"]);
   });
 
   // macOS will not let any process write CA trust without its own dialog, so a

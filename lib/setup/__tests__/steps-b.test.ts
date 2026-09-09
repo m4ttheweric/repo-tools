@@ -479,7 +479,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
 
       expect((await proxyInstallStep.run(ctx)).state).toBe("done");
       expect(captured).toEqual({ type: "app-privileged", op: "proxy-trust" });
-      expect(p.calls.exec).toContainEqual(["security", "verify-cert", "-c", ca, "-L", "-p", "ssl"]);
+      expect(p.calls.exec).toContainEqual(["security", "verify-cert", "-c", ca, "-L", "-l", "-p", "ssl"]);
     });
 
     test("installed and the CA is already trusted: done without ever calling ctx.need", async () => {

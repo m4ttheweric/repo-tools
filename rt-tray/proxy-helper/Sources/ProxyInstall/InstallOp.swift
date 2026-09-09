@@ -14,6 +14,11 @@ enum ProxyPaths {
     /// replace with a certificate whose common name matches something else in
     /// that keychain (an MDM cert, an 802.1X credential, an enterprise root).
     static let trustedCa = root + "/ca.pem"
+    /// Where the user's certificate lands before anything reads it. The
+    /// trust write and the check that gates it both name this copy, so the
+    /// user cannot swap the bytes in between; a run that wrote to the
+    /// keychain promotes it to `trustedCa`.
+    static let trustedCaStage = root + "/.ca.pem.stage"
 }
 
 struct InstallOp {
@@ -26,7 +31,6 @@ struct InstallOp {
     var emit: (String) -> Void = Report.step
     /// How long to give the freshly bootstrapped daemon to mint the CA.
     var caWait: TimeInterval = 20
-    var trustedCaPath: String = ProxyPaths.trustedCa
 
     static func run() -> Int32 {
         // Everything below assumes root; refusing here keeps an unescalated run
@@ -143,9 +147,7 @@ struct InstallOp {
         let outcome = TrustStep(caPath: user.caPath, fs: fs, runner: runner).run()
         // Before the trust line, which the app reads as the second-to-last
         // line of the report.
-        if outcome.state == .ok, let problem = TrustRecord.write(caPath: user.caPath, to: trustedCaPath, fs: fs) {
-            emit(problem)
-        }
+        if let problem = outcome.recordProblem { emit(problem) }
         emit(outcome.line)
         emit(Report.trustLine(outcome.state))
         return ExitCode.ok

@@ -71,10 +71,10 @@ final class TrustStepTests: XCTestCase {
     func testTheVerbTouchesNothingButTrustSettingsAndItsOwnRecord() {
         _ = makeOp().execute()
         XCTAssertEqual(runner.calls, [verifyArgv, addTrustArgv])
-        XCTAssertEqual(fs.copies.map(\.to), [ProxyPaths.trustedCa])
-        XCTAssertEqual(fs.removed, [ProxyPaths.trustedCa], "only the record it replaces")
+        XCTAssertEqual(fs.copies.map(\.to), [ProxyPaths.trustedCaStage])
+        XCTAssertEqual(fs.removed, [ProxyPaths.trustedCaStage], "only the stage it is about to write")
+        XCTAssertEqual(fs.replaced.map(\.to), [ProxyPaths.trustedCa])
         XCTAssertTrue(fs.written.isEmpty)
-        XCTAssertTrue(fs.replaced.isEmpty)
         XCTAssertTrue(fs.made.isEmpty)
     }
 
@@ -83,8 +83,38 @@ final class TrustStepTests: XCTestCase {
     func testTheVerbRecordsTheCertificateItTrusted() {
         _ = makeOp().execute()
         XCTAssertEqual(fs.copies.first?.from, caFixturePath)
-        XCTAssertEqual(fs.modes[ProxyPaths.trustedCa], 0o644)
-        XCTAssertEqual(fs.owners[ProxyPaths.trustedCa], "0:0")
+        XCTAssertEqual(fs.modes[ProxyPaths.trustedCaStage], 0o644)
+        XCTAssertEqual(fs.owners[ProxyPaths.trustedCaStage], "0:0")
+        XCTAssertTrue(fs.replaced.contains { $0.from == ProxyPaths.trustedCaStage && $0.to == ProxyPaths.trustedCa })
+    }
+
+    // The console user owns their ca.pem and can replace it between two reads
+    // of it, so neither privileged call may name it: a keychain write checked
+    // against one file and performed against another is the whole hazard.
+    func testTheTrustCallsNameTheRootOwnedCopyAndNotTheUsersFile() {
+        _ = makeOp().execute()
+        XCTAssertFalse(runner.calls.contains { $0.contains(caFixturePath) })
+    }
+
+    // copyItem preserves a symlink as a symlink, and chmod and chown both
+    // follow a final symlink: staging one would re-own whatever it points at,
+    // as root, on the console user's word.
+    func testASymlinkedCaIsRefusedBeforeAnythingIsCopied() {
+        fs.symlinkPaths.insert(caFixturePath)
+        XCTAssertEqual(makeOp().execute(), ExitCode.osErr)
+        XCTAssertEqual(lines, ["trust: failed \(caFixturePath) is not a regular file", "MATTSTACK_TRUST=failed"])
+        XCTAssertTrue(runner.calls.isEmpty)
+        XCTAssertTrue(fs.copies.isEmpty)
+    }
+
+    // Without the root-owned copy there is no certificate this helper can
+    // vouch for having read twice, so it never asks macOS to trust one.
+    func testAStagingFailureIsAFailedRunThatNeverAsks() {
+        fs.failRemovesOf.insert(ProxyPaths.trustedCaStage)
+        XCTAssertEqual(makeOp().execute(), ExitCode.osErr)
+        XCTAssertTrue(runner.calls.isEmpty)
+        XCTAssertEqual(lines.last, "MATTSTACK_TRUST=failed")
+        XCTAssertTrue(lines.first?.hasPrefix("trust: failed could not stage") == true, "got: \(lines)")
     }
 
     func testAlreadyTrustedIsReportedWithoutAskingAgain() {
@@ -109,6 +139,8 @@ final class TrustStepTests: XCTestCase {
             "/usr/bin/security", "add-trusted-cert", "-d", "-r", "trustRoot",
             "-k", "/Library/Keychains/System.keychain", "/x/ca.pem",
         ])
-        XCTAssertEqual(TrustStep.verifyArgv("/x/ca.pem"), ["/usr/bin/security", "verify-cert", "-c", "/x/ca.pem", "-L", "-p", "ssl"])
+        // -l allows a CA as the leaf, which is what a root certificate checked
+        // on its own is; -L keeps the check off the network.
+        XCTAssertEqual(TrustStep.verifyArgv("/x/ca.pem"), ["/usr/bin/security", "verify-cert", "-c", "/x/ca.pem", "-L", "-l", "-p", "ssl"])
     }
 }
