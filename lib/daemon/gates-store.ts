@@ -66,6 +66,7 @@ export interface GatesStore {
   subscriptions(filter?: { live?: boolean; session?: string }): GateSubscription[];
   markSubscriptionDelivery(id: string, outcome: "delivered" | "failed"): void;
   markSubscriptionDead(id: string): void;
+  deadPanePushes(): GateRow[];
   /** Deletes closed/answered rows past the retention window, floor respected.
       Returns the number of rows removed. */
   sweep(): number;
@@ -290,6 +291,9 @@ export function createGatesStore(opts: {
   const deleteSubStmt = db.prepare("DELETE FROM gate_subscriptions WHERE id = ?");
   const subDeliveryStmt = db.prepare("UPDATE gate_subscriptions SET lastDelivery = ? WHERE id = ?");
   const subDeadStmt = db.prepare("UPDATE gate_subscriptions SET dead = 1 WHERE id = ?");
+  const deadPaneStmt = db.prepare(
+    "SELECT * FROM gates WHERE nudge IS NOT NULL AND released = 0 AND status = 'answered' AND delivery IS NOT NULL ORDER BY openedAt",
+  );
 
   const get = (id: string): GateRow | null => {
     const row = getStmt.get(id) as GateColumns | null;
@@ -527,6 +531,10 @@ export function createGatesStore(opts: {
 
     markSubscriptionDead(id) {
       subDeadStmt.run(id);
+    },
+
+    deadPanePushes() {
+      return (deadPaneStmt.all() as GateColumns[]).map(rowToGate).filter((r) => r.delivery?.outcome === "dead-pane");
     },
 
     sweep() {

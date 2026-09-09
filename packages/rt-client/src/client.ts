@@ -356,7 +356,7 @@ export function agentStart(
   a: Commands["agent:start"]["payload"], o: RtClientOptions = {},
 ): Promise<RtResponse<AgentRecord>> {
   const payload: Record<string, unknown> = { repo: a.repo, cwd: a.cwd };
-  for (const k of ["prompt", "surface", "model", "effort", "account", "label", "caller", "workspace", "tab", "extraArgs"] as const) {
+  for (const k of ["prompt", "surface", "model", "effort", "account", "label", "caller", "workspace", "tab", "extraArgs", "env", "herdrSocket", "handle"] as const) {
     if (a[k] !== undefined) payload[k] = a[k];
   }
   return rtCommand<AgentRecord>("agent:start", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
@@ -518,4 +518,125 @@ export function gateSubscriptions(
   const payload: Record<string, unknown> = {};
   for (const k of ["session", "live"] as const) if (a[k] !== undefined) payload[k] = a[k];
   return rtCommand<Commands["gate:subscriptions"]["data"]>("gate:subscriptions", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+// ─── Herd (shepherd run registry) ───────────────────────────────────────────
+
+/** Provisions the room, workspace and subscription before it answers, so it
+    gets the same 60s budget as a spawn rather than the 10s default. */
+export function herdStart(
+  a: Commands["herd:start"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:start"]["data"]>> {
+  const payload: Record<string, unknown> = { name: a.name, repo: a.repo, session: a.session };
+  if (a.hidden !== undefined) payload.hidden = a.hidden;
+  return rtCommand<Commands["herd:start"]["data"]>("herd:start", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 60_000 });
+}
+
+/** Worktree provision plus agent launch; the 10s default cannot cover it. */
+export function herdSpawn(
+  a: Commands["herd:spawn"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:spawn"]["data"]>> {
+  const payload: Record<string, unknown> = { herd: a.herd, job: a.job };
+  for (const k of ["brief", "dir", "model", "effort", "account", "disposable"] as const) if (a[k] !== undefined) payload[k] = a[k];
+  return rtCommand<Commands["herd:spawn"]["data"]>("herd:spawn", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 60_000 });
+}
+
+export function herdAsk(
+  a: Commands["herd:ask"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:ask"]["data"]>> {
+  const payload: Record<string, unknown> = { herd: a.herd, job: a.job, session: a.session, questions: a.questions };
+  for (const k of ["pane", "context"] as const) if (a[k] !== undefined) payload[k] = a[k];
+  return rtCommand<Commands["herd:ask"]["data"]>("herd:ask", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function herdMilestone(
+  a: Commands["herd:milestone"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:milestone"]["data"]>> {
+  const payload: Record<string, unknown> = { herd: a.herd, job: a.job, session: a.session, artifact: a.artifact };
+  for (const k of ["pane", "summary"] as const) if (a[k] !== undefined) payload[k] = a[k];
+  return rtCommand<Commands["herd:milestone"]["data"]>("herd:milestone", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function herdAnswer(
+  a: Commands["herd:answer"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:answer"]["data"]>> {
+  return rtCommand<Commands["herd:answer"]["data"]>("herd:answer", { gate: a.gate }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+/** A disposable job's report also closes its pane, one herdr CLI call under the runner's own 15s budget. */
+export function herdReport(
+  a: Commands["herd:report"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:report"]["data"]>> {
+  return rtCommand<Commands["herd:report"]["data"]>("herd:report", { herd: a.herd, job: a.job, body: a.body }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
+}
+
+export function herdGates(
+  a: Commands["herd:gates"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:gates"]["data"]>> {
+  return rtCommand<Commands["herd:gates"]["data"]>("herd:gates", { herd: a.herd }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function herdStatus(
+  a: Commands["herd:status"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:status"]["data"]>> {
+  return rtCommand<Commands["herd:status"]["data"]>("herd:status", { herd: a.herd }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function herdList(
+  a: Commands["herd:list"]["payload"] = {},
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:list"]["data"]>> {
+  const payload: Record<string, unknown> = {};
+  if (a.all !== undefined) payload.all = a.all;
+  return rtCommand<Commands["herd:list"]["data"]>("herd:list", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+export function herdResume(
+  a: Commands["herd:resume"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:resume"]["data"]>> {
+  return rtCommand<Commands["herd:resume"]["data"]>("herd:resume", { herd: a.herd, session: a.session }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+/** Closes a herdr pane, one CLI call under the runner's own 15s budget. */
+export function herdClose(
+  a: Commands["herd:close"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:close"]["data"]>> {
+  return rtCommand<Commands["herd:close"]["data"]>("herd:close", { herd: a.herd, job: a.job }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
+}
+
+/** Three sequential herdr CLI calls (pane get, tab create, pane run), each under the runner's own 15s budget. */
+export function herdAttend(
+  a: Commands["herd:attend"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:attend"]["data"]>> {
+  return rtCommand<Commands["herd:attend"]["data"]>("herd:attend", { herd: a.herd, job: a.job, callerWorkspace: a.callerWorkspace }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 60_000 });
+}
+
+/** Closes panes, disposes worktrees and archives the room in one pass; the
+    worktree disposals alone can outrun a spawn's budget. */
+export function herdWrapUp(
+  a: Commands["herd:wrap-up"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:wrap-up"]["data"]>> {
+  const payload: Record<string, unknown> = { herd: a.herd };
+  for (const k of ["closePanes", "dispose", "deleteJobDirs", "archiveRoom"] as const) if (a[k] !== undefined) payload[k] = a[k];
+  return rtCommand<Commands["herd:wrap-up"]["data"]>("herd:wrap-up", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 120_000 });
+}
+
+/** Runs `herdr session stop`, one CLI call under the runner's own 15s budget. */
+export function herdStopHidden(
+  _a: Commands["herd:stop-hidden"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["herd:stop-hidden"]["data"]>> {
+  return rtCommand<Commands["herd:stop-hidden"]["data"]>("herd:stop-hidden", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }

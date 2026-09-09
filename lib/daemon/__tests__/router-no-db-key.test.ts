@@ -16,6 +16,7 @@ import { createAgentHandlers } from "../handlers/agent.ts";
 import { buildRoutedHandlers } from "../command-router.ts";
 import { createEventsBus } from "../events-bus.ts";
 import { createGatesStore } from "../gates-store.ts";
+import { createHerdStore } from "../herd-store.ts";
 import type { GatePush } from "../gate-push.ts";
 import { fakeStore } from "./fake-cache-store.ts";
 import type { HandlerContext } from "../handlers/types.ts";
@@ -66,7 +67,16 @@ describe("R028: db is not a handler-map entry", () => {
       },
       eventsBus: createEventsBus({ dbPath: ":memory:", log: pino({ level: "silent" }) }),
       gatesStore: createGatesStore({ dbPath: ":memory:", log: pino({ level: "silent" }) }),
-      gatePush: { onAnswered: async () => {}, onOpened: async () => {}, onClosed: async () => {} } satisfies GatePush,
+      gatePush: { onAnswered: async () => {}, onOpened: async () => {}, onClosed: async () => {}, retryDeadPanes: async () => ({ retried: 0, delivered: 0, gaveUp: 0 }) } satisfies GatePush,
+      herdStore: createHerdStore({ dbPath: ":memory:", log: pino({ level: "silent" }) }),
+      herdLifecycle: { connected: () => false, watch: () => {} },
+      herdHidden: {
+        socketPath: () => "/tmp/herd-hidden.sock",
+        ensure: async () => { throw new Error("hidden mode not wired yet"); },
+        up: async () => false,
+        stop: async () => {},
+      },
+      herdJobsRoot: join(tmpdir(), "rt-herd-router-jobs"),
       homeSnapshot: { stop: () => {}, runNow: async () => ({}) as any, pullNow: async () => ({}) as any, status: () => ({}) as any, ready: Promise.resolve() },
       teamSnapshots: { stop() {}, rescan: async () => {}, status: () => [], pullNow: async () => ({ outcome: "skipped", detail: null }), ready: Promise.resolve() },
       repos: { withReconcilerHeld: async (fn) => fn(), refreshWatchedRepos: () => {} },

@@ -111,7 +111,10 @@ final class SetupFlowUITests: XCTestCase {
         waitFor("setup.checklist.screen")
     }
 
-    func testJoinNoAccessShowsSpecificFailure() {
+    /// A denial rt actually checked warns instead of blocking, so the warning
+    /// is only readable back on the team screen: Continue has already carried
+    /// the joiner to the checklist by the time it renders.
+    func testJoinDeniedWarnsAndStillReachesChecklist() {
         launch("join-no-access")
         waitFor("setup.welcome.screen")
         el("setup.welcome.continue").click()
@@ -120,8 +123,11 @@ final class SetupFlowUITests: XCTestCase {
         el("setup.team.join.code").click()
         el("setup.team.join.code").typeText("ABCD")
         el("setup.team.continue").click()
-        XCTAssertTrue(app.staticTexts["You don't have access yet: ask matt to grant you access to Acme."].waitForExistence(timeout: 20))
-        XCTAssertFalse(el("setup.checklist.screen").exists)
+        waitFor("setup.checklist.screen")
+        el("setup.checklist.back").click()
+        waitFor("setup.team.screen")
+        waitFor("setup.team.join.warning")
+        XCTAssertTrue(app.staticTexts["Joining Acme. Your GitHub account cannot see acme/team yet: ask matt or your org admin to grant read access."].exists)
     }
 
     func testPermissionDeniedThenGrantedEnablesInstall() {

@@ -315,3 +315,16 @@ test("an existing gates.db without the W4 columns gains them on open (ALTER migr
   expect(row.origin).toEqual({ presentation: "form", paneId: "p1" });
   store.close_();
 });
+
+test("deadPanePushes lists answered nudged rows whose last push was dead-pane and are unreleased; never closed ones", () => {
+  const s = store();
+  const a = s.open({ subject: "herd:h/j1", kind: "question", questions: qs(), nudge: { session: "w1" } }).row.id;
+  const b = s.open({ subject: "herd:h/j2", kind: "question", questions: qs(), nudge: { session: "w2" } }).row.id;
+  const c = s.open({ subject: "herd:h/j3", kind: "question", questions: qs() }).row.id;
+  s.answer(a, { q: "a" }, "shepherd"); s.markDelivery(a, "dead-pane");
+  s.answer(b, { q: "a" }, "shepherd"); s.markDelivery(b, "delivered");
+  s.answer(c, { q: "a" }, "shepherd"); s.markDelivery(c, "dead-pane");
+  const d = s.open({ subject: "herd:h/j4", kind: "question", questions: qs(), nudge: { session: "w4" } }).row.id;
+  s.close(d, "abandoned"); s.markDelivery(d, "dead-pane");
+  expect(s.deadPanePushes().map((r) => r.id)).toEqual([a]);
+});

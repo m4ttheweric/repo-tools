@@ -5,7 +5,7 @@ import type { Probes } from "../../setup/probes.ts";
 import type { SettingsReader } from "../../setup/team-settings.ts";
 import { decodeCode, open } from "../invite-crypto.ts";
 import { readInviteRecords } from "../invite-records.ts";
-import { INVITE_TTL_DAYS, mintInvite, pasteBlock, type MintInviteSeams } from "../invite.ts";
+import { INVITE_TTL_DAYS, joinLink, joinLinkBase, mintInvite, pasteBlock, type MintInviteSeams } from "../invite.ts";
 import type { RelayClient } from "../relay-client.ts";
 import type { setSetting } from "../../settings/write.ts";
 
@@ -123,16 +123,39 @@ function probesWithRemote(remote: string, extraFiles: Record<string, string> = {
 
 const REMOTE = "git@github.com:acme/widgets.git";
 
+const CODE = "01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC";
+const PLAIN = "0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABC";
+
+test("joinLinkBase defaults to mattstack.dev and honours RT_JOIN_BASE_URL", () => {
+  expect(joinLinkBase({})).toBe("https://mattstack.dev/join");
+  expect(joinLinkBase({ RT_JOIN_BASE_URL: "http://localhost:8788/join" })).toBe("http://localhost:8788/join");
+});
+
+test("the code rides in the fragment and nowhere else", () => {
+  const link = joinLink("https://mattstack.dev/join", CODE);
+  expect(link).toBe(`https://mattstack.dev/join#${CODE}`);
+  expect(new URL(link).search).toBe("");
+});
+
+test("the fragment satisfies the landing page's own validator", () => {
+  const fragment = new URL(joinLink("https://mattstack.dev/join", CODE)).hash.slice(1);
+  const normalized = fragment.replace(/[\s-]/g, "").toUpperCase();
+  expect(normalized).toHaveLength(77);
+  expect(normalized).toBe(PLAIN);
+  expect(/^[0-9A-HJKMNP-TV-Z]+$/.test(normalized)).toBe(true);
+});
+
 describe("pasteBlock", () => {
-  test("contains the join deep link and the raw code", () => {
-    const block = pasteBlock("ABCDE-FGHIJ");
-    expect(block).toContain("mattstack://join/ABCDE-FGHIJ");
-    expect(block).toContain("Invite code:\nABCDE-FGHIJ");
-    expect(block).toContain("https://github.com/m4ttstack/rt/releases/latest");
+  test("leads with the link and keeps the deep link and the bare code", () => {
+    const block = pasteBlock(CODE, { link: `https://mattstack.dev/join#${CODE}`, teamName: "Acme" });
+    expect(block).toContain(`https://mattstack.dev/join#${CODE}`);
+    expect(block).toContain(`mattstack://join/${CODE}`);
+    expect(block).toContain(CODE);
+    expect(block).toContain("Acme");
   });
 
   test("honors a custom download URL", () => {
-    const block = pasteBlock("CODE", "https://example.test/download");
+    const block = pasteBlock("CODE", { link: "https://mattstack.dev/join#CODE", teamName: "Acme", downloadUrl: "https://example.test/download" });
     expect(block).toContain("https://example.test/download");
   });
 });
@@ -290,6 +313,7 @@ describe("mintInvite", () => {
     });
 
     expect(result.pasteBlock).toContain("mattstack://join/");
+    expect(result.link).toBe(`https://mattstack.dev/join#${result.code}`);
   });
 
   test("falls back to the slug as the pointer name when board.title is unset", async () => {
@@ -527,5 +551,20 @@ describe("mintInvite: forge membership is not rt's to grant", () => {
 
     expect(result.manualSteps.length).toBeGreaterThan(0);
     expect(result.manualSteps.at(-1)).toContain("Ask whoever administers");
+  });
+});
+
+describe("joinLinkBase refuses a base the code could be intercepted on", () => {
+  test("plain http on a public host is refused, since the page reading the fragment could be replaced in transit", () => {
+    expect(() => joinLinkBase({ RT_JOIN_BASE_URL: "http://mattstack.example/join" })).toThrow(/https/);
+  });
+
+  test("http on loopback is allowed, which is where the harness serves its fixture", () => {
+    expect(joinLinkBase({ RT_JOIN_BASE_URL: "http://localhost:8788/join" })).toBe("http://localhost:8788/join");
+    expect(joinLinkBase({ RT_JOIN_BASE_URL: "http://127.0.0.1:8788/join" })).toBe("http://127.0.0.1:8788/join");
+  });
+
+  test("a value that is not a url at all is refused rather than pasted into a link", () => {
+    expect(() => joinLinkBase({ RT_JOIN_BASE_URL: "mattstack.example/join" })).toThrow(/https/);
   });
 });

@@ -134,6 +134,21 @@ export interface GateSubscription {
   dead: boolean;
 }
 
+export interface HerdInfo { id: string; repo: string; room: string; workspace: string; shepherdSession: string; shepherdHandle: string; herdrSocket: string | null; hidden: boolean; status: "active" | "wrapped"; createdAt: number; wrappedAt: number | null }
+/** A herd row as `herd:list` reports it: the registry row plus how many jobs hang off it. */
+export interface HerdListRow extends HerdInfo { jobs: number }
+export interface HerdJobInfo { herd: string; name: string; worktree: string; branch: string | null; tree: string | null; pane: string | null; agentSession: string | null; agentId: string | null; handle: string; status: "spawning" | "active" | "at-gate" | "at-milestone" | "done" | "closed" | "crashed"; disposable: boolean; lastGate: string | null; lastReport: number | null; createdAt: number; updatedAt: number }
+/** `lastGateStatus`/`lastGateDelivery` come from the job's `lastGate` row: an `answered` gate whose delivery is `dead-pane` is the "answered, worker not woken" case the shepherd must act on. */
+export interface HerdStatusData {
+  herd: HerdInfo;
+  jobs: Array<HerdJobInfo & { openGate: string | null; paneStatus: string | null; lastGateStatus: GateStatus | null; lastGateDelivery: "delivered" | "dead-pane" | null }>;
+  unread: number;
+  lifecycleConnected: boolean;
+  hiddenUp: boolean | null;
+  /** The shepherd session's own `herd:<id>/` subscription row, or null when none is live. */
+  subscription: { id: string; dead: boolean; lastDelivery: GateSubscription["lastDelivery"] } | null;
+}
+
 /**
  * Duplicated shape on purpose, same reasoning as EventsBusEvent above:
  * these mirror lib/state/chat-store.ts's types, which rt-client cannot
@@ -540,7 +555,7 @@ export interface Commands {
   "chat:dm-open": { payload: { from: string; to: string; sessionId?: string }; data: { room: string; created: boolean } };
 
   // ─── Agent handoff (rt agent) ────────────────────────────────────────────
-  "agent:start": { payload: { repo: string; cwd: string; prompt?: string; surface?: AgentSurface; model?: string; effort?: string; account?: string; label?: string; caller?: string; workspace?: string; tab?: string; extraArgs?: string }; data: AgentRecord };
+  "agent:start": { payload: { repo: string; cwd: string; prompt?: string; surface?: AgentSurface; model?: string; effort?: string; account?: string; label?: string; caller?: string; workspace?: string; tab?: string; extraArgs?: string; env?: Record<string, string>; herdrSocket?: string; handle?: string }; data: AgentRecord };
   "agent:resume": { payload: { id: string; prompt?: string; surface?: AgentSurface; workspace?: string; tab?: string }; data: AgentRecord };
   "agent:get": { payload: { id: string }; data: AgentRecord };
   "agent:list": { payload: { repo?: string }; data: { agents: AgentRecord[] } };
@@ -611,6 +626,25 @@ export interface Commands {
   /** The shepherd's gap-recovery liveness check and the observability window
    *  onto delivery outcomes (dead marks included). */
   "gate:subscriptions": { payload: { session?: string; live?: boolean }; data: { subscriptions: GateSubscription[] } };
+
+  // ─── Herd (shepherd run registry) ────────────────────────────────────────
+  "herd:start":  { payload: { name: string; repo: string; session: string; hidden?: boolean }; data: { herd: string; room: string; workspace: string; subscription: string; handle: string; hidden: boolean } };
+  "herd:resume": { payload: { herd: string; session: string }; data: { subscription: string; gates: GateRow[]; unread: number; status: HerdStatusData; handle: string } };
+  "herd:status": { payload: { herd: string }; data: HerdStatusData };
+  /** Active herds only unless `all`, so a shepherd's "which herd am I on" question has one answer. */
+  "herd:list":   { payload: { all?: boolean }; data: { herds: HerdListRow[] } };
+  "herd:close":  { payload: { herd: string; job: string }; data: { job: string; status: "closed" } };
+  /** `brief` is the brief TEXT, not a path: the CLI reads the file. It is stored at `<jobsRoot>/<herd>/<job>/job.md`, so a respawn with `dir` and no `brief` reads it back. */
+  "herd:spawn":  { payload: { herd: string; job: string; brief?: string; dir?: string; model?: string; effort?: string; account?: string; disposable?: boolean }; data: { herd: string; job: string; pane: string; worktree: string; branch: string | null; tree: string | null; agentId: string; sessionId: string; handle: string } };
+  "herd:gates":  { payload: { herd: string }; data: { gates: GateRow[] } };
+  "herd:ask":       { payload: { herd: string; job: string; session: string; pane?: string; questions: GateQuestion[]; context?: string }; data: { gate: string } };
+  "herd:milestone": { payload: { herd: string; job: string; session: string; pane?: string; artifact: string; summary?: string }; data: { gate: string; message: number } };
+  "herd:answer":    { payload: { gate: string }; data: { gate: string; status: GateStatus; answer: GateAnswer | null; closedReason: GateRow["closedReason"] } };
+  "herd:report":    { payload: { herd: string; job: string; body: string }; data: { message: number } };
+  /** `callerWorkspace` is the attending session's own HERDR_WORKSPACE_ID: the attached tab opens there, not in the herd's workspace. */
+  "herd:attend":      { payload: { herd: string; job: string; callerWorkspace: string }; data: { tab: string; pane: string } };
+  "herd:stop-hidden": { payload: Record<string, never>; data: { stopped: boolean } };
+  "herd:wrap-up": { payload: { herd: string; closePanes?: boolean; dispose?: string[]; deleteJobDirs?: boolean; archiveRoom?: boolean }; data: { closed: string[]; workspaceClosed: boolean; disposed: string[]; refused: Array<{ tree: string; reason: string }>; deletedJobDirs: boolean; archived: boolean } };
 
   /** Wire reply on success is always `{ok:true, repaired}` (no `data`
    *  wrapper) — `data` here documents the extra field the same way PingData
@@ -715,6 +749,20 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "gate:subscribe",
   "gate:unsubscribe",
   "gate:subscriptions",
+  "herd:start",
+  "herd:resume",
+  "herd:status",
+  "herd:list",
+  "herd:close",
+  "herd:spawn",
+  "herd:gates",
+  "herd:ask",
+  "herd:milestone",
+  "herd:answer",
+  "herd:report",
+  "herd:attend",
+  "herd:stop-hidden",
+  "herd:wrap-up",
   "hooks:repair",
   "hooks:watch",
   "sdm:catalog",

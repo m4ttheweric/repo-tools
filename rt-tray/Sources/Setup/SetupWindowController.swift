@@ -34,7 +34,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     init(environment: SetupEnvironment) {
         self.environment = environment
         self.flow = SetupFlowModel(readOnly: environment.readOnly)
-        self.team = TeamChoiceModel(rt: environment.rt)
+        self.team = TeamChoiceModel(rt: environment.rt, pasteboard: SystemPasteboard())
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 620),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.title = "mattstack Setup"
