@@ -219,7 +219,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     @MainActor
     private func retireSelf(intended: String, myFlavor: String) {
-        daemonLifecycle.stopDaemon()
+        daemonLifecycle.stopDaemonForTeardown(origin: DaemonOrigin.flavorRetire)
         do {
             try SMAppService.mainApp.unregister()
         } catch {
@@ -625,7 +625,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         Task { @MainActor in
             setHealth(.starting)
 
-            await daemonLifecycle.restartDaemon()
+            await daemonLifecycle.restartDaemon(origin: DaemonOrigin.menu)
 
             // Poll until it comes back (up to 8s)
             for _ in 0..<16 {
@@ -644,7 +644,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             // Unregister from launchd — the agent has KeepAlive=true, so an
             // HTTP shutdown alone would be undone by a launchd restart.
             // Unregistering makes launchd SIGTERM the daemon and keep it down.
-            daemonLifecycle.stopDaemon()
+            await daemonLifecycle.stopDaemon(origin: DaemonOrigin.menu)
             try? await Task.sleep(nanoseconds: 500_000_000)
             setHealth(.down)
         }

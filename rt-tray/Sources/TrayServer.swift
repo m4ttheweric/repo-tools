@@ -345,20 +345,23 @@ class TrayServer {
                                   body: TrayHealth.body(isDevBuild: BundleFlavor.isDevBuild))
 
             } else if method == "POST" && path == "/daemon/start" {
+                let origin = DaemonOrigin.http(clientHeader: DaemonOrigin.header("X-RT-Client", in: str))
                 DispatchQueue.main.async {
-                    Task { await self.daemonLifecycle?.startDaemon() }
+                    Task { await self.daemonLifecycle?.startDaemon(origin: origin) }
                 }
                 self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true}")
 
             } else if method == "POST" && path == "/daemon/stop" {
+                let origin = DaemonOrigin.http(clientHeader: DaemonOrigin.header("X-RT-Client", in: str))
                 DispatchQueue.main.async {
-                    self.daemonLifecycle?.stopDaemon()
+                    Task { await self.daemonLifecycle?.stopDaemon(origin: origin) }
                 }
                 self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true}")
 
             } else if method == "POST" && path == "/daemon/restart" {
+                let origin = DaemonOrigin.http(clientHeader: DaemonOrigin.header("X-RT-Client", in: str))
                 DispatchQueue.main.async {
-                    Task { await self.daemonLifecycle?.restartDaemon() }
+                    Task { await self.daemonLifecycle?.restartDaemon(origin: origin) }
                 }
                 self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true}")
 
@@ -382,7 +385,7 @@ class TrayServer {
                 var loginAfter = "unknown"
                 DispatchQueue.main.sync {
                     if let lifecycle = self.daemonLifecycle {
-                        lifecycle.stopDaemon()   // service.unregister(), logs itself
+                        lifecycle.stopDaemonForTeardown(origin: DaemonOrigin.flavorRetire)   // service.unregister(), logs itself
                         daemonAfter = Self.statusName(lifecycle.status)
                     } else {
                         errs.append("no daemonLifecycle wired")
