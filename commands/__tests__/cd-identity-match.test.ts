@@ -12,7 +12,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { closeStateDb } from "../../lib/state/index.ts";
 import type { KnownRepo } from "../../lib/repo-index.ts";
-import { resolveReposForIdentity } from "../cd.ts";
+import { dropGhostWorktrees, resolveReposForIdentity } from "../cd.ts";
 
 const SKILLS_ID = "remote:github.com%2Fm4ttheweric%2Fskills";
 
@@ -84,5 +84,36 @@ describe("resolveReposForIdentity", () => {
     const cached = [repo(SKILLS_ID, "/repos/matt-skills")];
 
     expect(resolveReposForIdentity(null, cached)).toBe(cached);
+  });
+});
+
+// The cd-cache is rebuilt on a timer, so a row can carry a worktree disposed
+// (trashed) since the last refresh. Rows are validated at pick time; the lead
+// worktree stays even when missing so the repo-level missingRepoRefusal path
+// still gets its row.
+describe("dropGhostWorktrees", () => {
+  function multiRepo(paths: string[]): KnownRepo {
+    return {
+      repoName: "x",
+      dataDir: "/data/x",
+      worktrees: paths.map((path) => ({ path, branch: "b", isBare: false })),
+    };
+  }
+
+  test("drops linked worktrees whose path no longer exists", () => {
+    const repos = [multiRepo(["/r/main", "/r/gone", "/r/live"])];
+    const out = dropGhostWorktrees(repos, (p) => p !== "/r/gone");
+    expect(out[0]!.worktrees.map((w) => w.path)).toEqual(["/r/main", "/r/live"]);
+  });
+
+  test("keeps the lead worktree even when its path is gone", () => {
+    const repos = [multiRepo(["/r/main-gone", "/r/live"])];
+    const out = dropGhostWorktrees(repos, (p) => p !== "/r/main-gone");
+    expect(out[0]!.worktrees.map((w) => w.path)).toEqual(["/r/main-gone", "/r/live"]);
+  });
+
+  test("returns the same array when every path exists", () => {
+    const repos = [multiRepo(["/r/main", "/r/live"])];
+    expect(dropGhostWorktrees(repos, () => true)).toBe(repos);
   });
 });
