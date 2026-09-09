@@ -39,11 +39,25 @@ describe("bg-claims-store", () => {
     expect(s.list()).toEqual([{ owner: "runner:123", pane: null, createdAt: expect.any(Number) }]);
   });
 
-  test("claim is idempotent: a second claim on the same owner does not duplicate or throw", () => {
+  test("claim is idempotent: a second claim on the same owner with the same pane does not duplicate or throw", () => {
     const { s } = store();
     s.claim("agent:rec-1", "w1:p1");
     s.claim("agent:rec-1", "w1:p1");
     expect(s.list()).toHaveLength(1);
+  });
+
+  test("re-claiming an existing owner with a different pane updates the pane column", () => {
+    const { s } = store();
+    s.claim("agent:rec-1", "w1:pA");
+    const createdAt = s.list()[0]!.createdAt;
+    s.claim("agent:rec-1", "w1:pB");
+    const rows = s.list();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ owner: "agent:rec-1", pane: "w1:pB", createdAt });
+    expect(s.releaseByPane("w1:pA")).toEqual([]);
+    expect(s.list()).toHaveLength(1);
+    expect(s.releaseByPane("w1:pB")).toEqual(["agent:rec-1"]);
+    expect(s.list()).toEqual([]);
   });
 
   test("releaseByPane releases only matching rows and returns the released owners", () => {

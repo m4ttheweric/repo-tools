@@ -58,7 +58,7 @@ export function createBgClaimsStore(opts: { dbPath: string; log: Logger }): BgCl
     );
   `);
 
-  const upsert = db.prepare("INSERT INTO claims (owner, pane, created_at) VALUES (?, ?, ?) ON CONFLICT(owner) DO NOTHING");
+  const upsert = db.prepare("INSERT INTO claims (owner, pane, created_at) VALUES (?, ?, ?) ON CONFLICT(owner) DO UPDATE SET pane = excluded.pane");
   const deleteByOwner = db.prepare("DELETE FROM claims WHERE owner = ?");
   const ownersByPane = db.prepare("SELECT owner FROM claims WHERE pane = ?");
   const deleteByPane = db.prepare("DELETE FROM claims WHERE pane = ?");
