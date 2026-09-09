@@ -99,9 +99,19 @@ verbs run inside them resolve their own pane correctly.
 One ref grammar, one parser. `parsePaneRef` / `formatPaneRef` live in
 rt-client (exported; version bump announced before merge per CLAUDE.md).
 `bg:w1:p2` targets the background server; bare `w1:p2` is the visible
-server, byte-compatible with today. Stores that already record socket +
-bare id (herd rows, gate rows) keep doing so; the ref form is the wire and
-display format, parsed at the daemon's edge.
+server, byte-compatible with today. Herd rows keep their separate
+`herdrSocket` column. Gate rows and every other pane-id-shaped string field
+(`GateRow.pane`, `GateOrigin.paneId`, `AgentRecord.paneId`, `HerdJobInfo.pane`)
+carry NO socket today and gain none: the prefixed ref rides IN the existing
+string field, which is the design's payoff -- no schema changes anywhere.
+The ref is parsed at each use site (the daemon's edge and the injection
+seams).
+
+A census correction the sweep must absorb: `lib/daemon/inject.ts`
+(pane:send, chat:invite) and `lib/daemon/gate-escape.ts` (the gate Escape
+nudge) have no socket parameter at all today -- injecting into a hidden
+pane is currently impossible, full stop. The sweep threads a
+ref-resolved socket through both.
 
 Two rules make the sweep one rule instead of per-verb patches:
 
@@ -128,13 +138,20 @@ silent when it is not.
   socket field; herd surfaces display `bg:` refs per the round-trip rule.
   Otherwise behavior-invisible.
 - **Runner `--herdr`:** the engine gets the bg socket from the daemon
-  (ensure + claim `runner:<board>`). Die-with-board is preserved: exit
-  cleanup closes only its own panes, then releases the claim. The tmux
-  default is untouched.
-- **`rt agent start --bg`:** new flag. Spawns the pane on the bg server,
-  prints a `bg:` ref, claims `agent:<handoffId>` until the pane closes.
-  This is the primitive board actions consume; board-side adoption is out
-  of scope here.
+  (ensure + claim `runner:<board>`). Honesty note from the census: the
+  runner has ZERO daemon dependency today -- it reads ambient
+  `HERDR_SOCKET_PATH` and errors if unset -- so this RPC (via the
+  rt-client wrappers every other command already uses) is wholly new
+  wiring, not a re-point. Die-with-board is preserved: teardown closes its
+  own workspace as today, then releases the claim. The tmux default is
+  untouched.
+- **`rt agent start --bg`:** new flag. The daemon plumbing is a head
+  start: `agent:start`'s payload already carries `herdrSocket?` wired
+  through `launch()`, so `--bg` is CLI parsing plus daemon-side
+  ensure+claim (`agent:<record id>`) plus printing the `bg:` ref. The
+  claim releases when the pane closes (the lifecycle forwarder already
+  watches bg-server `pane.closed` events). This is the primitive board
+  actions consume; board-side adoption is out of scope here.
 
 ## RT-114 rides along
 
@@ -160,8 +177,11 @@ that dispatching `--help` on every leaf never runs a handler.
 One branch. RT-114 fix first, then service, sweep, consumer re-points,
 tests. Cutover when confident: merge, dev daemon restart (the running
 daemon is the deployed code), rt-client publish from main with the version
-bump announced to peer sessions. No staged waves, no compatibility shims
-beyond bare-ref backcompat, which is permanent.
+bump announced to peer sessions, and stop any live legacy `herd` hidden
+session (`herdr session stop herd`) -- the bg service uses session name
+`bg` with its own socket, so a leftover `herd` server would be orphaned,
+not adopted. No staged waves, no compatibility shims beyond bare-ref
+backcompat, which is permanent.
 
 ## Rejected alternatives
 
