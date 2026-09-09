@@ -1,7 +1,7 @@
 /**
  * The background server: one daemon-owned headless herdr server for panes
- * that never appear in the attached UI. Generalizes createHiddenSession
- * (herd-session.ts) beyond herd; see
+ * that never appear in the attached UI. Generalizes the herd-only hidden
+ * session it replaced; see
  * docs/superpowers/specs/2026-09-09-background-server-design.md "The bg
  * service" and "Environment".
  *

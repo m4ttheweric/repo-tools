@@ -70,8 +70,6 @@ export function buildRoutedHandlers(opts: {
   herdStore: HerdStore;
   /** Herdr lifecycle-stream liveness the shepherd's status reads. */
   herdLifecycle: HerdDeps["lifecycle"];
-  /** The hidden herdr session a `--hidden` herd's panes run in. */
-  herdHidden: HerdDeps["hidden"];
   /** The daemon-owned background herdr server bg:* drives (spec "The bg service"). */
   bgService: BgService;
   /** Who is holding the bg server up; gates bg:stop. */
@@ -133,7 +131,8 @@ export function buildRoutedHandlers(opts: {
     herdr: herdrRequest,
     herdrRunnerFor: (socket) => defaultHerdrRunner(socket ? { ...process.env, HERDR_SOCKET_PATH: socket } : process.env),
     lifecycle: opts.herdLifecycle,
-    hidden: opts.herdHidden,
+    bg: opts.bgService,
+    claims: opts.bgClaims,
     jobsRoot: opts.herdJobsRoot,
     log: ctx.log,
   });

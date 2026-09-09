@@ -8,6 +8,8 @@ import { createGatesStore, type GatesStore } from "../gates-store.ts";
 import { createGateHandlers } from "../handlers/gate.ts";
 import { createEventsBus } from "../events-bus.ts";
 import { createHerdHandlers, type HerdDeps } from "../handlers/herd.ts";
+import { createBgClaimsStore, type BgClaimsStore } from "../bg-claims-store.ts";
+import type { BgService } from "../bg-service.ts";
 
 const log = pino({ level: "silent" });
 let dirs: string[] = [];
@@ -21,6 +23,16 @@ export function harness(over: Partial<HerdDeps> = {}) {
   const gateStore = createGatesStore({ dbPath: join(dir, "gates.db"), log });
   const bus = createEventsBus({ dbPath: join(dir, "events.db"), log });
   const gate = createGateHandlers(gateStore, bus, () => {}, { log });
+  const claims: BgClaimsStore = createBgClaimsStore({ dbPath: join(dir, "bg-claims.db"), log });
+  let bgStopCalls = 0;
+  const bg: BgService = {
+    socketPath: () => "/tmp/hidden.sock",
+    up: async () => false,
+    ensure: async () => ({ socket: "/tmp/hidden.sock", started: true }),
+    stop: async () => { bgStopCalls += 1; },
+    reprobe: async () => ({ ok: true, drift: [] }),
+    lastParity: () => null,
+  };
   const chatCalls: Array<{ verb: string; payload: any }> = [];
   // One ordered log across both fakes, for the cases where what matters is
   // which call came first (chat identity before the trust wait).
@@ -90,13 +102,13 @@ export function harness(over: Partial<HerdDeps> = {}) {
       };
     },
     lifecycle: { connected: () => true, watch: () => {} },
-    hidden: { socketPath: () => "/tmp/hidden.sock", ensure: async () => "/tmp/hidden.sock", up: async () => false, stop: async () => {} },
+    bg, claims,
     jobsRoot: join(dir, "herds"),
     log,
     ...over,
   };
   const h = createHerdHandlers(deps);
-  return { h, store, gateStore, gate, chatCalls, agentCalls, worktreeCalls, herdrCalls, socketCalls, order, screen, trust, dir };
+  return { h, store, gateStore, gate, chatCalls, agentCalls, worktreeCalls, herdrCalls, socketCalls, order, screen, trust, dir, claims, bg, bgStopCalls: () => bgStopCalls };
 }
 
 const START = { name: "demo", repo: "gh:m4ttstack/rt", session: "sess-shep" };
@@ -154,6 +166,13 @@ describe("herd:start", () => {
     if (!res.ok) throw new Error(res.error);
     expect(store.get(res.data.herd)).toMatchObject({ hidden: true, herdrSocket: "/tmp/hidden.sock" });
     expect(watched).toEqual(["/tmp/hidden.sock"]);
+  });
+
+  test("--hidden claims herd:<id> on the bg server", async () => {
+    const { h, claims } = harness();
+    const res = await h["herd:start"]({ ...START, hidden: true });
+    if (!res.ok) throw new Error(res.error);
+    expect(claims.list()).toEqual([{ owner: `herd:${res.data.herd}`, pane: null, createdAt: expect.any(Number) }]);
   });
 });
 
@@ -517,6 +536,24 @@ describe("herd:spawn", () => {
     expect(hx.agentCalls[0].herdrSocket).toBe("/tmp/hidden.sock");
   });
 
+  test("a hidden herd's spawn result and status jobs print the pane as a bg: ref; a visible herd's stays bare", async () => {
+    const hx = harness();
+    const s = await hx.h["herd:start"]({ ...START, hidden: true });
+    if (!s.ok) throw new Error(s.error);
+    const spawned = await hx.h["herd:spawn"]({ herd: s.data.herd, job: "job-a", brief: "b", dir: "/t" });
+    if (!spawned.ok) throw new Error(spawned.error);
+    expect(spawned.data.pane).toBe("bg:w9:p1");
+    const status = await hx.h["herd:status"]({ herd: s.data.herd });
+    if (!status.ok) throw new Error(status.error);
+    expect(status.data.jobs[0]!.pane).toBe("bg:w9:p1");
+
+    const vis = await hx.h["herd:start"]({ ...START, name: "vis" });
+    if (!vis.ok) throw new Error(vis.error);
+    const visSpawned = await hx.h["herd:spawn"]({ herd: vis.data.herd, job: "job-a", brief: "b", dir: "/t" });
+    if (!visSpawned.ok) throw new Error(visSpawned.error);
+    expect(visSpawned.data.pane).toBe("w9:p1");
+  });
+
   test("a sign-in that hands back a renamed handle is what the join, the row, and the response carry", async () => {
     const calls: Array<{ verb: string; payload: any }> = [];
     const chat = {
@@ -600,7 +637,7 @@ describe("hidden verbs", () => {
     const run = hx.herdrCalls.find((c) => c[1] === "pane" && c[2] === "run")!;
     expect(run[3]).toBe("wv:p9");
     expect(run[4]).toContain("terminal attach term-7 --takeover");
-    expect(run[4]).toContain("HERDR_SESSION=herd");
+    expect(run[4]).toContain("HERDR_SESSION=bg");
   });
 
   test("attend on a visible herd is a no-op with a message", async () => {
@@ -655,23 +692,41 @@ describe("hidden verbs", () => {
   });
 
   test("stop-hidden returns the failure when the herdr stop fails", async () => {
-    const hx = harness({ hidden: { socketPath: () => "/tmp/hidden.sock", ensure: async () => "/tmp/hidden.sock", up: async () => true, stop: async () => { throw new Error("herdr session stop failed: no such session"); } } });
+    const hx = harness({
+      bg: {
+        socketPath: () => "/tmp/hidden.sock", up: async () => true, ensure: async () => ({ socket: "/tmp/hidden.sock", started: false }),
+        stop: async () => { throw new Error("herdr session stop failed: no such session"); },
+        reprobe: async () => ({ ok: true, drift: [] }), lastParity: () => null,
+      },
+    });
     const res = await hx.h["herd:stop-hidden"]({});
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error("unreachable");
     expect(res.error).toMatch(/no such session/);
   });
 
-  test("stop-hidden refuses while an active hidden herd exists, then stops", async () => {
-    let stopped = 0;
-    const hx = harness({ hidden: { socketPath: () => "/tmp/hidden.sock", ensure: async () => "/tmp/hidden.sock", up: async () => true, stop: async () => { stopped++; } } });
+  test("stop-hidden refuses while the hidden herd's claim is held, then stops once wrap-up releases it", async () => {
+    const hx = harness();
     const s = await hx.h["herd:start"]({ ...START, hidden: true });
     if (!s.ok) throw new Error(s.error);
-    expect((await hx.h["herd:stop-hidden"]({})).ok).toBe(false);
-    hx.store.setHerdStatus(s.data.herd, "wrapped");
+    const refused = await hx.h["herd:stop-hidden"]({});
+    expect(refused.ok).toBe(false);
+    if (refused.ok) throw new Error("unreachable");
+    expect(refused.error).toContain(`herd:${s.data.herd}`);
+    expect((await hx.h["herd:wrap-up"]({ herd: s.data.herd })).ok).toBe(true);
     const res = await hx.h["herd:stop-hidden"]({});
     expect(res.ok).toBe(true);
-    expect(stopped).toBe(1);
+    expect(hx.bgStopCalls()).toBe(1);
+  });
+
+  test("stop-hidden refuses on a foreign claim, naming it", async () => {
+    const hx = harness();
+    hx.claims.claim("runner:999");
+    const res = await hx.h["herd:stop-hidden"]({});
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.error).toContain("runner:999");
+    expect(hx.bgStopCalls()).toBe(0);
   });
 });
 
@@ -686,6 +741,20 @@ describe("herd:wrap-up", () => {
     mkdirSync(join(hx.dir, "herds", herd, "job-a"), { recursive: true });
     return { ...hx, herd, room: s.data.room };
   }
+
+  test("wrap-up releases a hidden herd's bg claim; a visible herd holds none to release", async () => {
+    const hx = harness();
+    const hidden = await hx.h["herd:start"]({ ...START, hidden: true });
+    if (!hidden.ok) throw new Error(hidden.error);
+    expect(hx.claims.list().map((c) => c.owner)).toContain(`herd:${hidden.data.herd}`);
+    expect((await hx.h["herd:wrap-up"]({ herd: hidden.data.herd })).ok).toBe(true);
+    expect(hx.claims.list().map((c) => c.owner)).not.toContain(`herd:${hidden.data.herd}`);
+
+    const visible = await hx.h["herd:start"]({ ...START, name: "vis" });
+    if (!visible.ok) throw new Error(visible.error);
+    expect((await hx.h["herd:wrap-up"]({ herd: visible.data.herd })).ok).toBe(true);
+    expect(hx.claims.list()).toEqual([]);
+  });
 
   test("runs exactly the flagged actions: panes, workspace, dispose by registry tree name, job dirs, archive", async () => {
     const { h, store, herdrCalls, worktreeCalls, chatCalls, herd, room, dir } = await withTwoJobs();

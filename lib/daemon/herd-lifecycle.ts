@@ -5,6 +5,7 @@
  * forwarding them is what trained shepherds to skip checks.
  */
 import type { Logger } from "pino";
+import { formatPaneRef } from "../../packages/rt-client/src/index.ts";
 import type { EventsBus } from "./events-bus.ts";
 import type { GatesStore } from "./gates-store.ts";
 import { herdSubject, type HerdStore, type HerdJobRow } from "./herd-store.ts";
@@ -107,13 +108,13 @@ export function createHerdLifecycle(opts: {
   /** A pane id is reused across a herd's lifetime and `jobsByPane` is
       unordered, so a finished row can shadow the job the event is really
       about; a watched row always wins over one that is not. */
-  function jobFor(socket: string | null, pane: string): { job: HerdJobRow; room: string; shepherd: string } | null {
-    let stale: { job: HerdJobRow; room: string; shepherd: string } | null = null;
+  function jobFor(socket: string | null, pane: string): { job: HerdJobRow; room: string; shepherd: string; hidden: boolean } | null {
+    let stale: { job: HerdJobRow; room: string; shepherd: string; hidden: boolean } | null = null;
     for (const job of store.jobsByPane(pane)) {
       const herd = store.get(job.herd);
       if (!herd || herd.status !== "active") continue;
       if (socketKey(herd.herdrSocket) !== socketKey(socket)) continue;
-      const hit = { job, room: herd.room, shepherd: herd.shepherdHandle };
+      const hit = { job, room: herd.room, shepherd: herd.shepherdHandle, hidden: herd.hidden };
       if (WATCHED.has(job.status)) return hit;
       stale ??= hit;
     }
@@ -140,8 +141,9 @@ export function createHerdLifecycle(opts: {
     if (!pane) return;
     const hit = jobFor(socket, pane);
     if (!hit) return;
-    const { job, room, shepherd } = hit;
+    const { job, room, shepherd, hidden } = hit;
     const key = paneKey(socket, pane);
+    const ref = formatPaneRef(pane, hidden ? "bg" : "visible");
 
     if (ev.type === "pane.agent_detected") {
       if (job.status === "spawning") store.setJobStatus(job.herd, job.name, "active");
@@ -153,7 +155,7 @@ export function createHerdLifecycle(opts: {
         if (blockedTimers.has(key) || !WATCHED.has(job.status)) return;
         blockedTimers.set(key, setTimer(() => {
           blockedTimers.delete(key);
-          fireAndForget(post(room, shepherd, `${job.name} blocked (pane ${pane})`), { socket, pane });
+          fireAndForget(post(room, shepherd, `${job.name} blocked (pane ${ref})`), { socket, pane });
         }, debounceMs));
       } else {
         blockedTimers.get(key)?.clear();
@@ -168,7 +170,7 @@ export function createHerdLifecycle(opts: {
       if (WATCHED.has(job.status)) {
         store.setJobStatus(job.herd, job.name, "crashed");
         await closeOpenGates(job.herd, job.name);
-        await post(room, shepherd, `${job.name} exited (pane ${pane})`);
+        await post(room, shepherd, `${job.name} exited (pane ${ref})`);
       } else if (job.status === "done") {
         // herdr sends exited and closed for one pane teardown; anything but a
         // clean finish keeps the marker the first of the pair set.

@@ -70,12 +70,6 @@ describe("R028: db is not a handler-map entry", () => {
       gatePush: { onAnswered: async () => {}, onOpened: async () => {}, onClosed: async () => {}, retryDeadPanes: async () => ({ retried: 0, delivered: 0, gaveUp: 0 }) } satisfies GatePush,
       herdStore: createHerdStore({ dbPath: ":memory:", log: pino({ level: "silent" }) }),
       herdLifecycle: { connected: () => false, watch: () => {} },
-      herdHidden: {
-        socketPath: () => "/tmp/herd-hidden.sock",
-        ensure: async () => { throw new Error("hidden mode not wired yet"); },
-        up: async () => false,
-        stop: async () => {},
-      },
       herdJobsRoot: join(tmpdir(), "rt-herd-router-jobs"),
       bgService: {
         socketPath: () => "/tmp/bg.sock",
