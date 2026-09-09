@@ -4,7 +4,8 @@
  *   rt agent start  [--repo <path>] [--prompt <text> | --prompt-file <path>]
  *                   [--surface herdr|headless] [--model M] [--effort E]
  *                   [--account A] [--label L] [--caller C]
- *                   [--workspace W] [--tab T] [--extra-args "<tail>"] [--json]
+ *                   [--workspace W] [--tab T] [--extra-args "<tail>"]
+ *                   [--bg] [--json]
  *   rt agent resume <id|session-uuid> [--prompt <text>] [--surface herdr|headless]
  *                   [--workspace W] [--tab T] [--json]
  *   rt agent show   <id|session-uuid> [--json]
@@ -83,7 +84,7 @@ function parseSurface(s: string | undefined): AgentSurface | undefined {
 interface StartArgs {
   prompt?: string; surface?: AgentSurface; model?: string; effort?: string;
   account?: string; label?: string; caller?: string; workspace?: string;
-  tab?: string; extraArgs?: string;
+  tab?: string; extraArgs?: string; bg?: boolean;
 }
 
 function parseStartArgs(args: string[]): StartArgs {
@@ -102,6 +103,10 @@ function parseStartArgs(args: string[]): StartArgs {
   ] as const) {
     const v = flagValue(args, flag);
     if (v !== undefined) out[key] = v;
+  }
+  if (args.includes("--bg")) {
+    if (surface === "headless") throw new Error("--bg is a herdr-surface option");
+    out.bg = true;
   }
   return out;
 }

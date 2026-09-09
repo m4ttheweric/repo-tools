@@ -31,6 +31,22 @@ describe("parseStartArgs", () => {
   test("--prompt and --prompt-file together fail", () => {
     expect(() => parseStartArgs(["--prompt", "a", "--prompt-file", "/x"])).toThrow(/one of/);
   });
+
+  test("--bg sets bg: true", () => {
+    expect(parseStartArgs(["--prompt", "hi", "--bg"])).toMatchObject({ bg: true });
+  });
+
+  test("omitting --bg leaves it undefined", () => {
+    expect(parseStartArgs(["--prompt", "hi"]).bg).toBeUndefined();
+  });
+
+  test("--bg with --surface headless fails, naming --bg as a herdr-surface option", () => {
+    expect(() => parseStartArgs(["--bg", "--surface", "headless"])).toThrow(/--bg is a herdr-surface option/);
+  });
+
+  test("--surface headless then --bg fails the same way regardless of flag order", () => {
+    expect(() => parseStartArgs(["--surface", "headless", "--bg"])).toThrow(/--bg is a herdr-surface option/);
+  });
 });
 
 describe("parseResumeArgs", () => {

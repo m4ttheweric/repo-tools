@@ -356,7 +356,7 @@ export function agentStart(
   a: Commands["agent:start"]["payload"], o: RtClientOptions = {},
 ): Promise<RtResponse<AgentRecord>> {
   const payload: Record<string, unknown> = { repo: a.repo, cwd: a.cwd };
-  for (const k of ["prompt", "surface", "model", "effort", "account", "label", "caller", "workspace", "tab", "extraArgs", "env", "herdrSocket", "handle"] as const) {
+  for (const k of ["prompt", "surface", "model", "effort", "account", "label", "caller", "workspace", "tab", "extraArgs", "env", "herdrSocket", "handle", "bg"] as const) {
     if (a[k] !== undefined) payload[k] = a[k];
   }
   return rtCommand<AgentRecord>("agent:start", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });

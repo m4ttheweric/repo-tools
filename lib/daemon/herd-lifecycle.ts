@@ -12,6 +12,7 @@ import { herdSubject, type HerdStore, type HerdJobRow } from "./herd-store.ts";
 import { subscribeHerdrEvents as defaultSubscribe, type HerdrEvent, type HerdrSubscription } from "../herdr/subscribe.ts";
 import { safeTimeout } from "./safe-timers.ts";
 import { SYSTEM_HANDLE } from "./handlers/herd.ts";
+import type { BgClaimsStore } from "./bg-claims-store.ts";
 
 export interface HerdLifecycle {
   start(): void;
@@ -43,6 +44,9 @@ export function createHerdLifecycle(opts: {
   bus: Pick<EventsBus, "onBroadcast">;
   gateStore: Pick<GatesStore, "get">;
   defaultSocket: string;
+  /** The bg server's own socket path (spec "The bg service"); an agent pane launched onto it is never a herd job, so its claim must release on this socket's own pane.closed/pane.exited before jobFor's early return. Omitted, this hook is inert. */
+  bgSocket?: string;
+  bgClaims?: Pick<BgClaimsStore, "releaseByPane">;
   subscribe?: typeof defaultSubscribe;
   blockedDebounceMs?: number;
   setTimer?: (fn: () => void, ms: number) => { clear(): void };
@@ -139,6 +143,12 @@ export function createHerdLifecycle(opts: {
   async function handleEvent(socket: string | null, ev: HerdrEvent): Promise<void> {
     const pane = typeof ev.pane_id === "string" ? ev.pane_id : undefined;
     if (!pane) return;
+    // Runs before jobFor's early return: a bg-launched agent pane is never a
+    // herd job, so jobFor always misses it and would otherwise swallow the
+    // release along with the "not mine" no-op.
+    if ((ev.type === "pane.closed" || ev.type === "pane.exited") && opts.bgSocket && socket === opts.bgSocket) {
+      opts.bgClaims?.releaseByPane(formatPaneRef(pane, "bg"));
+    }
     const hit = jobFor(socket, pane);
     if (!hit) return;
     const { job, room, shepherd, hidden } = hit;

@@ -910,6 +910,8 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           bus: eventsBus,
           gateStore: gatesStore,
           defaultSocket: herdrSocketPath(),
+          bgSocket: bgService.socketPath(),
+          bgClaims,
           log,
         });
         herdLifecycle.start();

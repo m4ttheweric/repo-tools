@@ -119,7 +119,10 @@ export function buildRoutedHandlers(opts: {
     db: opts.stateDb, repoIndex: ctx.repoIndex, bg: opts.bgService,
     herdrRunnerFor: (socket) => defaultHerdrRunner(socket ? { ...process.env, HERDR_SOCKET_PATH: socket } : process.env),
   });
-  const agentHandlers = createAgentHandlers({ db: opts.stateDb, emitEvent, log: ctx.log });
+  const agentHandlers = createAgentHandlers({
+    db: opts.stateDb, emitEvent, log: ctx.log,
+    bg: opts.bgService, bgClaims: opts.bgClaims, lifecycle: opts.herdLifecycle,
+  });
   const worktreeHandlers = createWorktreeHandlers({ repoIndex: ctx.repoIndex, cache: ctx.cache, log: ctx.log }, opts.worktree);
   const gateHandlers = createGateHandlers(opts.gatesStore, opts.eventsBus, broadcast, { push: opts.gatePush, log: ctx.log });
   const herdHandlers = createHerdHandlers({

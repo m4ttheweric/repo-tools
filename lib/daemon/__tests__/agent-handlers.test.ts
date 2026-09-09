@@ -20,12 +20,60 @@ function okRunner(calls: string[][]): HerdrRunner {
   };
 }
 
+interface FakeBg {
+  ensure: () => Promise<{ socket: string; started: boolean }>;
+  reprobe: () => Promise<{ ok: boolean; drift: string[] }>;
+  ensureCalls: number;
+  reprobeCalls: number;
+}
+
+function fakeBg(over: { socket?: string; ensureError?: Error; drift?: string[] } = {}): FakeBg {
+  const self: FakeBg = {
+    ensureCalls: 0,
+    reprobeCalls: 0,
+    ensure: async () => {
+      self.ensureCalls++;
+      if (over.ensureError) throw over.ensureError;
+      return { socket: over.socket ?? "/bg.sock", started: true };
+    },
+    reprobe: async () => {
+      self.reprobeCalls++;
+      const drift = over.drift ?? [];
+      return { ok: drift.length === 0, drift };
+    },
+  };
+  return self;
+}
+
+interface FakeBgClaims {
+  claim: (owner: string, pane?: string) => void;
+  claims: Array<{ owner: string; pane?: string }>;
+}
+
+function fakeBgClaims(): FakeBgClaims {
+  const claims: Array<{ owner: string; pane?: string }> = [];
+  return { claims, claim: (owner, pane) => { claims.push({ owner, pane }); } };
+}
+
+interface FakeLifecycle {
+  watch: (socket: string) => void;
+  watched: string[];
+}
+
+function fakeLifecycle(): FakeLifecycle {
+  const watched: string[] = [];
+  return { watched, watch: (socket) => { watched.push(socket); } };
+}
+
 function fresh(over: {
   runner?: HerdrRunner;
   runnerFactory?: (socket: string) => HerdrRunner;
   spawn?: (argv: string[], cwd: string) => HeadlessChild;
   emit?: (t: string, p?: unknown) => void;
   insertAgentFn?: (...args: unknown[]) => void;
+  bg?: FakeBg;
+  bgClaims?: FakeBgClaims;
+  lifecycle?: FakeLifecycle;
 } = {}) {
   const db = openStateDb(join(tmpdir(), `agent-h-${process.pid}-${n++}.db`));
   // Handlers no longer expose `db` (R028); tests that need to reach the
@@ -37,6 +85,9 @@ function fresh(over: {
     herdrRunnerForSocket: over.runnerFactory,
     spawnHeadless: over.spawn,
     insertAgentFn: over.insertAgentFn as typeof import("../../state/index.ts").insertAgent | undefined,
+    bg: over.bg,
+    bgClaims: over.bgClaims,
+    lifecycle: over.lifecycle,
   }), { db });
 }
 
@@ -342,4 +393,71 @@ test("agent:list filters by repo", async () => {
   const res = await h["agent:list"]({ repo: REPO });
   if (!res.ok) throw new Error("unreachable");
   expect(res.data.agents).toHaveLength(1);
+});
+
+// --bg: launches onto the daemon-owned background server (T5's bg.ensure)
+// with a claim scoped to the launched pane (T4's claims store).
+test("agent:start bg ensures the background server, launches onto it, and claims the pane by its bg: ref", async () => {
+  const seenSockets: string[] = [];
+  const bg = fakeBg({ socket: "/bg.sock" });
+  const bgClaims = fakeBgClaims();
+  const lifecycle = fakeLifecycle();
+  const h = fresh({
+    runnerFactory: (socket) => { seenSockets.push(socket); return okRunner([]); },
+    bg, bgClaims, lifecycle,
+  });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", bg: true });
+  if (!res.ok) throw new Error(res.error);
+  expect(bg.ensureCalls).toBe(1);
+  expect(seenSockets).toEqual(["/bg.sock"]);
+  expect(lifecycle.watched).toEqual(["/bg.sock"]);
+  expect(res.data.paneId).toBe("bg:w1:p1");
+  expect(bgClaims.claims).toEqual([{ owner: `agent:${res.data.id}`, pane: "bg:w1:p1" }]);
+});
+
+test("agent:start rejects --bg combined with --surface headless", async () => {
+  const bg = fakeBg();
+  const bgClaims = fakeBgClaims();
+  const lifecycle = fakeLifecycle();
+  const h = fresh({ bg, bgClaims, lifecycle });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "headless", bg: true });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toBe("--bg is a herdr-surface option");
+  expect(bg.ensureCalls).toBe(0);
+});
+
+test("agent:start bg without a bg service wired refuses instead of throwing", async () => {
+  const h = fresh();
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", bg: true });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toMatch(/daemon/);
+});
+
+test("agent:start bg launch failure shaped as command-not-found reprobes and folds drift into the error", async () => {
+  const bg = fakeBg({ socket: "/bg.sock", drift: ["bun: bg=\"\" visible=\"/opt/homebrew/bin/bun\""] });
+  const bgClaims = fakeBgClaims();
+  const lifecycle = fakeLifecycle();
+  const throwing: HerdrRunner = async () => { throw new Error("herdr not found at /bg/.local/bin/herdr (install via `rt setup` / brew)"); };
+  const h = fresh({ runnerFactory: () => throwing, bg, bgClaims, lifecycle });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", bg: true });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(bg.reprobeCalls).toBe(1);
+  expect(res.error).toContain("herdr not found at");
+  expect(res.error).toContain("bg env drift");
+  expect(res.error).toContain("bun:");
+  expect(bgClaims.claims).toEqual([]);
+});
+
+test("agent:start bg launch failure NOT shaped as command-not-found never reprobes", async () => {
+  const bg = fakeBg({ socket: "/bg.sock" });
+  const bgClaims = fakeBgClaims();
+  const lifecycle = fakeLifecycle();
+  const throwing: HerdrRunner = async () => { throw new Error("herdr workspace list failed (1): some other RPC error"); };
+  const h = fresh({ runnerFactory: () => throwing, bg, bgClaims, lifecycle });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", bg: true });
+  expect(res.ok).toBe(false);
+  expect(bg.reprobeCalls).toBe(0);
 });

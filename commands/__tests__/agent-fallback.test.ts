@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "os";
 import { join } from "path";
-import { runAgentFallback, HEADLESS_NEEDS_DAEMON } from "../agent-fallback.ts";
+import { runAgentFallback, HEADLESS_NEEDS_DAEMON, BG_NEEDS_DAEMON } from "../agent-fallback.ts";
 import { openStateDb, insertAgent, newAgentId } from "../../lib/state/index.ts";
 import type { HerdrRunner } from "../../lib/agent-herdr.ts";
 
@@ -49,6 +49,18 @@ test("refuses resume of a headless record (surface from record)", async () => {
   expect(res.ok).toBe(false);
   if (res.ok) throw new Error("unreachable");
   expect(res.error).toBe(HEADLESS_NEEDS_DAEMON);
+});
+
+test("refuses bg start before spawning: bg needs the daemon-owned server this fallback never has", async () => {
+  const db = openStateDb(tmp());
+  const spy = { called: false };
+  const res = await runAgentFallback("agent:start",
+    { repo: REPO, cwd: "/tmp/x", prompt: "hi", bg: true },
+    { db, herdrRunner: () => { spy.called = true; return Promise.resolve({ stdout: "{}", exitCode: 0 }); } });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toBe(BG_NEEDS_DAEMON);
+  expect(spy.called).toBe(false);
 });
 
 test("list returns records", async () => {

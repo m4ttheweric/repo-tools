@@ -14,7 +14,7 @@ let dirs: string[] = [];
 beforeEach(() => { dirs = []; });
 afterEach(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
 
-function fx(over: { postThrows?: boolean } = {}) {
+function fx(over: { postThrows?: boolean; bgSocket?: string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "rt-herd-lc-"));
   dirs.push(dir);
   const store = createHerdStore({ dbPath: join(dir, "herds.db"), log });
@@ -33,11 +33,17 @@ function fx(over: { postThrows?: boolean } = {}) {
   const setTimer = (fn: () => void, ms: number) => { const t = { fn, ms, cleared: false }; timers.push(t); return { clear() { t.cleared = true; } }; };
   const subs: Array<{ sockPath: string; subscriptions: Array<Record<string, unknown>>; onState?: (c: boolean) => void; stopped: boolean }> = [];
   const subscribe = ((o: any) => { const s = { sockPath: o.sockPath, subscriptions: o.subscriptions, onState: o.onState, stopped: false }; subs.push(s); o.onState?.(true); return { stop() { s.stopped = true; }, connected: () => !s.stopped }; }) as any;
-  const lc = createHerdLifecycle({ store, gate, chat, bus, gateStore, defaultSocket: "/default.sock", subscribe, setTimer, log: lcLog });
+  const bgReleases: string[] = [];
+  const bgClaims = { releaseByPane: (pane: string) => { bgReleases.push(pane); return []; } };
+  const lc = createHerdLifecycle({
+    store, gate, chat, bus, gateStore, defaultSocket: "/default.sock",
+    ...(over.bgSocket !== undefined && { bgSocket: over.bgSocket, bgClaims }),
+    subscribe, setTimer, log: lcLog,
+  });
   const herd = store.create({ id: "demo-1", repo: "r", room: "herd-demo-1", workspace: "herd: demo-1", shepherdSession: "s", shepherdHandle: "shepherd", herdrSocket: null, hidden: false });
   const wildcard = () => subs.filter((s) => !s.subscriptions.some((e) => "pane_id" in e));
   const paneSubs = () => subs.filter((s) => !s.stopped && s.subscriptions.some((e) => "pane_id" in e));
-  return { store, gateStore, gate, bus, posts, warns, timers, subs, lc, herd, wildcard, paneSubs };
+  return { store, gateStore, gate, bus, posts, warns, timers, subs, lc, herd, wildcard, paneSubs, bgReleases };
 }
 
 describe("herd-lifecycle", () => {
@@ -178,5 +184,49 @@ describe("herd-lifecycle", () => {
     await gate["gate:close"]({ id: again.data.id, reason: "abandoned" });
     expect(store.getJob(herd.id, "job-a")!.status).toBe("crashed");
     void gateStore;
+  });
+
+  // --bg (T8): an agent pane on the bg socket is never a herd job, so jobFor
+  // always misses it -- the release must fire before that early return, not
+  // after it.
+  test("a bg-socket pane.closed releases the claim by its bg: ref even though jobFor never matches it (no herd job on that pane)", async () => {
+    const { lc, bgReleases } = fx({ bgSocket: "/bg.sock" });
+    await lc.handleEvent("/bg.sock", { type: "pane.closed", pane_id: "w1:p9" });
+    expect(bgReleases).toEqual(["bg:w1:p9"]);
+  });
+
+  test("a bg-socket pane.exited also releases the claim", async () => {
+    const { lc, bgReleases } = fx({ bgSocket: "/bg.sock" });
+    await lc.handleEvent("/bg.sock", { type: "pane.exited", pane_id: "w1:p9" });
+    expect(bgReleases).toEqual(["bg:w1:p9"]);
+  });
+
+  test("a bg-socket event that is not close/exit never releases", async () => {
+    const { lc, bgReleases } = fx({ bgSocket: "/bg.sock" });
+    await lc.handleEvent("/bg.sock", { type: "pane.agent_detected", pane_id: "w1:p9" });
+    expect(bgReleases).toEqual([]);
+  });
+
+  test("a pane.closed on a socket that is not the bg socket never releases a claim", async () => {
+    const { lc, bgReleases } = fx({ bgSocket: "/bg.sock" });
+    await lc.handleEvent("/default.sock", { type: "pane.closed", pane_id: "w1:p9" });
+    await lc.handleEvent(null, { type: "pane.closed", pane_id: "w1:p9" });
+    expect(bgReleases).toEqual([]);
+  });
+
+  test("with no bgSocket configured, a bg-shaped pane.closed is inert (no throw, no release)", async () => {
+    const { lc, bgReleases } = fx();
+    await lc.handleEvent("/bg.sock", { type: "pane.closed", pane_id: "w1:p9" });
+    expect(bgReleases).toEqual([]);
+  });
+
+  test("a bg-socket pane.closed for a pane that IS also a live herd job still runs both: release, then the herd-job handling", async () => {
+    const { store, lc, posts, bgReleases } = fx({ bgSocket: "/bg.sock" });
+    store.create({ id: "hid-1", repo: "r", room: "herd-hid-1", workspace: "w", shepherdSession: "s", shepherdHandle: "shepherd", herdrSocket: "/bg.sock", hidden: true });
+    store.upsertJob({ herd: "hid-1", name: "job-a", worktree: "/w", handle: "job-a", status: "active", pane: "w1:p1" });
+    await lc.handleEvent("/bg.sock", { type: "pane.exited", pane_id: "w1:p1" });
+    expect(bgReleases).toEqual(["bg:w1:p1"]);
+    expect(store.getJob("hid-1", "job-a")!.status).toBe("crashed");
+    expect(posts[0].body).toContain("job-a exited");
   });
 });

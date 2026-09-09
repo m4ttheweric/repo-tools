@@ -21,7 +21,10 @@ import { repoLabel } from "../../repo-label.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { rtDir } from "../../rt-paths.ts";
 import { lazyChildLogger } from "../../daemon-logger.ts";
+import { formatPaneRef } from "../../../packages/rt-client/src/index.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
+import type { BgService } from "../bg-service.ts";
+import type { BgClaimsStore } from "../bg-claims-store.ts";
 import type { CommandResult } from "./types.ts";
 
 export interface HeadlessChild {
@@ -67,6 +70,17 @@ function isStringRecord(v: unknown): v is Record<string, string> {
 // the value is quoted), so anything but a shell-inert identifier is injection.
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+const agentOwner = (id: string): string => `agent:${id}`;
+
+/** herdr invoked against a freshly-spawned bg server can fail before any pane
+    ever runs: the bg env's PATH may not carry herdr's own binary yet
+    (`bin not found at ...`) or herdr's own process exits 127 resolving it.
+    Only that shape is worth a reprobe; any other launch failure (dedup,
+    workspace/tab RPC errors) reprobing would not explain. */
+function isCommandNotFoundShape(message: string): boolean {
+  return /\(127\)/.test(message) || /not found at/i.test(message);
+}
+
 export function createAgentHandlers(opts: {
   db: Database;
   emitEvent: (topic: string, payload?: unknown) => unknown;
@@ -76,6 +90,11 @@ export function createAgentHandlers(opts: {
   herdrRunnerForSocket?: (socket: string) => HerdrRunner;
   spawnHeadless?: (argv: string[], cwd: string) => HeadlessChild;
   insertAgentFn?: typeof insertAgent;
+  /** The daemon-owned background herdr server `--bg` launches onto (spec "The bg service"). Omitted, `bg: true` is refused. */
+  bg?: Pick<BgService, "ensure" | "reprobe">;
+  bgClaims?: Pick<BgClaimsStore, "claim">;
+  /** herd-lifecycle.ts's watch is idempotent by socket, so an already-watched bg socket is a no-op here. */
+  lifecycle?: { watch(socket: string): void };
 }):
   // Direct `unknown`-payload members, not `Pick<TypedHandlers, ...>`: a wider
   // `unknown` param still satisfies TypedHandlers' narrower one at the
@@ -161,6 +180,12 @@ export function createAgentHandlers(opts: {
         return { ok: false, error: `invalid surface "${payload.surface}"; must be one of herdr, headless` };
       }
       const surface: AgentSurface = payload.surface ?? "herdr";
+      if (payload.bg && surface === "headless") {
+        return { ok: false, error: "--bg is a herdr-surface option" };
+      }
+      if (payload.bg && (!opts.bg || !opts.bgClaims || !opts.lifecycle)) {
+        return { ok: false, error: "bg launches require the rt daemon (rt daemon start)" };
+      }
       const prompt = payload.prompt;
       if (surface === "headless" && !prompt) {
         return { ok: false, error: "headless launch requires a prompt (claude -p with no prompt blocks on stdin)" };
@@ -222,13 +247,29 @@ export function createAgentHandlers(opts: {
         if (!getAgent(rec.id, db)) {
           return { ok: false, error: "state.db busy: agent not recorded, not launched" };
         }
+        // Awaited before launch, not folded into the launch() extras spread:
+        // a failed ensure must roll the insert back the same way a failed
+        // launch does, and the socket has to be known before launch runs.
+        let bgSocket: string | undefined;
+        if (payload.bg) {
+          const ensured = await opts.bg!.ensure();
+          bgSocket = ensured.socket;
+          opts.lifecycle!.watch(ensured.socket);
+        }
         const res = await launch(rec, { kind: "start", sessionId: rec.sessionId }, prompt, tabLabel, workspaceLabel, {
           ...(payload.env !== undefined && { env: payload.env }),
-          ...(payload.herdrSocket !== undefined && { herdrSocket: payload.herdrSocket }),
+          ...((bgSocket ?? payload.herdrSocket) !== undefined && { herdrSocket: bgSocket ?? payload.herdrSocket }),
         });
         if (!res.ok) {
           deleteAgent(rec.id, db);
           return res;
+        }
+        if (payload.bg && rec.paneId) {
+          // The pane column and AgentRecord.paneId both store the ref, never
+          // the bare pane id: releaseByPane is later called with this same
+          // string, and renderRecord/agent:get print it back verbatim.
+          rec.paneId = formatPaneRef(rec.paneId, "bg");
+          opts.bgClaims!.claim(agentOwner(rec.id), rec.paneId);
         }
         if (surface === "herdr" && rec.paneId && rec.tabId && rec.workspaceId) {
           updateAgentPane(rec.id, { paneId: rec.paneId, tabId: rec.tabId, workspaceId: rec.workspaceId }, db);
@@ -236,7 +277,13 @@ export function createAgentHandlers(opts: {
         return res;
       } catch (err) {
         deleteAgent(rec.id, db);
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        const message = err instanceof Error ? err.message : String(err);
+        if (payload.bg && opts.bg && isCommandNotFoundShape(message)) {
+          const report = await opts.bg.reprobe();
+          const drift = report.drift.length > 0 ? `; bg env drift: ${report.drift.join("; ")}` : "";
+          return { ok: false, error: `${message}${drift}` };
+        }
+        return { ok: false, error: message };
       }
     },
 
