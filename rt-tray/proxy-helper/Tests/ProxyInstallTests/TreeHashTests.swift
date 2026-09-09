@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import ProxyInstall
 
-// The one place the real filesystem is exercised: the pin gen-pins.sh writes is
+// Exercised against the real filesystem: the pin gen-pins.sh writes is
 // worthless if this side computes a different digest, and the fake cannot catch
 // that. The fixture is built here rather than read from the machine, so the
 // expected digest is a constant.
@@ -36,6 +36,16 @@ final class TreeHashTests: XCTestCase {
         XCTAssertEqual(
             try RealFileOps().treeHash(root),
             "13b865deac3fd054e5a64d3afaef7dc72efd97f383b672ba8c510e905215e44a")
+    }
+
+    // The file read is chunked (the pinned interpreter is 121MB and this runs
+    // as root), so a file spanning more than one chunk has to produce the
+    // whole-file digest, boundary included.
+    func testChunkedFileHashMatchesTheWholeFileDigest() throws {
+        let big = root.appendingPathComponent("big.bin")
+        let bytes = Data((0..<2_600_000).map { UInt8($0 % 251) })
+        try bytes.write(to: big)
+        XCTAssertEqual(try RealFileOps().fileHash(big), sha256Hex(bytes))
     }
 
     func testRefusesNonASCIIPayloadPath() throws {

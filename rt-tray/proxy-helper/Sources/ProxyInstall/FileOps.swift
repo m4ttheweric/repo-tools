@@ -92,7 +92,7 @@ extension FileOps {
     func treeHash(_ root: URL) throws -> String {
         var hasher = SHA256()
         for rel in try list(root).sorted(by: { $0.utf8.lexicographicallyPrecedes($1.utf8) }) {
-            let hex = sha256Hex(try read(root.appendingPathComponent(rel)))
+            let hex = try fileHash(root.appendingPathComponent(rel))
             hasher.update(data: Data("\(rel)\n\(hex)\n".utf8))
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
@@ -141,6 +141,21 @@ struct RealFileOps: FileOps {
     }
 
     func read(_ path: URL) throws -> Data { try Data(contentsOf: path) }
+
+    /// Streamed rather than slurped: the pinned node interpreter is 121MB, and
+    /// this runs as root. treeHash calls through here for every payload file,
+    /// so both pins are computed a chunk at a time.
+    func fileHash(_ path: URL) throws -> String {
+        guard let handle = FileHandle(forReadingAtPath: path.path) else {
+            throw ProxyInstallError("cannot read \(path.path)")
+        }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
 
     func stat(_ path: URL) throws -> PathStat? {
         var info = Darwin.stat()
