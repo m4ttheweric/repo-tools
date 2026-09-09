@@ -82,3 +82,15 @@ test("runs stage-redirect is a registered leaf with its three flags, so it never
   expect(leaf.args!.map((a) => a.flag)).toEqual(["--stage", "--to", "--reason"]);
   expect(leaf.args!.every((a) => a.flag)).toBe(true);
 });
+
+test("gate open declares every open flag its parser accepts, and --pane's hint names the Escape binding", () => {
+  const open = TREE.gate!.subcommands!.open!;
+  const flags = open.args!.map((a) => a.flag);
+  // --origin/--context parse in commands/gate.ts; undeclared here means
+  // invisible in help, which is how SKILLS-60's unblockable form gates
+  // were opened in the first place.
+  expect(flags).toContain("--origin");
+  expect(flags).toContain("--context");
+  const paneHint = open.args!.find((a) => a.flag === "--pane")!.hint!;
+  expect(paneHint).toContain("Escape");
+});

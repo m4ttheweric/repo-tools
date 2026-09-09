@@ -64,8 +64,10 @@ const gateSubcommands: Record<string, CommandNode> = {
       { name: "Questions", flag: "--questions", type: "text", placeholder: "[{\"id\":\"q1\",\"label\":\"...\",\"multi\":false,\"options\":[\"yes\",\"no\"]}]", hint: "JSON array of questions" },
       { name: "Meta", flag: "--meta", type: "text", placeholder: "{\"label\":\"...\"}", hint: "Optional JSON metadata" },
       { name: "Agent", flag: "--agent", type: "text", placeholder: "ag-1a2b3c4d", hint: "Optional opening agent id" },
-      { name: "Pane", flag: "--pane", type: "text", placeholder: "w7A:pY", hint: "Optional herdr pane id, kept as a focus/resume reference (delivery binds to --nudge)" },
-      { name: "Nudge", flag: "--nudge", type: "text", placeholder: "{\"session\":\"...\"}", hint: "Optional JSON nudge target" },
+      { name: "Pane", flag: "--pane", type: "text", placeholder: "w7A:pY", hint: "Optional herdr pane id: focus/resume reference, and the remote-answer Escape's fallback target when origin.paneId is absent (the doorbell itself binds to --nudge)" },
+      { name: "Nudge", flag: "--nudge", type: "text", placeholder: "{\"session\":\"...\"}", hint: "Optional JSON nudge target; required for a form-presentation origin" },
+      { name: "Context", flag: "--context", type: "text", placeholder: "the material the decision is about", hint: "Optional verbatim decision context (raw text, 8KB cap)" },
+      { name: "Origin", flag: "--origin", type: "text", placeholder: "{\"paneId\":\"w7A:pY\",\"presentation\":\"form\"}", hint: "Optional JSON origin; presentation form|wait, and paneId names the pane the remote-answer Escape is injected into" },
     ],
   },
   answer: {
