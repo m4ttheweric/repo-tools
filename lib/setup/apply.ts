@@ -149,11 +149,19 @@ function onlyIndex(applicable: StepDef[], only: StepId): number {
   return exact < 0 ? applicable.length : exact;
 }
 
-/** Best-effort bookkeeping after the run: never allowed to suppress the terminal `done` event a throw would otherwise swallow. A failure here becomes a `log` warning (tagged with the last step that actually ran) instead of an exception. */
-function persistTerminalState(ctx: ApplyContext, ok: boolean, lastRanId: StepId | undefined): void {
+/**
+ * Best-effort bookkeeping after the run: never allowed to suppress the terminal `done` event a throw would otherwise swallow. A failure here becomes a `log` warning (tagged with the last step that actually ran) instead of an exception.
+ *
+ * `lastApplyAt` is written for any terminal outcome, but the intent is the
+ * in-flight create/join choice every step still to come reads: only a run that
+ * could have finished the install may clear it. `--only` runs one step for one
+ * row's Retry and leaves the rest untouched, so it never does; `--from`
+ * resumes and then runs everything left, so it does.
+ */
+function persistTerminalState(ctx: ApplyContext, ok: boolean, lastRanId: StepId | undefined, oneStepOnly: boolean): void {
   try {
     updateSetupState(ctx.p, (s) => ({ ...s, lastApplyAt: ctx.p.now().toISOString() }));
-    if (ok) clearIntent(ctx.p);
+    if (ok && !oneStepOnly) clearIntent(ctx.p);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (lastRanId) ctx.emit({ event: "log", id: lastRanId, line: `warn: setup state not persisted: ${message}` });
@@ -226,7 +234,7 @@ export async function runApplyWith(steps: StepDef[], ctx: ApplyContext, opts: { 
     // last run". `done` is emitted here, in a `finally`, so no exit path
     // (early return, a rethrown bug) can leave the stream without its one
     // required terminal event.
-    persistTerminalState(ctx, result.ok, lastRanId);
+    persistTerminalState(ctx, result.ok, lastRanId, opts.only !== undefined);
     ctx.emit({ event: "done", ok: result.ok, ...(result.failedStep !== undefined ? { failedStep: result.failedStep } : {}) });
   }
 

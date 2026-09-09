@@ -495,6 +495,33 @@ describe("runApplyWith: --only", () => {
     expect(order).toEqual([]);
     expect(events.some((e) => e.event === "step")).toBe(false);
   });
+
+  // The intent is the in-flight create/join choice the REST of the install
+  // still reads. A row's Retry runs one step through --only and leaves every
+  // other step still to come, so clearing it here strands them with no team.
+  test("a successful --only run keeps the setup intent", async () => {
+    const { ctx } = testCtx({ intent: { v: 1, at: "x", mode: "create" } });
+    const p = ctx.p as ReturnType<typeof fakeProbes>;
+    p.writeFile("/fake-home/.mattstack/rt/setup-intent.json", "{}");
+
+    await runApplyWith([fakeStep("proxy.install", { state: "done" })], ctx, { only: "proxy.install" });
+
+    expect(p.readFile("/fake-home/.mattstack/rt/setup-intent.json")).toBe("{}");
+    // Still terminal bookkeeping: the run happened, whatever it narrowed to.
+    expect(JSON.parse(p.readFile("/fake-home/.mattstack/rt/setup-state.json")!).lastApplyAt).toBe(ctx.p.now().toISOString());
+  });
+
+  // --from is the other half of the same rule: it resumes and then runs
+  // everything left, so the run it finishes IS the install.
+  test("a successful --from run still clears the intent", async () => {
+    const { ctx } = testCtx({ intent: { v: 1, at: "x", mode: "create" } });
+    const p = ctx.p as ReturnType<typeof fakeProbes>;
+    p.writeFile("/fake-home/.mattstack/rt/setup-intent.json", "{}");
+
+    await runApplyWith([fakeStep("home.init", { state: "done" }), fakeStep("proxy.install", { state: "done" })], ctx, { from: "proxy.install" });
+
+    expect(p.readFile("/fake-home/.mattstack/rt/setup-intent.json")).toBeNull();
+  });
 });
 
 describe("runApplyWith — need-bearing steps", () => {

@@ -282,8 +282,11 @@ describe("setupApply — exit-code table", () => {
     await runExpectingExit(() => setupApply(["--json", "--from", "path.link", "--only", "path.link"], {}, deps));
 
     expect(deps.exitCodes).toEqual([2]);
-    const payload = JSON.parse(deps.lines[0]!) as { error: { code: string } };
+    // Both flags name a real step here, so the shared `unknown-step` code alone
+    // would also pass if a valid id were refused for some other reason.
+    const payload = JSON.parse(deps.lines[0]!) as { error: { code: string; message: string } };
     expect(payload.error.code).toBe("unknown-step");
+    expect(payload.error.message).toContain("--from and --only cannot be combined");
   });
 });
 
