@@ -1054,3 +1054,85 @@ describe("toolRows: tool.linear-mcp", () => {
     }
   });
 });
+
+const TEAM_CLONE = "/fake-home/.mattstack/teams/acme";
+
+async function toolRowsFor(opts: {
+  servedPacks?: { id: string; name: string; servedVersion: string | null }[];
+  servedError?: string;
+  pluginList: unknown[];
+}): Promise<Row[]> {
+  const packs = opts.servedPacks ?? [];
+  const files: Record<string, string> = {};
+  if (opts.servedError) {
+    files[`${TEAM_CLONE}/.claude-plugin/marketplace.json`] = "{ broken";
+  } else {
+    files[`${TEAM_CLONE}/.claude-plugin/marketplace.json`] = JSON.stringify({
+      name: "acme-market",
+      // A readable served version needs a string source with a plugin.json behind it;
+      // a null one is expressed as the object form, exactly as a real marketplace would.
+      plugins: packs.map((s) => (s.servedVersion === null ? { name: s.name, source: { source: "github", repo: "o/r" } } : { name: s.name, source: `./packs/${s.name}` })),
+    });
+    for (const s of packs) {
+      if (s.servedVersion !== null) {
+        files[`${TEAM_CLONE}/packs/${s.name}/.claude-plugin/plugin.json`] = JSON.stringify({ version: s.servedVersion });
+      }
+    }
+  }
+  const p = fakeProbes({
+    home: "/fake-home",
+    files,
+    exec: async (argv) => (argv.includes("list") ? { code: 0, stdout: JSON.stringify(opts.pluginList), stderr: "" } : { code: 0, stdout: "", stderr: "" }),
+  });
+  return toolRows(p, [], { hasBrew: false, secrets: NO_SECRETS, teamSlug: "acme" }, NOOP_SEAMS);
+}
+
+test("a team-served pack gets a row even with no requirements.jsonc, naming its version", async () => {
+  const rows = await toolRowsFor({
+    servedPacks: [{ id: "acme-skills@acme-market", name: "acme-skills", servedVersion: "0.5.28" }],
+    pluginList: [{ id: "acme-skills@acme-market", version: "0.5.28", enabled: false }],
+  });
+  const row = rows.find((r) => r.id === "pack.acme-skills")!;
+  expect(row.status).toBe("ready");
+  expect(row.detail).toContain("0.5.28");
+  expect(row.detail).toContain("claude plugin enable acme-skills@acme-market");
+});
+
+test("a stale pack is needs-you and names both versions, with no restart caveat", async () => {
+  const rows = await toolRowsFor({
+    servedPacks: [{ id: "acme-skills@acme-market", name: "acme-skills", servedVersion: "0.5.28" }],
+    pluginList: [{ id: "acme-skills@acme-market", version: "0.5.18", enabled: false }],
+  });
+  const row = rows.find((r) => r.id === "pack.acme-skills")!;
+  expect(row.status).toBe("needs-you");
+  expect(row.detail).toContain("installed 0.5.18");
+  expect(row.detail).toContain("team serves 0.5.28");
+  expect(row.detail).not.toContain("restart");
+});
+
+test("the restart caveat sits on the converged row, where the cache has already moved", async () => {
+  const rows = await toolRowsFor({
+    servedPacks: [{ id: "acme-skills@acme-market", name: "acme-skills", servedVersion: "0.5.28" }],
+    pluginList: [{ id: "acme-skills@acme-market", version: "0.5.28", enabled: true }],
+  });
+  expect(rows.find((r) => r.id === "pack.acme-skills")!.detail).toContain("restarts");
+});
+
+test("an object-form pack that is not installed says rt does not manage it, never 'installed by Install'", async () => {
+  const rows = await toolRowsFor({
+    servedPacks: [{ id: "remote@acme-market", name: "remote", servedVersion: null }],
+    pluginList: [],
+  });
+  const row = rows.find((r) => r.id === "pack.remote")!;
+  expect(row.status).toBe("skipped");
+  expect(row.detail).toContain("rt does not track this source");
+});
+
+test("an unparsable marketplace.json renders one error row, outside the pack namespace", async () => {
+  const rows = await toolRowsFor({ servedError: "/x/marketplace.json did not parse", pluginList: [] });
+  const errorRow = rows.find((r) => r.status === "error" && r.detail.includes("did not parse"))!;
+  expect(errorRow.id).toBe("team.marketplace");
+  // A "pack." id here would be flipped to required in status mode and could
+  // never go ready, blocking Install forever for a member who cannot fix it.
+  expect(errorRow.id.startsWith("pack.")).toBe(false);
+});

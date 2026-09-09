@@ -21,21 +21,16 @@ import type { StepDef, StepOutcome } from "../apply.ts";
 import { BASE_PLUGINS } from "../base-plugins.ts";
 import { materializeSkills } from "../skills-materialize.ts";
 import type { Probes } from "../probes.ts";
+import { isAlready, isNotFound, parsePluginList, settlePack, PACK_EXEC_TIMEOUT_MS, type ClaudeRunner } from "../pack-cache.ts";
 import { updateSetupState } from "../state.ts";
 import { claudeConfigDirs } from "../tools-install.ts";
 import { toFailedOutcome } from "./step-utils.ts";
 
 export const MATTSTACK_MARKETPLACE_SOURCE = "https://github.com/m4ttstack/mattstack-marketplace";
-const PLUGIN_EXEC_TIMEOUT_MS = 60_000;
 const RETRY_REMEDY = "Open Claude Code once so it finishes first-run, then Retry.";
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values)];
-}
-
-/** Anchored to known "already done" phrasing in stderr only — an unanchored match over stdout+stderr would let a genuinely failing call (whose output merely mentions the word "already" in passing) read as success. */
-function isAlready(res: { stderr: string }): boolean {
-  return /already (installed|added|exists)/i.test(res.stderr);
 }
 
 function isUnknownSubcommand(res: { stdout: string; stderr: string }): boolean {
@@ -159,46 +154,110 @@ async function pluginsInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
   const allPlugins = dedupe([...trustedPlugins, ...teamAuthoredPlugins]);
   const configDirs = claudeConfigDirs(ctx.p, []);
 
+  /** The single site every trusted enable goes through. Best-effort, and logged: an older claude without the subcommand must never fail an otherwise-good install, but a silent failure would leave a disabled baseline plugin with no signal anywhere. */
+  async function enableTrusted(runner: ClaudeRunner, plugin: string, dir: string): Promise<void> {
+    const enable = await runner.run(["plugin", "enable", plugin], PACK_EXEC_TIMEOUT_MS);
+    if (enable.code !== 0 && !isAlready(enable) && !isUnknownSubcommand(enable)) {
+      ctx.log("plugins.install", `claude plugin enable ${plugin} (${dir}) exited ${enable.code} ... ignored`);
+    }
+  }
+
+  const settled: string[] = [];
+
   for (const dir of configDirs) {
     const env = { CLAUDE_CONFIG_DIR: dir };
 
     for (const src of marketplaces) {
-      const res = await ctx.p.exec([...claude.exec, "plugin", "marketplace", "add", src], { env, timeoutMs: PLUGIN_EXEC_TIMEOUT_MS });
+      const res = await ctx.p.exec([...claude.exec, "plugin", "marketplace", "add", src], { env, timeoutMs: PACK_EXEC_TIMEOUT_MS });
       if (res.code !== 0 && !isAlready(res)) {
         return { state: "failed", detail: `claude plugin marketplace add exited ${res.code}`, remedy: RETRY_REMEDY };
       }
     }
 
+    const runner: ClaudeRunner = {
+      run: (args, timeoutMs) => ctx.p.exec([...claude.exec!, ...args], { env, timeoutMs }),
+    };
+    const listed = await runner.run(["plugin", "list", "--json"], PACK_EXEC_TIMEOUT_MS);
+    const installedBefore = listed.code === 0 ? parsePluginList(listed.stdout) : null;
+    // Guessing "nothing is installed" here would send every plugin down the
+    // install path, and install re-enables a pack the member disabled.
+    if (!installedBefore) {
+      return {
+        state: "failed",
+        detail: "claude plugin list --json could not be read",
+        remedy: "Update Claude Code, then Retry.",
+      };
+    }
+    const byId = new Map(installedBefore.map((e) => [e.id, e]));
+
     for (const plugin of allPlugins) {
-      const install = await ctx.p.exec([...claude.exec, "plugin", "install", plugin], { env, timeoutMs: PLUGIN_EXEC_TIMEOUT_MS });
-      if (install.code !== 0 && !isAlready(install)) {
-        return { state: "failed", detail: `claude plugin install exited ${install.code}`, remedy: RETRY_REMEDY };
+      const teamAuthored = teamAuthoredPlugins.includes(plugin);
+
+      // An already-installed plugin takes update, never install: install would
+      // flip a deliberately disabled pack back on.
+      if (byId.has(plugin)) {
+        const updated = await runner.run(["plugin", "update", plugin, "-y"], PACK_EXEC_TIMEOUT_MS);
+        if (updated.code === 0) {
+          // Trusted plugins keep the best-effort re-enable they get today. The
+          // `tool.plugins` needs-you row's action is `rt setup pack`, which
+          // lands here: without this, the one command offered for an
+          // installed-but-disabled baseline plugin does nothing.
+          if (!teamAuthored) await enableTrusted(runner, plugin, dir);
+          settled.push(plugin);
+          continue;
+        }
+        // The listing proved this pack present, and `install` on a present pack
+        // exits 0 and re-enables it. rt did not install this team pack, so it
+        // does not get to change its enablement whatever `update` said. Only a
+        // trusted plugin falls through, which is what covers a claude with no
+        // `plugin update` subcommand.
+        if (teamAuthored || (!isNotFound(updated) && !isUnknownSubcommand(updated))) {
+          return { state: "failed", detail: `claude plugin update exited ${updated.code}`, remedy: RETRY_REMEDY };
+        }
       }
 
-      // A team-authored plugin is installed (Install already gates who gets
-      // here) but never auto-enabled — joining a team must not also hand it
-      // execution on the user's next Claude run. Enabling it is the user's
-      // own decision, made outside this non-interactive step.
-      if (teamAuthoredPlugins.includes(plugin)) continue;
+      // `settled` accumulates across config dirs, so an id can repeat; the
+      // dedupe below is what makes that harmless.
+      const outcome = await settlePack(runner, plugin, { teamAuthored, timeoutMs: PACK_EXEC_TIMEOUT_MS });
 
-      // `enable` is best-effort: an older claude build without the
-      // subcommand must never fail an otherwise-successful install.
-      const enable = await ctx.p.exec([...claude.exec, "plugin", "enable", plugin], { env, timeoutMs: PLUGIN_EXEC_TIMEOUT_MS });
-      if (enable.code !== 0 && !isAlready(enable) && !isUnknownSubcommand(enable)) {
-        ctx.log("plugins.install", `claude plugin enable ${plugin} (${dir}) exited ${enable.code} — ignored`);
+      // Every trusted enable goes through here, both the fresh install
+      // (`installed`) and the pack that turned out to be already present
+      // (`current`, reachable when a plugin installed at another scope is absent
+      // from this scope's listing while install still reports it installed).
+      // settlePack deliberately does not enable, so this is the only site and
+      // the only place the result gets logged.
+      if (!teamAuthored && (outcome.kind === "installed" || outcome.kind === "current")) {
+        await enableTrusted(runner, plugin, dir);
       }
+      if (outcome.kind === "failed") {
+        // The install-stage wording is the setup contract's detail string for a
+        // failed install and must stay byte-identical.
+        const detail = outcome.stage === "install" ? `claude plugin install exited ${outcome.code}` : `claude plugin ${plugin}: ${outcome.detail}`;
+        return { state: "failed", detail, remedy: RETRY_REMEDY };
+      }
+      if (outcome.kind === "rolledBack") {
+        ctx.log("plugins.install", `${plugin}: install rolled back (${outcome.detail})`);
+        continue;
+      }
+      settled.push(plugin);
     }
   }
 
-  updateSetupState(ctx.p, (s) => ({ ...s, marketplaces: [...s.marketplaces, ...marketplaces], plugins: [...s.plugins, ...allPlugins] }));
+  updateSetupState(ctx.p, (s) => ({ ...s, marketplaces: [...s.marketplaces, ...marketplaces], plugins: [...s.plugins, ...new Set(settled)] }));
 
-  if (teamAuthoredPlugins.length > 0) {
-    ctx.log("plugins.install", `installed but NOT enabled (team-authored, needs your own \`claude plugin enable <name>\`): ${teamAuthoredPlugins.join(", ")}`);
+  // A rolled-back pack is not installed, so naming it here would tell the
+  // member to enable something that is not there and contradict its own
+  // `missing` status row. `settled` is the only record of what really landed.
+  const settledSet = new Set(settled);
+  const pending = teamAuthoredPlugins.filter((p) => settledSet.has(p));
+
+  if (pending.length > 0) {
+    ctx.log("plugins.install", `installed but NOT enabled (team-authored, needs your own \`claude plugin enable <name>\`): ${pending.join(", ")}`);
   }
 
   const materializeDetail = await runMaterializeAfterInstall(ctx);
-  const pendingNote = teamAuthoredPlugins.length > 0 ? ` · ${teamAuthoredPlugins.length} awaiting your approval to enable: ${teamAuthoredPlugins.join(", ")}` : "";
-  return { state: "done", detail: `${marketplaces.length} marketplace(s), ${allPlugins.length} plugin(s) across ${configDirs.length} config dir(s) · ${materializeDetail}${pendingNote}` };
+  const pendingNote = pending.length > 0 ? ` · ${pending.length} awaiting your approval to enable: ${pending.join(", ")}` : "";
+  return { state: "done", detail: `${marketplaces.length} marketplace(s), ${settledSet.size} plugin(s) across ${configDirs.length} config dir(s) · ${materializeDetail}${pendingNote}` };
 }
 
 /** The plugins.install step body — also `rt setup pack`'s first phase, so it lives under one name rather than two copies of the same try/catch. */

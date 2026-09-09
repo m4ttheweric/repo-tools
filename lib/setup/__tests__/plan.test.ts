@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { composePlan } from "../plan.ts";
+import { applyInstallSatisfiedFlip, composePlan } from "../plan.ts";
+import { finalizePlan, row, type Group, type Row } from "../contract.ts";
 import { UserActionableError } from "../errors.ts";
 import { writeIntent, type SetupIntent } from "../intent.ts";
 import type { SecretPresence } from "../validators/accounts.ts";
@@ -210,4 +211,27 @@ describe("composePlan — install-satisfied flip", () => {
       expect(plan.requiredMissing).not.toContain("tool.fast-browser-extension");
     }
   });
+});
+
+function statusPlan(rows: Row[]) {
+  // Group requires a title as well as id and rows.
+  const groups: Group[] = [{ id: "tools", title: "Tools", rows }];
+  return finalizePlan({ slug: "acme", name: "Acme", mode: "none" }, applyInstallSatisfiedFlip(groups, "status"));
+}
+
+test("a skipped pack row never lands in requiredMissing, so it cannot block Install", () => {
+  const plan = statusPlan([
+    row({ id: "pack.remote", kind: "tool", title: "remote", why: "x", required: false, status: "skipped", detail: "version unknown; rt does not track this source's version" }),
+  ]);
+  expect(plan.requiredMissing).not.toContain("pack.remote");
+  expect(plan.canInstall).toBe(true);
+});
+
+test("on a machine with no claude, the skipped plugin rows do not block Install either", () => {
+  const plan = statusPlan([
+    row({ id: "tool.plugins", kind: "tool", title: "Claude plugins", why: "x", required: false, status: "skipped", detail: "claude not installed" }),
+    row({ id: "pack.acme-skills", kind: "tool", title: "acme-skills", why: "x", required: false, status: "skipped", detail: "claude not installed" }),
+  ]);
+  expect(plan.requiredMissing).toEqual([]);
+  expect(plan.canInstall).toBe(true);
 });

@@ -22,6 +22,7 @@ import { BASE_PLUGINS } from "../base-plugins.ts";
 import { row, type Action, type Row } from "../contract.ts";
 import { integrationDef } from "../integrations.ts";
 import { callableBySkills, claudeJsonPath, linearServerNames, nameTaken, readClaudeConfig } from "../linear-mcp.ts";
+import { parsePluginList, readServedPacks, type ServedPack } from "../pack-cache.ts";
 import type { ExecResult, Probes } from "../probes.ts";
 import type { PackRequirements, ToolRequirement } from "../requirements.ts";
 import { atLeast } from "../semver.ts";
@@ -456,46 +457,6 @@ async function teamToolRow(p: Probes, req: ToolRequirement, hasBrew: boolean): P
 
 // ─── pack.<pack> ────────────────────────────────────────────────────────────
 
-/** One entry of `claude plugin list --json`; only the fields this module reads. The real listing carries more (version, scope, installPath, installedAt, lastUpdated, mcpServers) that nothing here needs. */
-interface PluginListEntry {
-  id: string;
-  enabled: boolean;
-}
-
-/** True only for an element this module can safely read `.id` off; `enabled` is normalized by the caller rather than checked here, since a missing or non-boolean one is not a shape violation. */
-function isPluginListElement(value: unknown): value is { id: string; enabled?: unknown } {
-  return isPlainObject(value) && typeof value.id === "string";
-}
-
-/**
- * `claude plugin list` (no flag) prints a chevron glyph before each name,
- * never the bare id, so a human-format scrape can never match `BASE_PLUGINS`.
- * The parsed `id` field is the only reliable match surface.
- *
- * The parse boundary: any element missing a string `id` rejects the whole
- * payload as null (same as unparsable JSON), rather than dropping just that
- * element — a schema violation anywhere means the payload's shape can't be
- * trusted, so the honest answer is "could not be read", not a silently
- * incomplete list. A missing or non-boolean `enabled` is not such a
- * violation: it already drives the disabled-vs-ready split, so it is
- * normalized to `false` here rather than rejecting the payload over it.
- */
-function parsePluginList(stdout: string): PluginListEntry[] | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed)) return null;
-  const entries: PluginListEntry[] = [];
-  for (const item of parsed) {
-    if (!isPluginListElement(item)) return null;
-    entries.push({ id: item.id, enabled: item.enabled === true });
-  }
-  return entries;
-}
-
 const INSTALL_PLUGINS_ACTION: Action = { type: "run", label: "Install plugins", verb: ["setup", "pack"] };
 const ENABLE_PLUGINS_ACTION: Action = { type: "run", label: "Enable plugins", verb: ["setup", "pack"] };
 
@@ -503,7 +464,7 @@ const ENABLE_PLUGINS_ACTION: Action = { type: "run", label: "Enable plugins", ve
 export const INSTALLED_BY_INSTALL_NOTE = "Installed by Install (plugins.install).";
 
 /** RULING R-T8-L1b: a malformed pack (readPackRequirements/parseRequirements set `.error`) surfaces as an honest error row here — the one row this module always emits per pack — rather than being silently dropped. */
-function packRow(req: PackRequirements, pluginList: ExecResult): Row {
+function packRow(req: PackRequirements, pluginList: ExecResult, served?: ServedPack): Row {
   const base = {
     id: `pack.${req.pack}`,
     kind: "tool" as const,
@@ -523,8 +484,31 @@ function packRow(req: PackRequirements, pluginList: ExecResult): Row {
 
   const entries = parsePluginList(pluginList.stdout);
   if (!entries) return row({ ...base, status: "error", detail: "claude plugin list --json output could not be read" });
-  if (entries.some((e) => typeof e.id === "string" && e.id.startsWith(`${req.pack}@`))) return row({ ...base, status: "ready", detail: "installed" });
-  return row({ ...base, status: "missing", detail: "installed by Install (plugins.install)" });
+  const entry = entries.find((e) => e.id === `${req.pack}@${served?.id.split("@")[1] ?? ""}`) ?? entries.find((e) => e.id.startsWith(`${req.pack}@`));
+
+  if (served && served.servedVersion === null && !entry) {
+    // optionalNote is dropped: base carries "Installed by Install", which
+    // contradicts this row's own detail.
+    return row({ ...base, optionalNote: null, status: "skipped", detail: "version unknown; rt does not track this source's version" });
+  }
+  if (!entry) return row({ ...base, status: "missing", detail: "installed by Install (plugins.install)" });
+
+  const installed = entry.version ?? "unknown";
+  if (served && served.servedVersion !== null && entry.version !== null && entry.version !== served.servedVersion) {
+    return row({ ...base, status: "needs-you", detail: `installed ${installed}, team serves ${served.servedVersion}`, action: INSTALL_PLUGINS_ACTION });
+  }
+  // No served pack AND no version to report: the pre-existing wording is a
+  // pinned contract string, so it stays exactly "installed".
+  if (!served && entry.version === null) return row({ ...base, status: "ready", detail: "installed" });
+  if (!served || served.servedVersion === null) {
+    return row({ ...base, status: "ready", detail: entry.version === null ? "installed version unknown, served version unknown" : `${installed} installed, served version unknown` });
+  }
+  if (entry.version === null) {
+    return row({ ...base, status: "ready", detail: `installed version unknown, team serves ${served.servedVersion}` });
+  }
+  const caveat = "a Claude session started before this version landed uses the old cache until it restarts";
+  const enablement = entry.enabled ? "installed and enabled" : `installed, not enabled ... claude plugin enable ${entry.id}`;
+  return row({ ...base, status: "ready", detail: `${installed} ${enablement}; ${caveat}` });
 }
 
 // ─── tool.plugins ───────────────────────────────────────────────────────────
@@ -608,7 +592,15 @@ async function linearMcpRow(p: Probes, secrets: SecretPresence): Promise<Row> {
 
 // ─── entry point ────────────────────────────────────────────────────────────
 
-export async function toolRows(p: Probes, reqs: PackRequirements[], opts: { hasBrew: boolean; secrets: SecretPresence }, seams: ToolsSeams = REAL_SEAMS): Promise<Row[]> {
+export async function toolRows(
+  p: Probes,
+  reqs: PackRequirements[],
+  // Optional, not required: the existing test call sites pass only
+  // { hasBrew, secrets }, and tests are inside the root tsconfig, so a required
+  // field turns `bunx tsc --noEmit` red while `bun test` stays green.
+  opts: { hasBrew: boolean; secrets: SecretPresence; teamSlug?: string },
+  seams: ToolsSeams = REAL_SEAMS,
+): Promise<Row[]> {
   const fastBrowser = await probeFastBrowser(p, seams);
   const rows: Row[] = [
     await herdrRow(p, opts),
@@ -630,7 +622,22 @@ export async function toolRows(p: Probes, reqs: PackRequirements[], opts: { hasB
   // unconditional, so there is no longer a case where nothing needs it.
   const pluginList = await exec(p, ["claude", "plugin", "list", "--json"]);
   rows.push(pluginsRow(pluginList));
-  for (const req of reqs) rows.push(packRow(req, pluginList));
+
+  const served = opts.teamSlug ? readServedPacks(p, opts.teamSlug) : { packs: [], error: null };
+  if (served.error) {
+    // `team.marketplace`, NOT `pack.marketplace`: isInstallSatisfied matches any
+    // id starting with "pack.", and an error row can never become ready, so a
+    // pack-namespaced id would hold canInstall at false permanently. A member is
+    // pull-only and cannot repair the team's marketplace.json, so they would
+    // have no way out but --force.
+    rows.push(row({ id: "team.marketplace", kind: "tool", title: "Team marketplace", why: "The team's marketplace.json lists the packs Install manages.", required: false, status: "error", detail: served.error }));
+  }
+  const byPack = new Map(served.packs.map((s) => [s.name, s]));
+  const names = [...new Set([...reqs.map((r) => r.pack), ...served.packs.map((s) => s.name)])].sort();
+  for (const name of names) {
+    const req = reqs.find((r) => r.pack === name) ?? { pack: name, tools: [], integrations: [] };
+    rows.push(packRow(req, pluginList, byPack.get(name)));
+  }
 
   rows.push(await linearMcpRow(p, opts.secrets));
 

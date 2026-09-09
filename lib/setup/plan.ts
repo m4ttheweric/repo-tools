@@ -120,16 +120,24 @@ async function buildGroup(id: GroupId, build: () => Promise<Row[]>): Promise<Gro
 
 const INSTALL_SATISFIED_IDS = new Set(["perm.login-items", "tool.daemon", "tool.plugins"]);
 
-function isInstallSatisfied(id: string): boolean {
-  return INSTALL_SATISFIED_IDS.has(id) || id.startsWith("pack.");
+/**
+ * A row Install itself can make ready. A `skipped` row is by definition one it
+ * cannot: the two that reach here are a pack whose source rt does not manage,
+ * and (on a machine with no `claude` at all) every `pack.*` row plus
+ * `tool.plugins`. Flipping any of those to required parks canInstall at false
+ * with nothing the user can do about it.
+ */
+function isInstallSatisfied(r: Row): boolean {
+  if (r.status === "skipped") return false;
+  return INSTALL_SATISFIED_IDS.has(r.id) || r.id.startsWith("pack.");
 }
 
 /** The id-keyed set of rows only Install itself can satisfy reads required:false pre-install (canInstall stays reachable) and required:true once `setup status` runs post-install. */
-function applyInstallSatisfiedFlip(groups: Group[], mode: "plan" | "status"): Group[] {
+export function applyInstallSatisfiedFlip(groups: Group[], mode: "plan" | "status"): Group[] {
   return groups.map((g) => ({
     ...g,
     rows: g.rows.map((r) => {
-      if (!isInstallSatisfied(r.id)) return r;
+      if (!isInstallSatisfied(r)) return r;
       // optionalNote reads as "works without this" downstream — false the moment required flips to true, so it's dropped rather than carried over.
       if (mode === "status") return { ...r, required: true, optionalNote: null };
       return { ...r, required: false, optionalNote: r.optionalNote ?? INSTALLED_BY_INSTALL_NOTE };
@@ -154,7 +162,7 @@ export async function composePlan(i: PlanInputs): Promise<Plan> {
     buildGroup("access", () => accessRows(i.p, snapshot, intent, userOverrides, i.secrets)),
     buildGroup("tools", async () => {
       const [hasBrew, healthRows] = await Promise.all([detectHasBrew(i.p), rtHealthRows(i.p, { ci: i.ci })]);
-      const tools = await toolRows(i.p, reqs, { hasBrew, secrets: i.secrets });
+      const tools = await toolRows(i.p, reqs, { hasBrew, secrets: i.secrets, teamSlug: team.slug });
       return [...tools, ...healthRows];
     }),
   ]);

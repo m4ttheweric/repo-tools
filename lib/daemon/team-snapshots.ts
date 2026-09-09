@@ -12,6 +12,7 @@ import type { Logger } from "pino";
 import { getSetting } from "../settings/resolve.ts";
 import { mattstackHome } from "../rt-paths.ts";
 import { createRealProbes, type Probes } from "../setup/probes.ts";
+import { convergePackCache } from "../setup/pack-cache.ts";
 import { parseOriginUrl } from "../setup/team-settings.ts";
 import { UserActionableError } from "../setup/errors.ts";
 import { readTeamLocal } from "../team/team-local.ts";
@@ -45,6 +46,8 @@ export interface TeamSnapshotsDeps {
   clearTimeout?: (h: ReturnType<typeof setTimeout>) => void;
   exec?: Parameters<typeof startSnapshot>[1]["exec"];
   db?: Database;
+  /** Injectable so tests never shell out to a real claude. */
+  converge?: typeof convergePackCache;
 }
 
 export interface TeamSnapshotsHandle {
@@ -74,6 +77,7 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
   const setTimer = rawDeps.setTimeout ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
   const clearTimer = rawDeps.clearTimeout ?? ((h: ReturnType<typeof setTimeout>) => clearTimeout(h));
   const readSettings = rawDeps.readSettings ?? (() => getSetting<TeamSnapshotSettings>("rt.teamSnapshot").value);
+  const converge = rawDeps.converge ?? convergePackCache;
   const instances = new Map<string, { handle: SnapshotHandle; dir: string; pullOnly: boolean }>();
   const skippedNoRemote = new Set<string>();
   let watcher: { close(): void } | null = null;
@@ -164,7 +168,15 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
           continue;
         }
         skippedNoRemote.delete(slug);
-        const spec = teamSnapshotSpec(slug, dir, { pullIntervalSec: clampPullIntervalSec(s.pullIntervalSec), originUrl, probes, pullOnly });
+        const spec = teamSnapshotSpec(slug, dir, {
+          pullIntervalSec: clampPullIntervalSec(s.pullIntervalSec),
+          originUrl,
+          probes,
+          pullOnly,
+          onPulled: async () => {
+            await converge(probes, slug, rawDeps.log.child({ team: slug }));
+          },
+        });
         const handle = start(spec, {
           log: rawDeps.log.child({ team: slug }),
           broadcast: rawDeps.broadcast,
