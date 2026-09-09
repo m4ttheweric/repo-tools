@@ -82,6 +82,12 @@ export interface ParsedEndpointLookupArgs {
 
 /** Pure arg parse for `rt endpoint lookup`, same shape (and same index-exclusion subtlety) as parseEndpointReleaseArgs below. */
 export function parseEndpointLookupArgs(args: string[]): ParsedEndpointLookupArgs {
+  const inlineIdx = args.findIndex((a) => a.startsWith("--path="));
+  if (inlineIdx !== -1) {
+    const inline = args[inlineIdx]!.slice("--path=".length);
+    const roleArgs = args.filter((a) => !a.startsWith("--"));
+    return { role: roleArgs[0], path: inline.length > 0 ? inline : undefined, pathInvalid: inline.length === 0 };
+  }
   const pathFlagIdx = args.indexOf("--path");
   const pathValueIdx = pathFlagIdx === -1 ? -1 : pathFlagIdx + 1;
   const pathValue = pathFlagIdx !== -1 ? args[pathValueIdx] : undefined;

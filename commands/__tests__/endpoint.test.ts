@@ -62,6 +62,23 @@ describe("parseEndpointLookupArgs", () => {
     });
   });
 
+  test("inline --path=<dir> is accepted, before or after the role", () => {
+    expect(parseEndpointLookupArgs(["backend", "--path=/wt/seamus"])).toEqual({
+      role: "backend",
+      path: "/wt/seamus",
+      pathInvalid: false,
+    });
+    expect(parseEndpointLookupArgs(["--path=/wt/seamus", "backend"])).toEqual({
+      role: "backend",
+      path: "/wt/seamus",
+      pathInvalid: false,
+    });
+  });
+
+  test("inline --path= with an empty value is flagged invalid, not treated as omitted", () => {
+    expect(parseEndpointLookupArgs(["backend", "--path="])).toEqual({ role: "backend", path: undefined, pathInvalid: true });
+  });
+
   test("--path with no following value is flagged invalid, not treated as omitted", () => {
     expect(parseEndpointLookupArgs(["backend", "--path"])).toEqual({ role: "backend", path: undefined, pathInvalid: true });
   });
