@@ -202,15 +202,16 @@ function w4Harness(opts: { deliverOk?: boolean; injectOk?: boolean; withInjector
   return { push, store, events };
 }
 
-function answeredFormGate(store: GatesStore, by: string, origin?: Record<string, unknown>) {
+function answeredFormGate(store: GatesStore, by: string, origin?: Record<string, unknown>, pane: string | null = "pane-7") {
   // arguments.length, not `origin ?? default`: the W4 loop passes an
   // explicit `undefined` third argument to mean "no origin at all", which
   // is distinct from the two-arg callers below that want the form default.
   // `??` cannot tell those apart since both see `origin === undefined`.
+  // `pane: null` means no top-level pane column at all.
   const passedOrigin = arguments.length >= 3 ? origin : { presentation: "form", paneId: "pane-7" };
   const row = store.open({
     subject: "mr:https://gitlab.example.com/x/1", kind: "review-post", questions: qs(),
-    nudge: { session: "sess-1" }, pane: "pane-7",
+    nudge: { session: "sess-1" }, ...(pane == null ? {} : { pane }),
     origin: passedOrigin as never,
   }).row;
   store.answer(row.id, { q: "a" }, by);
@@ -232,12 +233,30 @@ describe("gate-push escape injection (W4)", () => {
     expect(events).toEqual(["deliver"]);
   });
 
-  test("no injection for wait presentation, missing paneId, or missing origin", async () => {
-    for (const origin of [{ presentation: "wait", paneId: "pane-7" }, { presentation: "form" }, undefined]) {
+  test("no injection for wait presentation or missing origin", async () => {
+    for (const origin of [{ presentation: "wait", paneId: "pane-7" }, undefined]) {
       const { push, store, events } = w4Harness();
       await push.onAnswered(answeredFormGate(store, "console", origin as never));
       expect(events).toEqual(["deliver"]);
     }
+  });
+
+  test("form with no origin.paneId falls back to the top-level pane for the Escape (SKILLS-60)", async () => {
+    const { push, store, events } = w4Harness();
+    await push.onAnswered(answeredFormGate(store, "console", { presentation: "form" }));
+    expect(events).toEqual(["deliver", "inject:pane-7"]);
+  });
+
+  test("origin.paneId wins over the top-level pane when both are set", async () => {
+    const { push, store, events } = w4Harness();
+    await push.onAnswered(answeredFormGate(store, "console", { presentation: "form", paneId: "pane-9" }));
+    expect(events).toEqual(["deliver", "inject:pane-9"]);
+  });
+
+  test("form with neither origin.paneId nor a top-level pane stays doorbell-only", async () => {
+    const { push, store, events } = w4Harness();
+    await push.onAnswered(answeredFormGate(store, "console", { presentation: "form" }, null));
+    expect(events).toEqual(["deliver"]);
   });
 
   test("no injection when the doorbell failed (dead-pane degrades to reconcile-at-next-touch)", async () => {
@@ -265,11 +284,11 @@ describe("gate-push escape injection (W4)", () => {
 
 /** Unanswered form gate: open() only, no answer -- exercises the
     supersede/close paths, which never carry an answer. */
-function openFormGate(store: GatesStore, origin?: Record<string, unknown>) {
+function openFormGate(store: GatesStore, origin?: Record<string, unknown>, pane: string | null = "pane-7") {
   const passedOrigin = arguments.length >= 2 ? origin : { presentation: "form", paneId: "pane-7" };
   return store.open({
     subject: "mr:https://gitlab.example.com/x/1", kind: "review-post", questions: qs(),
-    nudge: { session: "sess-1" }, pane: "pane-7",
+    nudge: { session: "sess-1" }, ...(pane == null ? {} : { pane }),
     origin: passedOrigin as never,
   }).row;
 }
@@ -305,14 +324,28 @@ describe("gate-push onClosed (supersede/close, W4 final-review M4)", () => {
     expect(delivered[0]!.body).not.toContain("answered");
   });
 
-  test("no injection for wait presentation, missing paneId, or missing origin, on close", async () => {
-    for (const origin of [{ presentation: "wait", paneId: "pane-7" }, { presentation: "form" }, undefined]) {
+  test("no injection for wait presentation or missing origin, on close", async () => {
+    for (const origin of [{ presentation: "wait", paneId: "pane-7" }, undefined]) {
       const { push, store, events } = w4Harness();
       const row = openFormGate(store, origin as never);
       store.close(row.id, "abandoned");
       await push.onClosed(store.get(row.id)!);
       expect(events).toEqual(["deliver"]);
     }
+  });
+
+  test("close: form with no origin.paneId falls back to the top-level pane; no pane at all stays doorbell-only", async () => {
+    const { push, store, events } = w4Harness();
+    const row = openFormGate(store, { presentation: "form" });
+    store.close(row.id, "abandoned");
+    await push.onClosed(store.get(row.id)!);
+    expect(events).toEqual(["deliver", "inject:pane-7"]);
+
+    const bare = w4Harness();
+    const bareRow = openFormGate(bare.store, { presentation: "form" }, null);
+    bare.store.close(bareRow.id, "abandoned");
+    await bare.push.onClosed(bare.store.get(bareRow.id)!);
+    expect(bare.events).toEqual(["deliver"]);
   });
 
   test("no injection when the close doorbell failed (dead-pane degrades to reconcile-at-next-touch)", async () => {

@@ -5,9 +5,11 @@
  * on the store, never thrown, so a delivery failure can never fail a gate:*
  * verb.
  *
- * Binding rule: the pane push targets `row.nudge.session` ONLY. The opener records its own session id at `gate open`; `row.pane` is
- * a focus/resume ref, never a delivery target. No nudge means no push --
+ * Binding rule: the pane push targets `row.nudge.session` ONLY. The opener records its own session id at `gate open`. No nudge means no push --
  * the unattended-gate case blocks in `gate wait` with nothing to wake.
+ * The Escape injection targets `origin.paneId`, falling back to the
+ * top-level `row.pane` when the origin lacks one (SKILLS-60): openers that
+ * only know the CLI's `--pane` must still get their form dismissed.
  *
  * Answers never travel in the push body: it is always the fixed
  * envelope-wrapped phrase, so a stale or racing pane is told to re-read the
@@ -108,11 +110,13 @@ export function createGatePush(opts: {
     // next input must be the queued frame, and a dead pane has nothing
     // queued to find.
     if (!ok || !opts.injectEscape) return;
-    if (row.origin?.presentation !== "form" || !row.origin.paneId) return;
+    if (row.origin?.presentation !== "form") return;
+    const paneId = row.origin.paneId || row.pane;
+    if (!paneId) return;
     if (row.answer?.by === GATE_BY_PANE) return;
-    const injected = await opts.injectEscape(row.origin.paneId);
+    const injected = await opts.injectEscape(paneId);
     if (!injected.ok) {
-      log.warn({ gateId: row.id, paneId: row.origin.paneId, error: injected.error }, "gate-push: escape injection failed; doorbell-only");
+      log.warn({ gateId: row.id, paneId, error: injected.error }, "gate-push: escape injection failed; doorbell-only");
     }
   }
 
