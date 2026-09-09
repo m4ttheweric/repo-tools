@@ -28,9 +28,11 @@ public final class TeamChoiceModel: ObservableObject {
     @Published public var restoreRepo = ""
     @Published public var restoreAgeKey = ""
     @Published public private(set) var joinSummary: String?
+    @Published public private(set) var joinWarning: String?
     @Published public private(set) var isChecking = false
 
     private let rt: RtRunning
+    private let pasteboard: PasteboardReading
     // rt.run is non-cancellable, so this is the only guard against a second
     // Back→Continue re-fetch (the view is recreated but the model persists)
     // clobbering fields the user has since edited by hand.
@@ -46,11 +48,21 @@ public final class TeamChoiceModel: ObservableObject {
     // re-pasting one re-runs the whole restore.
     private var restoredRepo: String?
 
-    public init(rt: RtRunning) { self.rt = rt }
+    public init(rt: RtRunning, pasteboard: PasteboardReading) {
+        self.rt = rt
+        self.pasteboard = pasteboard
+    }
 
     public var slugPreview: String { Slug.make(teamName) }
     public var ghRepoPreview: String { "\(ghOwner ?? ghHandle ?? "you")/mattstack-team-\(slugPreview)" }
-    public var normalizedInviteCode: String { inviteCode.filter { !$0.isWhitespace && !$0.isNewline } }
+    public var normalizedInviteCode: String {
+        JoinLink.code(fromText: inviteCode) ?? inviteCode.filter { !$0.isWhitespace && !$0.isNewline }
+    }
+
+    public func pasteInvite() {
+        guard let text = pasteboard.inviteText(), let code = JoinLink.code(fromText: text) else { return }
+        inviteCode = code
+    }
 
     public var canContinue: Bool {
         switch choice {
@@ -101,12 +113,28 @@ public final class TeamChoiceModel: ObservableObject {
                 preparedFingerprint = fingerprint
                 return nil
             case .join:
+                // Join never latches, so a Back plus a second code re-runs this:
+                // the previous code's verdict must not outlive its own attempt.
+                joinSummary = nil
+                joinWarning = nil
                 let stdin = try JSONEncoder().encode(["code": normalizedInviteCode])
                 let r = try await rt.run(["team", "join", "--dry-run", "--json"], stdin: stdin)
                 if let e = r.userError(redactStderr: true) { return Self.joinFailureCopy(e, owner: nil, team: nil) }
                 guard r.exitCode == 0, let j = try? r.decode(TeamJoinResult.self) else { return r.failureCopy(verb: "team join", redactStderr: true) }
-                guard j.access == "ok" else { return Self.joinFailureCopy(RtUserError(code: j.access == "denied" ? "no-access" : "unreachable", message: j.message ?? ""), owner: j.team?.owner, team: j.team?.name) }
-                joinSummary = j.message ?? "Joining \(j.team?.name ?? "") (owner \(j.team?.owner ?? ""))"
+                // Dev mode runs an app and a CLI built separately, so a CLI too
+                // old to send `intent` must not wave a joiner past a denial it
+                // did check.
+                let wrote = j.intent.map { $0 == "written" } ?? (j.access == "ok")
+                guard wrote else {
+                    return Self.joinFailureCopy(RtUserError(code: j.access == "denied" ? "no-access" : "unreachable", message: j.message ?? ""), owner: j.team?.owner, team: j.team?.name)
+                }
+                // Exactly one of the two renders, so a non-ok verdict never
+                // reaches the screen under the summary's green checkmark.
+                if j.access == "ok" {
+                    joinSummary = j.message ?? "Joining \(j.team?.name ?? "") (owner \(j.team?.owner ?? ""))"
+                } else {
+                    joinWarning = j.message ?? "rt could not confirm access to the team repo; the checklist re-checks it."
+                }
                 return await homeInitCheck()
             case .restore:
                 // The app runs the real restore at Continue (clone + key

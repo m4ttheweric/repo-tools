@@ -4,20 +4,17 @@
  * team.join and repos.clone all run before secrets.write drains the stage.
  */
 
-import { NoAgeKeyError, readSecret } from "../../secrets/store.ts";
-import { forgeTokenKey } from "../../team/git-credential.ts";
+import { readSecret } from "../../secrets/store.ts";
 import type { ApplyContext } from "../apply.ts";
 import { readStagedSecret } from "../staging.ts";
+import { forgeTokenLookup, tokenOrNull } from "../../team/forge-token.ts";
 
 /** Null when rt holds no token for the remote's host. */
 export async function forgeTokenFor(ctx: ApplyContext, remote: string): Promise<string | null> {
-  const key = forgeTokenKey(remote);
-  if (!key) return null;
-  try {
-    const stored = await readSecret("rt", key, ctx.secrets);
-    if (stored !== null) return stored;
-  } catch (err) {
-    if (!(err instanceof NoAgeKeyError)) return null;
-  }
-  return readStagedSecret(ctx.p, "rt", key);
+  return tokenOrNull(
+    await forgeTokenLookup(remote, {
+      readStored: (d, k) => readSecret(d, k, ctx.secrets),
+      readStaged: (d, k) => readStagedSecret(ctx.p, d, k),
+    })
+  );
 }

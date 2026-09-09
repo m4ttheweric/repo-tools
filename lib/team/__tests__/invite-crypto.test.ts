@@ -6,6 +6,7 @@ import {
   open,
   encodeCode,
   decodeCode,
+  extractInviteCode,
   sealReply,
   openReply,
   sealBytes,
@@ -13,6 +14,7 @@ import {
 } from "../invite-crypto.ts";
 import { UserActionableError } from "../../setup/errors.ts";
 import type { InvitePointer } from "../../setup/intent.ts";
+import fixture from "../fixtures/invite-code-inputs.json";
 
 const SAMPLE_ID_HEX = "0102030405060708090a0b0c0d0e0f10";
 const OTHER_ID_HEX = "1112131415161718191a1b1c1d1e1f20";
@@ -371,5 +373,20 @@ describe("fixed vector (pins the algorithm)", () => {
     expect(new TextDecoder().decode(roundTripped)).toBe('{"v":1,"hello":"world"}');
 
     await expect(openBytes(ciphertextB64, key, new Uint8Array(16))).rejects.toThrow();
+  });
+});
+
+describe("extractInviteCode", () => {
+  for (const c of fixture as { why: string; input: string; expect: string | null }[]) {
+    test(c.why, () => {
+      expect(extractInviteCode(c.input)).toBe(c.expect);
+    });
+  }
+
+  test("every accepted case decodes", () => {
+    for (const c of fixture as { input: string; expect: string | null }[]) {
+      if (c.expect === null) continue;
+      expect(() => decodeCode(extractInviteCode(c.input)!)).not.toThrow();
+    }
   });
 });

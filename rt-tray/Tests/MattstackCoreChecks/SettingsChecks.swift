@@ -23,7 +23,7 @@ let settingsChecks: [Check] = [
     Check("TeamSettingsModel loads status, mints invites through rt, loads the uninstall dry-run — exact argv, no stdin") { c in
         let rt = ScriptedRt()
         rt.answers["team status"] = (0, #"{"contract":1,"name":"Acme","slug":"acme","remote":"git@github.com:acme/mattstack-team-acme.git","lastPush":"2026-08-21T03:00:00Z","members":[{"username":"matt"},{"username":"bob"}]}"#)
-        rt.answers["team invite --handle bob"] = (0, #"{"contract":1,"code":"ABCD","expiresAt":"2026-08-28T00:00:00Z","pasteBlock":"Install mattstack…","forgeAccess":"granted","manualSteps":[]}"#)
+        rt.answers["team invite --handle bob"] = (0, #"{"contract":1,"code":"ABCD","link":"https://mattstack.dev/join#ABCD","expiresAt":"2026-08-28T00:00:00Z","pasteBlock":"Install mattstack…","forgeAccess":"granted","manualSteps":[]}"#)
         rt.answers["uninstall --dry-run"] = (0, #"{"contract":1,"actions":[{"id":"services.unregister","title":"Stop services"}]}"#)
         let m = await MainActor.run { makeTeamSettings(rt).0 }
         await m.load()
@@ -37,6 +37,7 @@ let settingsChecks: [Check] = [
 
         await m.mintInvite(handle: "bob")
         await MainActor.run { c.expectEqual(m.invite?.code, "ABCD") }
+        c.expectEqual(await MainActor.run { m.invite?.link }, "https://mattstack.dev/join#ABCD")
         try c.require(rt.calls.count >= 2, "expected team status then team invite, got \(rt.calls.map(\.args))")
         c.expectEqual(rt.calls[1].args, ["team", "invite", "--handle", "bob", "--json"])
 

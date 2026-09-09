@@ -40,4 +40,16 @@ let launchChecks: [Check] = [
         try c.requireEqual(args.count, 6)
         c.expectEqual(args[3], "\"/Users/u/My \\\"Apps\\\"/mattstack.app\"")
     },
+    Check("JoinLink.code(fromText:) matches the shared fixture") { c in
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let url = repo.appendingPathComponent("lib/team/fixtures/invite-code-inputs.json")
+        struct Case: Decodable { let why: String; let input: String; let expect: String? }
+        let cases = try JSONDecoder().decode([Case].self, from: Data(contentsOf: url))
+        c.expect(cases.count >= 10)
+        for k in cases {
+            c.expectEqual(JoinLink.code(fromText: k.input), k.expect, k.why)
+        }
+    },
 ]
