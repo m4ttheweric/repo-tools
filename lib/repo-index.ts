@@ -34,6 +34,7 @@ import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 import { mergeRegistries, type TreeRecord } from "./worktree/registry.ts";
 import { currentBranchAsync, listWorktreesAsync } from "./worktree/git-async.ts";
+import { isTrashPath } from "./worktree/trash.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -923,9 +924,20 @@ function buildDedupeSets(known: KnownRepo[]): { knownNames: Set<string>; knownPa
 }
 
 /**
+ * The eligibility filter both index builders apply to porcelain rows: not the
+ * bare container, still on disk, and not a trashed tree. Git can still list a
+ * trashed path when the daemon died between dispose's rename and its
+ * `git worktree prune`; this seam is what keeps that row out of every picker,
+ * live or cache-served.
+ */
+function liveWorktreeRow(w: KnownRepo["worktrees"][number]): boolean {
+  return !w.isBare && existsSync(w.path) && !isTrashPath(w.path);
+}
+
+/**
  * Worktrees for a repo whose `singleWorktree` fast path missed (linked
  * worktrees present): the authoritative `git worktree list --porcelain`
- * parse. Filtering (`!isBare && existsSync`) is the caller's job, matching
+ * parse. Filtering (`liveWorktreeRow`) is the caller's job, matching
  * `multiWorktreesAsync`.
  */
 function multiWorktrees(mainPath: string): KnownRepo["worktrees"] {
@@ -968,7 +980,7 @@ function multiWorktrees(mainPath: string): KnownRepo["worktrees"] {
  * Async twin of `multiWorktrees`, via `listWorktreesAsync` instead of
  * `execSync`. `WorktreeEntry.isBare` (parsed from the porcelain `bare` line,
  * same as `multiWorktrees` above) is carried through unchanged, so the
- * caller's shared `!isBare && existsSync` filter drops a bare container row
+ * caller's shared `liveWorktreeRow` filter drops a bare container row
  * exactly as it does for the sync builder.
  */
 async function multiWorktreesAsync(mainPath: string): Promise<KnownRepo["worktrees"]> {
@@ -997,7 +1009,7 @@ export function getKnownRepos(opts?: { includeMissing?: boolean }): KnownRepo[] 
     const worktrees = single ? [single] : multiWorktrees(mainPath);
     return {
       repoName,
-      worktrees: worktrees.filter(w => !w.isBare && existsSync(w.path)),
+      worktrees: worktrees.filter(liveWorktreeRow),
       dataDir: repoDataDir(repoName),
     };
   });
@@ -1072,7 +1084,7 @@ export async function getKnownReposAsync(opts?: { includeMissing?: boolean }): P
     const worktrees = single ? [single] : await multiWorktreesAsync(mainPath);
     return {
       repoName,
-      worktrees: worktrees.filter(w => !w.isBare && existsSync(w.path)),
+      worktrees: worktrees.filter(liveWorktreeRow),
       dataDir: repoDataDir(repoName),
     };
   }));
@@ -1376,10 +1388,12 @@ export function repoFromOptionValue(repos: KnownRepo[], value: string): KnownRep
 
 /** A repo's worktrees in picker order: the main worktree (git lists it
     first) stays first, the rest sort A→Z by branch, or directory name when
-    detached. A copy: `repo.worktrees` keeps git's own order for everything
-    agent-facing (`rt worktree list --json`). */
+    detached. Trashed rows are dropped here too: rows can come from a cache
+    snapshot written before a dispose, and this is the last seam every
+    general picker shares. A copy: `repo.worktrees` keeps git's own order for
+    everything agent-facing (`rt worktree list --json`). */
 export function pickerWorktrees(repo: Pick<KnownRepo, "worktrees">): KnownRepo["worktrees"] {
-  const [main, ...rest] = repo.worktrees;
+  const [main, ...rest] = repo.worktrees.filter((wt) => !isTrashPath(wt.path));
   if (!main) return [];
   const label = (wt: KnownRepo["worktrees"][number]) => wt.branch || basename(wt.path);
   return [main, ...rest.sort((a, b) => label(a).localeCompare(label(b), undefined, { sensitivity: "base" }))];
