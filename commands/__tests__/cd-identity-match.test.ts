@@ -116,4 +116,10 @@ describe("dropGhostWorktrees", () => {
     const repos = [multiRepo(["/r/main", "/r/live"])];
     expect(dropGhostWorktrees(repos, () => true)).toBe(repos);
   });
+
+  test("drops a linked row inside the trash even when its path exists", () => {
+    const repos = [multiRepo(["/r/main", "/pool/x/.trash/alpha-1725000000000", "/r/live"])];
+    const out = dropGhostWorktrees(repos, () => true);
+    expect(out[0]!.worktrees.map((w) => w.path)).toEqual(["/r/main", "/r/live"]);
+  });
 });

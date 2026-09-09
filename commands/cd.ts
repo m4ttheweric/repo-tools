@@ -24,6 +24,7 @@ import { homedir } from "os";
 import { yellow, green, reset } from "../lib/tui.ts";
 import { getRepoIdentity, getKnownRepos, getKnownReposCached, findKnownRepo, repoCarriesWorktree, getWorkspacePackages, repoFromOptionValue, missingRepoRefusal, ghostPathRefusal, type KnownRepo } from "../lib/repo.ts";
 import { writeRepoCache } from "../lib/repo-cache.ts";
+import { isTrashPath } from "../lib/worktree/trash.ts";
 import {
   pickWorktreeWithSwitch,
   pickFromAllRepos,
@@ -202,7 +203,7 @@ export function dropGhostWorktrees(
 ): KnownRepo[] {
   let changed = false;
   const out = repos.map((r) => {
-    const kept = r.worktrees.filter((w, i) => i === 0 || exists(w.path));
+    const kept = r.worktrees.filter((w, i) => i === 0 || (exists(w.path) && !isTrashPath(w.path)));
     if (kept.length === r.worktrees.length) return r;
     changed = true;
     return { ...r, worktrees: kept };
