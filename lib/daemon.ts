@@ -92,7 +92,6 @@ import { createEventsBus, type EventsBus } from "./daemon/events-bus.ts";
 import { createGatesStore, type GatesStore } from "./daemon/gates-store.ts";
 import { createHerdStore, type HerdStore } from "./daemon/herd-store.ts";
 import { createHerdLifecycle, type HerdLifecycle } from "./daemon/herd-lifecycle.ts";
-import { createHiddenSession } from "./daemon/herd-session.ts";
 import { createBgService, type BgService } from "./daemon/bg-service.ts";
 import { createBgClaimsStore, type BgClaimsStore } from "./daemon/bg-claims-store.ts";
 import { createGatePush, type GatePush } from "./daemon/gate-push.ts";
@@ -892,7 +891,6 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
             connected: (socket) => herdLifecycle?.connected(socket) ?? false,
             watch: (socket) => herdLifecycle?.watch(socket),
           },
-          herdHidden: createHiddenSession({ log }),
           herdJobsRoot: join(RT_DIR, "herds"),
           bgService,
           bgClaims,

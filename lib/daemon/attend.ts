@@ -2,7 +2,7 @@
  * attendPane: resolve a bg/hidden pane's herdr terminal id, then open a
  * visible tab running `herdr terminal attach --takeover` against it.
  * Extracted verbatim from herd:attend (lib/daemon/handlers/herd.ts) so a
- * second caller (pane:focus's `bg:` fork, Task 7) can share it.
+ * second caller like pane focus's `bg:` fork can share it.
  */
 import type { HerdrRunner } from "../agent-herdr.ts";
 

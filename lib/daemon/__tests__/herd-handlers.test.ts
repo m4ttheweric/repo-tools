@@ -174,6 +174,21 @@ describe("herd:start", () => {
     if (!res.ok) throw new Error(res.error);
     expect(claims.list()).toEqual([{ owner: `herd:${res.data.herd}`, pane: null, createdAt: expect.any(Number) }]);
   });
+
+  // The claim is only registered once store.create() succeeds; a failure on
+  // any step before it (chat:join here) must leave no orphaned claim behind
+  // for a herd row that will never exist to release it.
+  test("a hidden start whose chat:join fails leaves zero claims", async () => {
+    const chat = {
+      "chat:sign-in": async (p: any) => ({ ok: true as const, data: { handle: p.baseHandle ?? "shepherd", baseHandle: p.baseHandle ?? "shepherd", sessionId: p.sessionId, room: p.room ?? null } }),
+      "chat:join": async () => ({ ok: false as const, error: "join failed" }),
+    } as unknown as HerdDeps["chat"];
+    const { h, store, claims } = harness({ chat });
+    const res = await h["herd:start"]({ ...START, hidden: true });
+    expect(res.ok).toBe(false);
+    expect(store.list()).toEqual([]);
+    expect(claims.list()).toEqual([]);
+  });
 });
 
 describe("herd:resume / status / close", () => {

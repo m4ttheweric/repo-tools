@@ -214,7 +214,6 @@ export function createHerdHandlers(deps: HerdDeps) {
       if (hidden) {
         const ensured = await deps.bg.ensure();
         herdrSocket = ensured.socket;
-        deps.claims.claim(herdOwner(id));
       }
 
       let handle = deps.presenceHandleForSession(session);
@@ -229,6 +228,10 @@ export function createHerdHandlers(deps: HerdDeps) {
       const sub = await subscribeShepherd(id, session);
       if (!sub.ok) return sub;
       store.create({ id, repo, room, workspace: workspaceLabel(id), shepherdSession: session, shepherdHandle: handle, herdrSocket, hidden });
+      // The claim is only worth registering once the herd row it belongs to
+      // actually exists: any earlier failure returns before this line, so
+      // there is no half-created herd to leave an orphaned claim behind for.
+      if (hidden) deps.claims.claim(herdOwner(id));
       if (herdrSocket) deps.lifecycle.watch(herdrSocket);
       log.info({ herd: id, room, hidden }, "herd started");
       return { ok: true, data: { herd: id, room, workspace: workspaceLabel(id), subscription: sub.data.id, handle, hidden } };
