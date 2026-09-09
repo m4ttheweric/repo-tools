@@ -23,56 +23,11 @@ export LC_ALL=C
 
 usage() {
     echo "usage: gen-pins.sh <app-version> <portless-dist-dir> <node-binary>" >&2
+    echo "       gen-pins.sh --print-tree-hash <portless-dist-dir>" >&2
     echo "  dev: gen-pins.sh 0.0.0-dev rt-tray/deps/arm64/portless rt-tray/deps/arm64/node/bin/node" >&2
     echo "  build: the paths are the bundle's SIGNED Contents/Helpers copies, not the fetched deps" >&2
     exit 64
 }
-
-APP_VERSION="${1:-}"
-TREE="${2:-}"
-NODE_BIN="${3:-}"
-[ -n "$APP_VERSION" ] && [ -n "$TREE" ] && [ -n "$NODE_BIN" ] || usage
-
-HELPER_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-TRAY_DIR="$(cd "$HELPER_DIR/.." && pwd)"
-LOCK="$TRAY_DIR/deps.lock"
-OUT="$HELPER_DIR/Sources/ProxyInstall/Pins.generated.swift"
-LOCK_NAME="portless"
-
-[ -f "$LOCK" ] || { echo "  x gen-pins: $LOCK not found" >&2; exit 1; }
-
-JQ=""
-for candidate in "$TRAY_DIR/deps/arm64/jq" "$(command -v jq 2>/dev/null || true)"; do
-    if [ -n "$candidate" ] && [ -x "$candidate" ]; then JQ="$candidate"; break; fi
-done
-
-read_row() { # name<TAB>version<TAB>tarball-sha256
-    if [ -n "$JQ" ]; then
-        "$JQ" -r --arg n "$LOCK_NAME" \
-            '[.tools[] | select(.name == $n)] as $r
-             | if ($r | length) == 1 then ($r[0] | [.name, .version, .sha256] | @tsv)
-               else ("expected exactly one \($n) row, found \($r | length)" | halt_error(1)) end' "$LOCK"
-    elif command -v python3 >/dev/null 2>&1; then
-        python3 - "$LOCK" "$LOCK_NAME" <<'PY'
-import json, sys
-rows = [t for t in json.load(open(sys.argv[1]))["tools"] if t.get("name") == sys.argv[2]]
-if len(rows) != 1:
-    sys.exit("expected exactly one %s row, found %d" % (sys.argv[2], len(rows)))
-print("\t".join(rows[0][k] for k in ("name", "version", "sha256")))
-PY
-    else
-        echo "  x gen-pins: no jq (bundled or on PATH) and no python3 to read $LOCK" >&2
-        exit 1
-    fi
-}
-
-ROW="$(read_row)"
-IFS=$'\t' read -r P_NAME P_VERSION P_SHA <<< "$ROW"
-[ -n "$P_NAME" ] && [ -n "$P_VERSION" ] && [ -n "$P_SHA" ] || {
-    echo "  x gen-pins: incomplete $LOCK_NAME row: '$ROW'" >&2; exit 1
-}
-
-[ -d "$TREE" ] || { echo "  x gen-pins: no portless tree at $TREE" >&2; exit 1; }
 
 # Shape-checks the digest so an unreadable file fails the build rather than
 # pinning an empty or partial hash.
@@ -133,6 +88,62 @@ tree_hash() {
           done \
         | shasum -a 256 | cut -d' ' -f1
 }
+
+# `--print-tree-hash <dir>` prints the pin definition's digest for one payload
+# tree and exits. rt-tray/check-bundle.sh re-asserts the SHIPPED payload against
+# the helper's compiled pins with it, the same way it re-asserts the node digest.
+if [ "${1:-}" = "--print-tree-hash" ]; then
+    [ -n "${2:-}" ] || usage
+    [ -d "${2}" ] || { echo "  x gen-pins: no tree at ${2}" >&2; exit 1; }
+    tree_hash "${2}"
+    exit 0
+fi
+
+APP_VERSION="${1:-}"
+TREE="${2:-}"
+NODE_BIN="${3:-}"
+[ -n "$APP_VERSION" ] && [ -n "$TREE" ] && [ -n "$NODE_BIN" ] || usage
+
+HELPER_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+TRAY_DIR="$(cd "$HELPER_DIR/.." && pwd)"
+LOCK="$TRAY_DIR/deps.lock"
+OUT="$HELPER_DIR/Sources/ProxyInstall/Pins.generated.swift"
+LOCK_NAME="portless"
+
+[ -f "$LOCK" ] || { echo "  x gen-pins: $LOCK not found" >&2; exit 1; }
+
+JQ=""
+for candidate in "$TRAY_DIR/deps/arm64/jq" "$(command -v jq 2>/dev/null || true)"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then JQ="$candidate"; break; fi
+done
+
+read_row() { # name<TAB>version<TAB>tarball-sha256
+    if [ -n "$JQ" ]; then
+        "$JQ" -r --arg n "$LOCK_NAME" \
+            '[.tools[] | select(.name == $n)] as $r
+             | if ($r | length) == 1 then ($r[0] | [.name, .version, .sha256] | @tsv)
+               else ("expected exactly one \($n) row, found \($r | length)" | halt_error(1)) end' "$LOCK"
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 - "$LOCK" "$LOCK_NAME" <<'PY'
+import json, sys
+rows = [t for t in json.load(open(sys.argv[1]))["tools"] if t.get("name") == sys.argv[2]]
+if len(rows) != 1:
+    sys.exit("expected exactly one %s row, found %d" % (sys.argv[2], len(rows)))
+print("\t".join(rows[0][k] for k in ("name", "version", "sha256")))
+PY
+    else
+        echo "  x gen-pins: no jq (bundled or on PATH) and no python3 to read $LOCK" >&2
+        exit 1
+    fi
+}
+
+ROW="$(read_row)"
+IFS=$'\t' read -r P_NAME P_VERSION P_SHA <<< "$ROW"
+[ -n "$P_NAME" ] && [ -n "$P_VERSION" ] && [ -n "$P_SHA" ] || {
+    echo "  x gen-pins: incomplete $LOCK_NAME row: '$ROW'" >&2; exit 1
+}
+
+[ -d "$TREE" ] || { echo "  x gen-pins: no portless tree at $TREE" >&2; exit 1; }
 
 TREE_SHA="$(tree_hash "$TREE")"
 
