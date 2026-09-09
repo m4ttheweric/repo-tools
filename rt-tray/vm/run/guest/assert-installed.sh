@@ -107,6 +107,14 @@ if [ "$HEADLESS" = 0 ]; then
     rt setup status --json 2>/dev/null | tail -1 > "$LOGS/$1.json"
     [ -x "$JQ" ] && "$JQ" -r '.groups[].rows[]|select(.id=="tool.proxy")|.status + ": " + (.detail // "")' < "$LOGS/$1.json" 2>/dev/null
   }
+  # `remove` identifies the System-keychain entry to delete from this
+  # root-owned copy, never from the console user's own ~/.portless/ca.pem, so
+  # a machine whose certificate IS trusted has to carry one.
+  assert_trust_record() {
+    [ -f "/Library/Application Support/mattstack/proxy/ca.pem" ] \
+      && ok "the trusted certificate is recorded in the root-owned tree" \
+      || bad "no proxy/ca.pem beside VERSION: uninstall would leave the CA trusted"
+  }
   row=$(proxy_row setup-status)
   if [ "$UNTRUSTED" = 1 ]; then
     # The whole point of the scenario: declining the certificate leaves a
@@ -118,7 +126,7 @@ if [ "$HEADLESS" = 0 ]; then
     esac
   else
     case "$row" in
-      ready:*) ok "proxy installed: tool.proxy $row";;
+      ready:*) ok "proxy installed: tool.proxy $row"; assert_trust_record;;
       "")      bad "no tool.proxy row in rt setup status --json (see logs/setup-status.json)";;
       *)       bad "proxy not installed: tool.proxy $row";;
     esac
@@ -184,7 +192,7 @@ if [ "$HEADLESS" = 0 ]; then
       || bad "the helper did not report MATTSTACK_TRUST=ok"
     row=$(proxy_row setup-status-after-trust)
     case "$row" in
-      ready:*) ok "the certificate row cleared: tool.proxy $row";;
+      ready:*) ok "the certificate row cleared: tool.proxy $row"; assert_trust_record;;
       *)       bad "tool.proxy did not clear after the trust verb: ${row:-no row}";;
     esac
     curl -fsS --max-time 10 "https://$served" >/dev/null 2>&1 \

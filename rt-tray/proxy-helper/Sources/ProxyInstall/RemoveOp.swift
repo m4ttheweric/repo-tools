@@ -5,12 +5,12 @@ import Foundation
 // install, must return 0. Only a deletion that fails for a real reason
 // (permission denied, I/O error) is unexpected and stops the run.
 struct RemoveOp {
-    /// The console user's `~/.portless`, resolved once by `run()`. `nil`
-    /// when no one is logged in at the console (or the query failed), which
-    /// only affects the CA lookup below: nothing else here needs a user.
-    let stateDir: String?
     let fs: FileOps
     let runner: CommandRunner
+    /// The certificate the install recorded as the one it trusted. Nothing
+    /// here reads the console user's `~/.portless`: this op runs as root and
+    /// deletes from the System keychain by what it finds.
+    var trustedCaPath: String = ProxyPaths.trustedCa
 
     static func run() -> Int32 {
         // Same refusal install and trust make: unescalated, every deletion
@@ -20,7 +20,7 @@ struct RemoveOp {
             Report.step("mattstack-proxy-install remove must run as root")
             return ExitCode.noPerm
         }
-        return RemoveOp(stateDir: try? ConsoleUser.current().stateDir, fs: RealFileOps(), runner: RealCommandRunner()).execute()
+        return RemoveOp(fs: RealFileOps(), runner: RealCommandRunner()).execute()
     }
 
     func execute() -> Int32 {
@@ -35,6 +35,8 @@ struct RemoveOp {
         guard remove(LaunchdPlist.path, name: "plist") else { return ExitCode.software }
         guard remove(Sudoers.path, name: "sudoers") else { return ExitCode.software }
 
+        // Before the root tree goes: the certificate this reads to identify the
+        // keychain entry lives inside it.
         untrustCA()
 
         guard remove(ProxyPaths.root, name: "proxy root") else { return ExitCode.software }
@@ -57,13 +59,11 @@ struct RemoveOp {
     /// this op is the sole owner of, so nothing in here can fail the run:
     /// every branch that gives up logs why and returns.
     private func untrustCA() {
-        guard let stateDir else {
-            Report.step("untrust: no console user, skipping")
-            return
-        }
-        let caPath = URL(fileURLWithPath: stateDir).appendingPathComponent("ca.pem")
+        let caPath = URL(fileURLWithPath: trustedCaPath)
+        // No record means no trust write ever landed here, so there is nothing
+        // this op put in the keychain to take back out.
         guard (try? fs.stat(caPath)) != nil else {
-            Report.step("untrust: no CA at \(caPath.path), skipping")
+            Report.step("untrust: no trusted CA recorded at \(caPath.path), skipping")
             return
         }
 

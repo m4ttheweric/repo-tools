@@ -8,6 +8,12 @@ enum ProxyPaths {
     static let cli = root + "/portless-dist/dist/cli.js"
     static let logDir = root + "/log"
     static let logFile = logDir + "/service.log"
+    /// The copy of the certificate this helper actually trusted, taken at
+    /// trust time. `remove` identifies the System-keychain entry from here and
+    /// never from the console user's own `~/.portless/ca.pem`, which they can
+    /// replace with a certificate whose common name matches something else in
+    /// that keychain (an MDM cert, an 802.1X credential, an enterprise root).
+    static let trustedCa = root + "/ca.pem"
 }
 
 struct InstallOp {
@@ -20,6 +26,7 @@ struct InstallOp {
     var emit: (String) -> Void = Report.step
     /// How long to give the freshly bootstrapped daemon to mint the CA.
     var caWait: TimeInterval = 20
+    var trustedCaPath: String = ProxyPaths.trustedCa
 
     static func run() -> Int32 {
         // Everything below assumes root; refusing here keeps an unescalated run
@@ -134,6 +141,11 @@ struct InstallOp {
         // warn, and the tool.proxy row carries the Retry.
         waitForCA()
         let outcome = TrustStep(caPath: user.caPath, fs: fs, runner: runner).run()
+        // Before the trust line, which the app reads as the second-to-last
+        // line of the report.
+        if outcome.state == .ok, let problem = TrustRecord.write(caPath: user.caPath, to: trustedCaPath, fs: fs) {
+            emit(problem)
+        }
         emit(outcome.line)
         emit(Report.trustLine(outcome.state))
         return ExitCode.ok

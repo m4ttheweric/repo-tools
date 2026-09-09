@@ -66,15 +66,25 @@ final class TrustStepTests: XCTestCase {
     }
 
     // The verb is the Retry behind one row, invoked on a machine that is
-    // already installed and running: anything else it wrote or restarted would
-    // be a side effect nobody asked for.
-    func testTheVerbTouchesNothingButTrustSettings() {
+    // already installed and running: anything beyond the trust write and the
+    // record of what it trusted would be a side effect nobody asked for.
+    func testTheVerbTouchesNothingButTrustSettingsAndItsOwnRecord() {
         _ = makeOp().execute()
         XCTAssertEqual(runner.calls, [verifyArgv, addTrustArgv])
+        XCTAssertEqual(fs.copies.map(\.to), [ProxyPaths.trustedCa])
+        XCTAssertEqual(fs.removed, [ProxyPaths.trustedCa], "only the record it replaces")
         XCTAssertTrue(fs.written.isEmpty)
         XCTAssertTrue(fs.replaced.isEmpty)
-        XCTAssertTrue(fs.removed.isEmpty)
         XCTAssertTrue(fs.made.isEmpty)
+    }
+
+    // The verb is the one route a declined machine takes to become trusted
+    // later, so it has to leave the same record an install would.
+    func testTheVerbRecordsTheCertificateItTrusted() {
+        _ = makeOp().execute()
+        XCTAssertEqual(fs.copies.first?.from, caFixturePath)
+        XCTAssertEqual(fs.modes[ProxyPaths.trustedCa], 0o644)
+        XCTAssertEqual(fs.owners[ProxyPaths.trustedCa], "0:0")
     }
 
     func testAlreadyTrustedIsReportedWithoutAskingAgain() {

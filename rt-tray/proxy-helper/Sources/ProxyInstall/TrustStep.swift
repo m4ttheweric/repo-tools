@@ -80,6 +80,32 @@ struct TrustStep {
     }
 }
 
+/// Records WHICH certificate was trusted, root-owned beside VERSION, so that
+/// `remove` can name the System-keychain entry without reading anything the
+/// console user can write. Only a trusted CA is recorded: with no record,
+/// `remove` untrusts nothing, which is the correct answer for a machine where
+/// the trust write never landed.
+enum TrustRecord {
+    /// nil when the record is written; a reportable line when it is not. A
+    /// failure here costs the uninstall its untrust step and nothing else, so
+    /// it never changes the trust outcome.
+    static func write(caPath: String, to destination: String, fs: FileOps) -> String? {
+        let target = URL(fileURLWithPath: destination)
+        do {
+            // copyItem refuses an existing destination, and re-trusting an
+            // already-installed machine reaches here with the last record in
+            // place.
+            try fs.removeTree(target)
+            try fs.copyItem(from: URL(fileURLWithPath: caPath), to: target)
+            try fs.setOwner(target, uid: 0, gid: 0)
+            try fs.setMode(target, InstalledMode.file)
+            return nil
+        } catch {
+            return "trust record: failed \(error); uninstall will leave the certificate trusted"
+        }
+    }
+}
+
 /// The `trust` verb: the Retry behind the untrusted-certificate row. It runs
 /// the same write install step 3 runs and nothing else, so a machine that
 /// declined once can say yes later without reinstalling anything.
@@ -88,6 +114,7 @@ struct TrustOp {
     let fs: FileOps
     let runner: CommandRunner
     var emit: (String) -> Void = Report.step
+    var trustedCaPath: String = ProxyPaths.trustedCa
 
     static func run() -> Int32 {
         guard geteuid() == 0 else {
@@ -104,6 +131,9 @@ struct TrustOp {
 
     func execute() -> Int32 {
         let outcome = TrustStep(caPath: caPath, fs: fs, runner: runner).run()
+        if outcome.state == .ok, let problem = TrustRecord.write(caPath: caPath, to: trustedCaPath, fs: fs) {
+            emit(problem)
+        }
         emit(outcome.line)
         emit(Report.trustLine(outcome.state))
         // Declining is an answer, not a fault: the row keeps the remedy and the

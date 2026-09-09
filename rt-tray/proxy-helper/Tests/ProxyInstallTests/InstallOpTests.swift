@@ -18,6 +18,7 @@ final class RecordingFileOps: FileOps {
     private(set) var written: [String: String] = [:]
     private(set) var renames: [(from: String, to: String)] = []
     private(set) var replaced: [(from: String, to: String)] = []
+    private(set) var copies: [(from: String, to: String)] = []
     private(set) var removed: [String] = []
     private(set) var made: [String] = []
     private(set) var modes: [String: mode_t] = [:]
@@ -31,7 +32,15 @@ final class RecordingFileOps: FileOps {
     }
 
     func mkdir(_ path: URL) throws { made.append(path.path); ops.append("mkdir \(path.path)") }
-    func copyItem(from: URL, to: URL) throws {}
+
+    // Non-clobber, matching FileManager.copyItem: a caller that wants to
+    // replace a destination has to remove it first.
+    func copyItem(from: URL, to: URL) throws {
+        if existingPaths.contains(to.path) { throw ProxyInstallError("copyItem: \(to.path) already exists") }
+        existingPaths.insert(to.path)
+        copies.append((from: from.path, to: to.path))
+        ops.append("copy \(to.path)")
+    }
 
     func write(_ contents: String, to path: URL) throws {
         if failWritesTo.contains(path.path) { throw ProxyInstallError("write refused: \(path.path)") }
@@ -213,6 +222,38 @@ final class InstallOpTests: XCTestCase {
         XCTAssertEqual(makeOp(caPresent: false).execute(), 0)
         XCTAssertEqual(lines.suffix(2), ["trust: failed no CA certificate at \(caFixturePath)", "MATTSTACK_TRUST=failed"])
         XCTAssertFalse(runner.called("add-trusted-cert"))
+    }
+
+    // Uninstall names the System-keychain entry from this copy, so a trusted
+    // install leaves it root-owned beside VERSION, and a re-trust replaces the
+    // one already there rather than failing on it.
+    func testATrustedInstallRecordsTheCertificateItTrusted() {
+        fs.existingPaths.insert(ProxyPaths.trustedCa)
+        XCTAssertEqual(makeOp().execute(), 0)
+        XCTAssertEqual(fs.copies.map(\.to), [ProxyPaths.trustedCa])
+        XCTAssertEqual(fs.copies.first?.from, caFixturePath)
+        XCTAssertEqual(fs.modes[ProxyPaths.trustedCa], 0o644)
+        XCTAssertEqual(fs.owners[ProxyPaths.trustedCa], "0:0")
+    }
+
+    // Nothing was written to the keychain, so there is nothing for uninstall to
+    // take back out; a record here would name a certificate this run did not
+    // trust.
+    func testADeclinedCertificateRecordsNothing() {
+        answer { $0 == addTrustArgv ? CommandResult(status: 1, output: "The authorization was canceled by the user.") : nil }
+        XCTAssertEqual(makeOp().execute(), 0)
+        XCTAssertTrue(fs.copies.isEmpty)
+    }
+
+    // A record that cannot be written costs uninstall its untrust step and
+    // nothing else: the install still succeeds and still reports the trust
+    // outcome on the line the app reads.
+    func testAFailedRecordIsReportedButDoesNotChangeTheTrustOutcome() {
+        fs.failRemovesOf.insert(ProxyPaths.trustedCa)
+        fs.existingPaths.insert(ProxyPaths.trustedCa)
+        XCTAssertEqual(makeOp().execute(), 0)
+        XCTAssertEqual(lines.suffix(2), ["trust: ok", "MATTSTACK_TRUST=ok"])
+        XCTAssertTrue(lines.contains { $0.hasPrefix("trust record: failed") }, "got: \(lines)")
     }
 
     // An already-trusted CA must not raise the dialog again: without this every
