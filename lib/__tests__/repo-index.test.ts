@@ -877,4 +877,17 @@ describe("pickerWorktrees", () => {
     pickerWorktrees(repo);
     expect(repo.worktrees.map((w) => w.path)).toEqual(["/r/main", "/r/z", "/r/a"]);
   });
+
+  test("excludes trashed trees (retention store and crash leftovers)", () => {
+    const repo = {
+      repoName: "x", dataDir: "/d",
+      worktrees: [
+        wt("/pool/x/main", "master"),
+        wt("/pool/x/.trash/alpha-1725000000000", "rt-1-old"),
+        wt("/pool/x/.trash-bravo-1725000000000", "rt-2-old"),
+        wt("/pool/x/charlie", "rt-3-live"),
+      ],
+    };
+    expect(pickerWorktrees(repo).map((w) => w.path)).toEqual(["/pool/x/main", "/pool/x/charlie"]);
+  });
 });

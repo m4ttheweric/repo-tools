@@ -873,6 +873,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           worktree: {
             emit,
             kick: worktreeReconciler.kick,
+            cdCacheKick: () => void refreshCdCache(loggerHandle.childLogger("cd-cache")),
             creationInFlight: worktreeReconciler.creationInFlight,
             withReconcilerHeld: worktreeReconciler.withReconcilerHeld,
           },

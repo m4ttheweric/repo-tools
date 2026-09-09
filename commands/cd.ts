@@ -24,6 +24,7 @@ import { homedir } from "os";
 import { yellow, green, reset } from "../lib/tui.ts";
 import { getRepoIdentity, getKnownRepos, getKnownReposCached, findKnownRepo, repoCarriesWorktree, getWorkspacePackages, repoFromOptionValue, missingRepoRefusal, ghostPathRefusal, type KnownRepo } from "../lib/repo.ts";
 import { writeRepoCache } from "../lib/repo-cache.ts";
+import { isTrashPath } from "../lib/worktree/trash.ts";
 import {
   pickWorktreeWithSwitch,
   pickFromAllRepos,
@@ -188,6 +189,28 @@ export function resolveReposForIdentity(
   return getKnownRepos({ includeMissing: true });
 }
 
+/**
+ * The cd-cache rebuilds on a timer, so its rows can carry a worktree disposed
+ * (trashed) since the last refresh; served verbatim, that row becomes a picker
+ * entry whose selection dead-ends in ghostPathRefusal. Linked rows are
+ * re-checked against disk before any picker sees them. The lead row stays even
+ * when missing: that is the repo-level lost-path case, which must remain
+ * pickable so it gets missingRepoRefusal instead of vanishing.
+ */
+export function dropGhostWorktrees(
+  repos: KnownRepo[],
+  exists: (path: string) => boolean = existsSync,
+): KnownRepo[] {
+  let changed = false;
+  const out = repos.map((r) => {
+    const kept = r.worktrees.filter((w, i) => i === 0 || (exists(w.path) && !isTrashPath(w.path)));
+    if (kept.length === r.worktrees.length) return r;
+    changed = true;
+    return { ...r, worktrees: kept };
+  });
+  return changed ? out : repos;
+}
+
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
 /**
@@ -242,7 +265,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
   // repo you are standing in is never invisible to its own cd invocation.
   const identity     = getRepoIdentity();
   const cachedRepos  = getKnownReposCached({ includeMissing: true });
-  const repos        = resolveReposForIdentity(identity, cachedRepos);
+  const repos        = dropGhostWorktrees(resolveReposForIdentity(identity, cachedRepos));
   const currentRepo  = identity
     ? findKnownRepo(repos, identity) ?? null
     : null;
