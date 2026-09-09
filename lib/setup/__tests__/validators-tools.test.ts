@@ -1125,7 +1125,7 @@ describe("toolRows: tool.proxy", () => {
     const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
     expect(r.status).toBe("missing");
     expect(r.required).toBe(false);
-    expect(r.action).toEqual({ type: "run", label: "Install proxy", verb: ["setup", "apply", "--from", "proxy.install"] });
+    expect(r.action).toEqual({ type: "run", label: "Install proxy", verb: ["setup", "apply", "--only", "proxy.install"] });
   });
 
   /** Installed at the pinned version, with the CA portless mints at daemon start. `trusted` drives the `security verify-cert` probe the row runs over it. */
@@ -1157,7 +1157,7 @@ describe("toolRows: tool.proxy", () => {
     const r = await pickRow(toolRows(installedProxyProbes(false), [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
     expect(r.status).toBe("needs-you");
     expect(r.detail).toBe("Browsers will warn until the proxy certificate is trusted");
-    expect(r.action).toEqual({ type: "run", label: "Trust certificate", verb: ["setup", "apply", "--from", "proxy.install"] });
+    expect(r.action).toEqual({ type: "run", label: "Trust certificate", verb: ["setup", "apply", "--only", "proxy.install"] });
   });
 
   // No CA at all is the same story for the user (nothing browsers trust) and
@@ -1181,7 +1181,7 @@ describe("toolRows: tool.proxy", () => {
     const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
     expect(r.status).toBe("needs-you");
     expect(r.detail).toBe("proxy runs portless 0.15.6, bundle pins 0.16.0");
-    expect(r.action).toEqual({ type: "run", label: "Update proxy", verb: ["setup", "apply", "--from", "proxy.install"] });
+    expect(r.action).toEqual({ type: "run", label: "Update proxy", verb: ["setup", "apply", "--only", "proxy.install"] });
   });
 
   // Every machine that followed deck's README (`portless service install`) is
@@ -1193,7 +1193,7 @@ describe("toolRows: tool.proxy", () => {
     const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
     expect(r.status).toBe("needs-you");
     expect(r.detail).toBe("An existing portless install predates mattstack; Update proxy adopts it");
-    expect(r.action).toEqual({ type: "run", label: "Update proxy", verb: ["setup", "apply", "--from", "proxy.install"] });
+    expect(r.action).toEqual({ type: "run", label: "Update proxy", verb: ["setup", "apply", "--only", "proxy.install"] });
   });
 
   test("plist present, VERSION unreadable -> error", async () => {
@@ -1229,8 +1229,10 @@ describe("toolRows: tool.proxy", () => {
   // Every remedy this row offers has to name a step that exists and acts on
   // the state the row just described. The drift row shipped for a week naming
   // a step that returned "already installed" before it ever compared
-  // versions, so the button was there and did nothing.
-  test("every remedy names a real step, and drift's names the one that updates", async () => {
+  // versions, so the button was there and did nothing. It also has to name
+  // that step ALONE: `--from` would carry the rest of the install (down to
+  // snapshot.push) behind a button labelled "Trust certificate".
+  test("every remedy names a real step, alone, and drift's names the one that updates", async () => {
     writePinnedPortless("0.16.0");
     const rows = await Promise.all([
       pickRow(toolRows(bundledProxyProbes(), [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy"),
@@ -1240,7 +1242,7 @@ describe("toolRows: tool.proxy", () => {
     for (const r of rows) {
       expect(r.action?.type).toBe("run");
       const verb = (r.action as { verb: string[] }).verb;
-      expect(verb.slice(0, 3)).toEqual(["setup", "apply", "--from"]);
+      expect(verb.slice(0, 3)).toEqual(["setup", "apply", "--only"]);
       expect(STEP_IDS as readonly string[]).toContain(verb[3]!);
     }
     expect(rows[1]!.detail).toBe("proxy runs portless 0.15.6, bundle pins 0.16.0");

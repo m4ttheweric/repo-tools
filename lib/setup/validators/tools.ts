@@ -562,9 +562,9 @@ function pluginsRow(pluginList: ExecResult): Row {
 
 // ─── tool.proxy ─────────────────────────────────────────────────────────────
 
-/** Every remedy this row offers runs the same step, which reads the same three facts this row does and decides from them whether to install, update, or only trust (lib/setup/steps/services.ts). A remedy that named a different route could disagree with the row that offered it. */
+/** Every remedy this row offers runs the same step, which reads the same three facts this row does and decides from them whether to install, update, or only trust (lib/setup/steps/services.ts). A remedy that named a different route could disagree with the row that offered it. `--only`, never `--from`, which would also run the fourteen steps after it (down to `snapshot.push`) for a button that says "Trust certificate". */
 function reRunProxyInstallAction(label: string): Action {
-  return { type: "run", label, verb: ["setup", "apply", "--from", "proxy.install"] };
+  return { type: "run", label, verb: ["setup", "apply", "--only", "proxy.install"] };
 }
 
 async function proxyRow(p: Probes): Promise<Row> {

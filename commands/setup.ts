@@ -208,15 +208,25 @@ function applyFlags(args: string[]): { nonInteractive: boolean; teamOfOne: boole
  * there is no separate branch to gate; the invariant it promises holds by
  * construction, not by checking the flag.
  */
-/** `--from` with no value (or immediately followed by another flag, e.g. a trailing `--from --json`) is the same failure as an unknown step id — silently falling back to "no --from" would redo the whole install instead of refusing. */
-function resolveFromArg(args: string[]): StepId | undefined {
-  const i = args.indexOf("--from");
+/** A step-id flag with no value (or immediately followed by another flag, e.g. a trailing `--from --json`) is the same failure as an unknown step id — silently falling back to "no flag" would redo the whole install instead of refusing. */
+function resolveStepArg(args: string[], flag: "--from" | "--only"): StepId | undefined {
+  const i = args.indexOf(flag);
   if (i < 0) return undefined;
   const value = args[i + 1];
   if (value === undefined || value.startsWith("--")) {
-    throw new UserActionableError("unknown-step", `--from requires a step id — valid ids: ${STEP_IDS.join(", ")}`);
+    throw new UserActionableError("unknown-step", `${flag} requires a step id — valid ids: ${STEP_IDS.join(", ")}`);
   }
   return value as StepId;
+}
+
+/** `--from` resumes at a step and runs everything after it; `--only` runs that one step. A run cannot be both, and picking one silently would run either far more or far less than the caller asked for. */
+function resolveStepSelection(args: string[]): { from?: StepId; only?: StepId } {
+  const from = resolveStepArg(args, "--from");
+  const only = resolveStepArg(args, "--only");
+  if (from !== undefined && only !== undefined) {
+    throw new UserActionableError("unknown-step", "--from and --only cannot be combined — --from resumes from a step, --only runs just that one");
+  }
+  return { ...(from !== undefined ? { from } : {}), ...(only !== undefined ? { only } : {}) };
 }
 
 /**
@@ -254,7 +264,7 @@ export async function setupApply(args: string[], _ctx: CommandContext = {}, deps
   let result: { ok: boolean; failedStep?: StepId };
   try {
     await gateHardPreconditions(args, deps);
-    const from = resolveFromArg(args);
+    const selection = resolveStepSelection(args);
     const ctx: ApplyContext = await createApplyContext({
       probes: deps.probes,
       emit,
@@ -264,13 +274,13 @@ export async function setupApply(args: string[], _ctx: CommandContext = {}, deps
       flags: applyFlags(args),
       needOpts: deps.needOpts,
     });
-    result = await runApplyWith(deps.steps ?? STEPS, ctx, { from });
+    result = await runApplyWith(deps.steps ?? STEPS, ctx, selection);
   } catch (err) {
     if (err instanceof UserActionableError) {
       // Thrown before `plan` ever reaches the stream — a malformed/unknown
-      // --from, or resumeStart rejecting one naming a step this run gated
-      // out — so nothing else has gone out yet; print the same exit-2
-      // envelope every other setup verb uses.
+      // --from or --only, or the two given together — so nothing else has
+      // gone out yet; print the same exit-2 envelope every other setup verb
+      // uses.
       deps.print(json ? JSON.stringify(userErrorPayload(err, deps.probes.now())) : `rt setup apply: ${err.message}`);
       return deps.exit(2);
     }

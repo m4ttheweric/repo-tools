@@ -107,10 +107,13 @@ untrusted-but-current-version install into a `needs-you` row ("Browsers will
 warn until the proxy certificate is trusted") with a "Trust certificate"
 action; a version-drifted install gets the same treatment with "Update
 proxy". Both actions, and a plain "Install proxy", resolve to the same
-`setup apply --from proxy.install` verb: the step itself reads plist
-presence, deployed-vs-pinned version, and CA trust state, and decides whether
-to install, update, or only re-run the trust write (the helper's `trust` op,
-reached through its own tray route `POST /privileged/proxy-trust` beside
+`setup apply --only proxy.install` verb (`--only` runs that step alone, where
+`--from` would carry the rest of the install behind it): the step itself reads
+plist presence, deployed-vs-pinned version, and CA trust state, and decides
+whether to install, update, adopt a portless install that predates mattstack
+(a plist with no VERSION beside it), or only re-run the trust write (the
+helper's `trust` op, reached through its own tray route
+`POST /privileged/proxy-trust` beside
 `/privileged/proxy-install`), so no remedy can point at a route that disagrees
 with what the row reported.
 

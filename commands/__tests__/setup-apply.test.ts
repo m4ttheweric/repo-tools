@@ -248,6 +248,43 @@ describe("setupApply — exit-code table", () => {
     const stepEvents = events.filter((e) => e.event === "step");
     expect(stepEvents.every((e) => (e as { id: string }).id === "path.link")).toBe(true); // home.init never got a step event
   });
+
+  // What the checklist's row remedies spawn: one step, not the tail of the
+  // install behind it.
+  test("--only runs that step alone", async () => {
+    const deps = baseApplyDeps({
+      steps: [neverRunsStep("home.init"), fakeStep("path.link", { state: "done" }), neverRunsStep("proxy.install")],
+    });
+
+    await setupApply(["--json", "--only", "path.link"], {}, deps);
+
+    const events = deps.lines.map((l) => JSON.parse(l) as ApplyEvent);
+    const stepEvents = events.filter((e) => e.event === "step");
+    expect(stepEvents.map((e) => (e as { id: string }).id)).toEqual(["path.link", "path.link"]);
+  });
+
+  test("--only bogus: exit 2 with code unknown-step", async () => {
+    const deps = baseApplyDeps({ steps: [neverRunsStep("path.link")] });
+
+    await runExpectingExit(() => setupApply(["--json", "--only", "bogus"], {}, deps));
+
+    expect(deps.exitCodes).toEqual([2]);
+    const payload = JSON.parse(deps.lines[0]!) as { error: { code: string; message: string } };
+    expect(payload.error.code).toBe("unknown-step");
+    expect(payload.error.message).toContain("bogus");
+  });
+
+  // One means one and resume means resume: honoring either silently would run
+  // far more, or far less, than the caller asked for.
+  test("--from and --only together: exit 2, nothing runs", async () => {
+    const deps = baseApplyDeps({ steps: [neverRunsStep("path.link")] });
+
+    await runExpectingExit(() => setupApply(["--json", "--from", "path.link", "--only", "path.link"], {}, deps));
+
+    expect(deps.exitCodes).toEqual([2]);
+    const payload = JSON.parse(deps.lines[0]!) as { error: { code: string } };
+    expect(payload.error.code).toBe("unknown-step");
+  });
 });
 
 describe("setupApply — flags reach the engine", () => {
