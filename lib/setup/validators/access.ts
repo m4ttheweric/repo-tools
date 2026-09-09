@@ -13,7 +13,7 @@ import type { Probes } from "../probes.ts";
 import { forgeFromRemote, type TeamSnapshot, type UserIntegrationOverrides } from "../team-settings.ts";
 import { readTeamLocal } from "../../team/team-local.ts";
 import type { SecretPresence } from "./accounts.ts";
-import { forgeTokenLookupFromPresence } from "../../team/forge-token.ts";
+import { forgeTokenLookupFromPresence, withholdFromUntrustedHost } from "../../team/forge-token.ts";
 import { probeTeamRepoAccess, forgeLabel, type RepoAccessVerdict } from "../../team/repo-access.ts";
 import { integrationDef } from "../integrations.ts";
 
@@ -36,7 +36,7 @@ function rowFromVerdict(v: RepoAccessVerdict, ctx: { grantedBy: string; provider
 }
 
 /** The canonical out-of-band row: a different human grants access, or the network/VPN changes — no file rt watches ever reflects that, so this only ever updates on an explicit re-check. */
-async function teamRepoRow(p: Probes, team: TeamSnapshot, intent: SetupIntent | null, secrets: SecretPresence | undefined): Promise<Row> {
+async function teamRepoRow(p: Probes, team: TeamSnapshot, intent: SetupIntent | null, overrides: UserIntegrationOverrides, secrets: SecretPresence | undefined): Promise<Row> {
   // A joined (pull-only) clone never pushes, so claiming write access it will never use would be
   // false; read the mode from the machine-local record itself, never from daemon status, so this
   // row still answers with the daemon down.
@@ -50,7 +50,8 @@ async function teamRepoRow(p: Probes, team: TeamSnapshot, intent: SetupIntent | 
   if (!remote) return row({ ...base, status: "missing", detail: "no team remote yet (screen 2)" });
 
   const provider = forgeFromRemote(remote)?.provider ?? "github";
-  const verdict = await probeTeamRepoAccess(p, remote, await forgeTokenLookupFromPresence(remote, secrets));
+  const lookup = withholdFromUntrustedHost(await forgeTokenLookupFromPresence(remote, secrets), remote, overrides.forgeHost);
+  const verdict = await probeTeamRepoAccess(p, remote, lookup);
   const grantedBy = intent?.join?.pointer.owner ?? "the repo's owner";
   return row({ ...base, ...rowFromVerdict(verdict, { grantedBy, provider }) });
 }
@@ -129,7 +130,7 @@ async function switchboardRow(p: Probes, team: TeamSnapshot, overrides: UserInte
 /** Every probe here is independent (different remote/host/URL each), so they run concurrently — worst-case latency is the slowest single probe, not their sum; team-repo/forge/switchboard/each tracking identity all keep their own bounded timeout. */
 export async function accessRows(p: Probes, team: TeamSnapshot, intent: SetupIntent | null, overrides: UserIntegrationOverrides = {}, secrets?: SecretPresence): Promise<Row[]> {
   const [teamRepo, forge, switchboard, ...repos] = await Promise.all([
-    teamRepoRow(p, team, intent, secrets),
+    teamRepoRow(p, team, intent, overrides, secrets),
     forgeRow(p, team, intent, overrides),
     switchboardRow(p, team, overrides),
     ...team.trackingIdentities.map((identity) => repoRow(p, identity)),

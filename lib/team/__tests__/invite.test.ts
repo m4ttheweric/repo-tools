@@ -553,3 +553,18 @@ describe("mintInvite: forge membership is not rt's to grant", () => {
     expect(result.manualSteps.at(-1)).toContain("Ask whoever administers");
   });
 });
+
+describe("joinLinkBase refuses a base the code could be intercepted on", () => {
+  test("plain http on a public host is refused, since the page reading the fragment could be replaced in transit", () => {
+    expect(() => joinLinkBase({ RT_JOIN_BASE_URL: "http://mattstack.example/join" })).toThrow(/https/);
+  });
+
+  test("http on loopback is allowed, which is where the harness serves its fixture", () => {
+    expect(joinLinkBase({ RT_JOIN_BASE_URL: "http://localhost:8788/join" })).toBe("http://localhost:8788/join");
+    expect(joinLinkBase({ RT_JOIN_BASE_URL: "http://127.0.0.1:8788/join" })).toBe("http://127.0.0.1:8788/join");
+  });
+
+  test("a value that is not a url at all is refused rather than pasted into a link", () => {
+    expect(() => joinLinkBase({ RT_JOIN_BASE_URL: "mattstack.example/join" })).toThrow(/https/);
+  });
+});

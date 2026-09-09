@@ -97,3 +97,25 @@ describe("probeTeamRepoAccess", () => {
     expect(env.GIT_PROTOCOL_FROM_USER).toBe("0");
   });
 });
+
+describe("probeTeamRepoAccess - a withheld token", () => {
+  beforeEach(() => resetCltCacheForTests());
+
+  test("never reads as no-account, and names the confirmation the user owes", async () => {
+    const exec = git(() => ({ code: 128, stdout: "", stderr: "fatal: could not read Username for 'https://gitlab.evil.example'" }));
+    const v = await probeTeamRepoAccess(fakeProbes({ exec }), "https://gitlab.evil.example/acme/team.git", { kind: "withheld", host: "gitlab.evil.example" });
+    expect(v.kind).toBe("indeterminate");
+    expect(v.detail).toContain("gitlab.evil.example");
+    expect(v.detail).toContain("connect --host");
+  });
+
+  test("sends no token to the host it was withheld from", async () => {
+    const envs: Record<string, string>[] = [];
+    const exec = git((argv, opts) => {
+      envs.push((opts?.env ?? {}) as Record<string, string>);
+      return { code: 128, stdout: "", stderr: "fatal: could not read Username" };
+    });
+    await probeTeamRepoAccess(fakeProbes({ exec }), "https://gitlab.evil.example/acme/team.git", { kind: "withheld", host: "gitlab.evil.example" });
+    expect(envs[0]!.RT_GIT_TOKEN).toBeUndefined();
+  });
+});

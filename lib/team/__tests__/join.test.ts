@@ -1037,3 +1037,16 @@ describe("joinRedeem", () => {
     expect(result.team.owner).not.toContain("\r");
   });
 });
+
+describe("joinRedeem's relay failure reports what it actually persisted", () => {
+  test("an unreachable relay says not-written, because the redeem path returns before writeIntent", async () => {
+    const p = fakeProbes({ home: HOME, now: NOW, exec: () => ({ code: 0, stdout: "", stderr: "" }) });
+    const { seams } = baseJoinRedeemSeams();
+
+    const result = await joinRedeem(p, unreachableRelay(), () => NO_SECRETS, { code: CODE }, seams);
+
+    expect(result.access).toBe("unreachable");
+    expect(result.intent).toBe("not-written");
+    expect(readIntent(p)).toBeNull();
+  });
+});

@@ -32,9 +32,30 @@ const HANDLE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,38}$/;
 
 export const DEFAULT_JOIN_BASE_URL = "https://mattstack.dev/join";
 
+/**
+ * The fragment carries the invite code, so the page that reads it must not be
+ * replaceable in transit: plain http is accepted only on loopback, where the
+ * harness runs its fixture.
+ */
+function isSafeJoinBase(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === "https:") return true;
+  return parsed.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]", "::1"].includes(parsed.hostname);
+}
+
 /** Mirrors DEFAULT_INVITE_RELAY_URL/RT_INVITE_RELAY_URL in relay-client.ts: same class of value, read only by rt, and the VM harness needs to point it elsewhere without a team store. */
 export function joinLinkBase(env: Record<string, string | undefined>): string {
-  return env.RT_JOIN_BASE_URL || DEFAULT_JOIN_BASE_URL;
+  const override = env.RT_JOIN_BASE_URL;
+  if (!override) return DEFAULT_JOIN_BASE_URL;
+  if (!isSafeJoinBase(override)) {
+    throw new UserActionableError("invalid-join-base", `RT_JOIN_BASE_URL must be an https url, or http on loopback: got ${override}`);
+  }
+  return override;
 }
 
 /** The code lives in the fragment, so it never reaches the page's server. */

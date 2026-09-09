@@ -27,7 +27,7 @@ import { readTeamSecret } from "../secrets/team-store.ts";
 import { UserActionableError } from "../setup/errors.ts";
 import { clearIntent, readIntent, writeIntent, type InvitePointer } from "../setup/intent.ts";
 import type { ExecResult, Probes } from "../setup/probes.ts";
-import { forgeFromRemote, parseOriginUrl, readTeamSnapshot, stripUserinfo, type SettingsReader } from "../setup/team-settings.ts";
+import { forgeFromRemote, parseOriginUrl, readTeamSnapshot, readUserIntegrationOverrides, stripUserinfo, type SettingsReader } from "../setup/team-settings.ts";
 import { getSetting } from "../settings/resolve.ts";
 import { forgeLogin } from "./forge.ts";
 import { gitWithToken } from "./git-credential.ts";
@@ -37,7 +37,7 @@ import { withoutUrls } from "./redact.ts";
 import type { RelayClient } from "./relay-client.ts";
 import { storedForgeToken } from "./stored-forge-token.ts";
 import { forgeLabel, probeTeamRepoAccess, type RepoAccessVerdict } from "./repo-access.ts";
-import { forgeTokenLookupReal } from "./forge-token.ts";
+import { forgeTokenLookupForRemote } from "./forge-token.ts";
 import { readTeamLocal, updateTeamLocal } from "./team-local.ts";
 
 export interface JoinResult {
@@ -73,8 +73,8 @@ function deniedResult(pointer: InvitePointer): JoinResult {
   };
 }
 
-function unreachableResult(team: JoinResult["team"], message: string): JoinResult {
-  return { team, access: "unreachable", peering: "idle", message, intent: "written" };
+function unreachableResult(team: JoinResult["team"], message: string, intent: JoinResult["intent"] = "written"): JoinResult {
+  return { team, access: "unreachable", peering: "idle", message, intent };
 }
 
 // A real hostname/IP[:port] — starts and ends alnum, `.`/`-` in between, an
@@ -231,7 +231,8 @@ export async function joinDryRun(p: Probes, relay: RelayClient, code: string): P
     return { ...unreachableResult(NO_TEAM, "could not reach the invite relay - check your network and try again"), intent: "not-written" };
   }
 
-  const verdict = await probeTeamRepoAccess(p, pointer.remote, await forgeTokenLookupReal(p, pointer.remote));
+  const confirmedHost = readUserIntegrationOverrides().forgeHost ?? null;
+  const verdict = await probeTeamRepoAccess(p, pointer.remote, await forgeTokenLookupForRemote(p, pointer.remote, confirmedHost));
   writeIntent(p, { v: 1, at: p.now().toISOString(), mode: "join", join: { id: idHex, keyB64: Buffer.from(key).toString("base64"), pointer } });
   return { team: teamRefFrom(pointer), ...accessFromVerdict(verdict, pointer), peering: "idle", intent: "written" };
 }
@@ -309,7 +310,9 @@ async function resolveSource(p: Probes, relay: RelayClient, code: string | undef
       }
       throw err;
     }
-    if (pointer === null) return unreachableResult(NO_TEAM, "could not reach the invite relay — check your network and try again");
+    // Returned straight out of joinRedeem, before writeIntent runs, so this
+    // one must say plainly that nothing was persisted.
+    if (pointer === null) return unreachableResult(NO_TEAM, "could not reach the invite relay - check your network and try again", "not-written");
     return { idHex, key, pointer };
   }
 

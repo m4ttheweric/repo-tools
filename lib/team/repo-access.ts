@@ -49,7 +49,12 @@ export async function probeTeamRepoAccess(p: Probes, remote: string, lookup: For
         }
         return { kind: "no-account", detail: "no forge account connected yet" };
       }
-      const why = lookup.kind === "unreadable" ? `rt could not read its own token store: ${lookup.reason}` : "rt offered its token and git still had none to send";
+      const why =
+        lookup.kind === "unreadable"
+          ? `rt could not read its own token store: ${lookup.reason}`
+          : lookup.kind === "withheld"
+            ? `rt holds a token but will not send it to ${lookup.host}, a host you have not confirmed: run \`rt setup github connect --host ${lookup.host}\` (or gitlab) to confirm it first`
+            : "rt offered its token and git still had none to send";
       return { kind: "indeterminate", detail: `couldn't determine access: ${why}` };
     }
     if (AUTH_REFUSAL_PATTERN.test(res.stderr)) return { kind: "denied", detail: "the forge refused this account" };

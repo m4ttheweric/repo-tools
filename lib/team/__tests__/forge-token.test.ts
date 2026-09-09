@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { NoAgeKeyError } from "../../secrets/store.ts";
-import { forgeTokenLookup, tokenOrNull, forgeTokenLookupFromPresence } from "../forge-token.ts";
+import { forgeTokenLookup, forgeTokenLookupFromPresence, mayOfferToken, tokenOrNull, withholdFromUntrustedHost } from "../forge-token.ts";
 import type { SecretPresence } from "../../setup/validators/accounts.ts";
 
 const REMOTE = "https://github.com/acme/team.git";
@@ -46,5 +46,31 @@ describe("forgeTokenLookupFromPresence", () => {
   test("undefined secrets case returns absent without calling anything", async () => {
     const result = await forgeTokenLookupFromPresence(REMOTE, undefined);
     expect(result).toEqual({ kind: "absent" });
+  });
+});
+
+describe("mayOfferToken", () => {
+  test("the public forges are unspoofable, so the token may go to them", () => {
+    expect(mayOfferToken("https://github.com/acme/team.git", null)).toBe(true);
+    expect(mayOfferToken("https://gitlab.com/acme/team.git", null)).toBe(true);
+  });
+
+  test("a gitlab-shaped host an inviter chose is refused until the user confirms it", () => {
+    expect(mayOfferToken("https://gitlab.evil.example/acme/team.git", null)).toBe(false);
+    expect(mayOfferToken("https://gitlab.evil.example/acme/team.git", "gitlab.acme.internal")).toBe(false);
+    expect(mayOfferToken("https://gitlab.acme.internal/acme/team.git", "gitlab.acme.internal")).toBe(true);
+  });
+
+  test("a real token is withheld from an unconfirmed host", () => {
+    const held = { kind: "token", token: "glpat_x" } as const;
+    expect(withholdFromUntrustedHost(held, "https://gitlab.evil.example/acme/team.git", null)).toEqual({ kind: "withheld", host: "gitlab.evil.example" });
+    expect(withholdFromUntrustedHost(held, "https://gitlab.acme.internal/acme/team.git", "gitlab.acme.internal")).toEqual(held);
+  });
+
+  test("an absent or unreadable store keeps its own verdict, since neither can leak anything", () => {
+    const absent = { kind: "absent" } as const;
+    const unreadable = { kind: "unreadable", reason: "sops exited 2" } as const;
+    expect(withholdFromUntrustedHost(absent, "https://gitlab.evil.example/acme/team.git", null)).toEqual(absent);
+    expect(withholdFromUntrustedHost(unreadable, "https://gitlab.evil.example/acme/team.git", null)).toEqual(unreadable);
   });
 });
