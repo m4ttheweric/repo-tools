@@ -9,10 +9,11 @@ enum ProxyPaths {
     static let logDir = root + "/log"
     static let logFile = logDir + "/service.log"
     /// The copy of the certificate this helper actually trusted, taken at
-    /// trust time. `remove` identifies the System-keychain entry from here and
+    /// trust time. `remove` takes the fingerprint it deletes by from here and
     /// never from the console user's own `~/.portless/ca.pem`, which they can
-    /// replace with a certificate whose common name matches something else in
-    /// that keychain (an MDM cert, an 802.1X credential, an enterprise root).
+    /// replace with any certificate at all: this deletion runs as root against
+    /// the System keychain, where an MDM cert, an 802.1X credential and an
+    /// enterprise root also live.
     static let trustedCa = root + "/ca.pem"
     /// Where the user's certificate lands before anything reads it. The
     /// trust write and the check that gates it both name this copy, so the

@@ -104,7 +104,10 @@ final class FakeCommandRunner: CommandRunner {
         return handler(argv)
     }
 
-    func called(_ needle: String) -> Bool { calls.contains { $0.contains(needle) } }
+    /// Substring, not element equality: every executable here is an absolute
+    /// path, so `called("security")` matching only a bare `security` element
+    /// would be a negative assertion that can never fail.
+    func called(_ needle: String) -> Bool { calls.contains { $0.contains { $0.contains(needle) } } }
 }
 
 let caFixturePath = "/Users/tester/.portless/ca.pem"
@@ -324,7 +327,7 @@ final class InstallOpTests: XCTestCase {
         XCTAssertEqual(makeOp().execute(), 70)
         XCTAssertTrue(fs.removed.contains(LaunchdPlist.stagePath))
         XCTAssertFalse(fs.removed.contains(LaunchdPlist.path))
-        XCTAssertFalse(runner.called("-c"))
+        XCTAssertFalse(runner.calls.contains(visudoArgv))
         XCTAssertFalse(runner.called("bootstrap"))
     }
 

@@ -6,10 +6,11 @@ import XCTest
 // CommandRunner seams InstallOp uses (RecordingFileOps/FakeCommandRunner,
 // declared in InstallOpTests.swift). The privileged effects themselves
 // (launchctl, security, openssl) are proven by the VM leg; this suite is the
-// ordering, the idempotency-on-absence claim, and the CA common-name parse.
+// ordering, the idempotency-on-absence claim, and the fingerprint parse.
+private let fingerprint = "BC975F413BECEB82741A87035D45250CFC1F9E56"
 private let bootoutArgv = ["/bin/launchctl", "bootout", "system/sh.portless.proxy"]
-private let opensslArgv = ["/usr/bin/openssl", "x509", "-noout", "-subject", "-in", ProxyPaths.trustedCa]
-private let deleteCertArgv = ["/usr/bin/security", "delete-certificate", "-c", "portless Local CA", "/Library/Keychains/System.keychain"]
+private let opensslArgv = ["/usr/bin/openssl", "x509", "-noout", "-fingerprint", "-sha1", "-in", ProxyPaths.trustedCa]
+private let deleteCertArgv = ["/usr/bin/security", "delete-certificate", "-Z", fingerprint, "/Library/Keychains/System.keychain"]
 
 final class RemoveOpTests: XCTestCase {
     private var fs = RecordingFileOps()
@@ -21,7 +22,7 @@ final class RemoveOpTests: XCTestCase {
         runner = FakeCommandRunner()
         runner.handler = { argv in
             argv == opensslArgv
-                ? CommandResult(status: 0, output: "subject=CN=portless Local CA\n")
+                ? CommandResult(status: 0, output: "SHA1 Fingerprint=BC:97:5F:41:3B:EC:EB:82:74:1A:87:03:5D:45:25:0C:FC:1F:9E:56\n")
                 : CommandResult(status: 0, output: "")
         }
     }
@@ -46,14 +47,14 @@ final class RemoveOpTests: XCTestCase {
     func testEverythingAbsentStillSucceeds() {
         XCTAssertEqual(makeOp().execute(), ExitCode.ok)
         XCTAssertEqual(fs.removed, [LaunchdPlist.path, Sudoers.path, ProxyPaths.root])
-        XCTAssertFalse(runner.called("openssl"))
-        XCTAssertFalse(runner.called("security"))
+        XCTAssertFalse(runner.calls.contains(opensslArgv))
+        XCTAssertFalse(runner.calls.contains(deleteCertArgv))
     }
 
     func testBootoutFailureIsIgnored() {
         runner.handler = { argv in
             if argv == bootoutArgv { return CommandResult(status: 3, output: "No such process") }
-            if argv == opensslArgv { return CommandResult(status: 0, output: "subject=CN=portless Local CA\n") }
+            if argv == opensslArgv { return CommandResult(status: 0, output: "SHA1 Fingerprint=BC:97:5F:41:3B:EC:EB:82:74:1A:87:03:5D:45:25:0C:FC:1F:9E:56\n") }
             return CommandResult(status: 0, output: "")
         }
         XCTAssertEqual(makeOp().execute(), ExitCode.ok)
@@ -84,15 +85,15 @@ final class RemoveOpTests: XCTestCase {
     // of the keychain, and not fatal.
     func testNoTrustRecordSkipsUntrustButRemovesEverythingElse() {
         XCTAssertEqual(makeOp().execute(), ExitCode.ok)
-        XCTAssertFalse(runner.called("openssl"))
-        XCTAssertFalse(runner.called("security"))
+        XCTAssertFalse(runner.calls.contains(opensslArgv))
+        XCTAssertFalse(runner.calls.contains(deleteCertArgv))
         XCTAssertEqual(fs.removed, [LaunchdPlist.path, Sudoers.path, ProxyPaths.root])
     }
 
-    // The CN comes from the root-owned copy the trust step recorded. The
-    // console user's own ~/.portless/ca.pem is never read: they can replace it
-    // with a certificate whose CN names an unrelated System-keychain entry,
-    // and this op deletes as root.
+    // The fingerprint comes from the root-owned copy the trust step recorded.
+    // The console user's own ~/.portless/ca.pem is never read: they can put
+    // any certificate there, and this op deletes as root from the keychain an
+    // MDM cert and an enterprise root also live in.
     func testUntrustReadsTheRootOwnedRecordAndNotTheUsersCopy() {
         fs.existingPaths.insert(ProxyPaths.trustedCa)
         fs.existingPaths.insert("/Users/tester/.portless/ca.pem")
@@ -107,7 +108,7 @@ final class RemoveOpTests: XCTestCase {
     func testDeleteCertificateFailureIsNotFatal() {
         fs.existingPaths.insert(ProxyPaths.trustedCa)
         runner.handler = { argv in
-            if argv == opensslArgv { return CommandResult(status: 0, output: "subject=CN=portless Local CA\n") }
+            if argv == opensslArgv { return CommandResult(status: 0, output: "SHA1 Fingerprint=BC:97:5F:41:3B:EC:EB:82:74:1A:87:03:5D:45:25:0C:FC:1F:9E:56\n") }
             if argv == deleteCertArgv { return CommandResult(status: 1, output: "not found") }
             return CommandResult(status: 0, output: "")
         }
@@ -122,7 +123,23 @@ final class RemoveOpTests: XCTestCase {
             argv == opensslArgv ? CommandResult(status: 1, output: "unable to load certificate") : CommandResult(status: 0, output: "")
         }
         XCTAssertEqual(makeOp().execute(), ExitCode.ok)
-        XCTAssertFalse(runner.called("security"))
+        XCTAssertFalse(runner.calls.contains(deleteCertArgv))
+    }
+
+    // A common name selects whatever else in the System keychain happens to
+    // carry it; the fingerprint selects the one certificate this helper
+    // trusted. openssl prints it colon-separated and delete-certificate wants
+    // it bare.
+    func testTheFingerprintIsParsedBareAndUppercase() {
+        XCTAssertEqual(
+            RemoveOp.sha1(fromFingerprintLine: "SHA1 Fingerprint=bc:97:5f:41:3b:ec:eb:82:74:1a:87:03:5d:45:25:0c:fc:1f:9e:56\n"),
+            fingerprint)
+        XCTAssertNil(RemoveOp.sha1(fromFingerprintLine: "unable to load certificate"))
+        // Short, long and non-hex all name no certificate at all, and a
+        // half-read fingerprint must never reach a root deletion.
+        XCTAssertNil(RemoveOp.sha1(fromFingerprintLine: "SHA1 Fingerprint=BC:97:5F"))
+        XCTAssertNil(RemoveOp.sha1(fromFingerprintLine: "SHA1 Fingerprint=\(fingerprint)AB"))
+        XCTAssertNil(RemoveOp.sha1(fromFingerprintLine: "SHA1 Fingerprint=\(fingerprint.dropLast(2))ZZ"))
     }
 
     // The exit status can't tell "already gone" apart from a real Keychain

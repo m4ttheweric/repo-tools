@@ -67,9 +67,9 @@ struct RemoveOp {
             return
         }
 
-        let subject = runCommand(["/usr/bin/openssl", "x509", "-noout", "-subject", "-in", caPath.path])
-        guard subject.status == 0, let commonName = Self.commonName(fromSubjectLine: subject.output) else {
-            Report.step("untrust: could not read a common name from \(caPath.path), skipping")
+        let fingerprint = runCommand(["/usr/bin/openssl", "x509", "-noout", "-fingerprint", "-sha1", "-in", caPath.path])
+        guard fingerprint.status == 0, let hash = Self.sha1(fromFingerprintLine: fingerprint.output) else {
+            Report.step("untrust: could not read a fingerprint from \(caPath.path), skipping")
             return
         }
 
@@ -78,7 +78,7 @@ struct RemoveOp {
         // distinguish idempotency from a real failure; treat both as
         // non-fatal, consistent with every other step in this op, but log
         // the status rather than asserting which one it was.
-        let delete = runCommand(["/usr/bin/security", "delete-certificate", "-c", commonName, "/Library/Keychains/System.keychain"])
+        let delete = runCommand(["/usr/bin/security", "delete-certificate", "-Z", hash, "/Library/Keychains/System.keychain"])
         Report.step(Self.untrustMessage(deleteStatus: delete.status))
     }
 
@@ -92,13 +92,17 @@ struct RemoveOp {
             : "untrust: delete-certificate failed (status \(deleteStatus)), skipping"
     }
 
-    /// portless generates its CA with a subject of exactly `/CN=<name>`, so
-    /// openssl's `-subject` line (`subject=CN=<name>`) has no further RDNs
-    /// to strip past the marker.
-    static func commonName(fromSubjectLine line: String) -> String? {
-        guard let range = line.range(of: "CN=") else { return nil }
-        let name = line[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? nil : name
+    /// openssl prints `SHA1 Fingerprint=AB:CD:...`; `delete-certificate -Z`
+    /// wants that hex with the colons gone. The fingerprint is what names ONE
+    /// certificate: a common name does not, and another System-keychain entry
+    /// carrying the same one would be what this root deletion hit.
+    static func sha1(fromFingerprintLine line: String) -> String? {
+        guard let marker = line.range(of: "=") else { return nil }
+        let hex = line[marker.upperBound...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ":", with: "")
+        guard hex.count == 40, hex.allSatisfy(\.isHexDigit) else { return nil }
+        return hex.uppercased()
     }
 
     /// Children get a stated environment, never this process's, same as
