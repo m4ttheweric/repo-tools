@@ -21,7 +21,7 @@ import { repoLabel } from "../../repo-label.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { rtDir } from "../../rt-paths.ts";
 import { lazyChildLogger } from "../../daemon-logger.ts";
-import { formatPaneRef } from "../../../packages/rt-client/src/index.ts";
+import { formatPaneRef, parsePaneRef } from "../../../packages/rt-client/src/index.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 import type { BgService } from "../bg-service.ts";
 import type { BgClaimsStore } from "../bg-claims-store.ts";
@@ -92,7 +92,7 @@ export function createAgentHandlers(opts: {
   insertAgentFn?: typeof insertAgent;
   /** The daemon-owned background herdr server `--bg` launches onto (spec "The bg service"). Omitted, `bg: true` is refused. */
   bg?: Pick<BgService, "ensure" | "reprobe">;
-  bgClaims?: Pick<BgClaimsStore, "claim">;
+  bgClaims?: Pick<BgClaimsStore, "claim" | "releaseByPane">;
   /** herd-lifecycle.ts's watch is idempotent by socket, so an already-watched bg socket is a no-op here. */
   lifecycle?: { watch(socket: string): void };
 }):
@@ -303,11 +303,38 @@ export function createAgentHandlers(opts: {
       const tabLabel = payload.tab ?? `↺ ${rec.label ?? rec.id}`;
       const workspaceLabel = payload.workspace ?? repoLabel(rec.repo);
       const attempt: AgentRecord = { ...rec, surface };
+      // A record whose paneId is a bg: ref was launched on the background
+      // server; resuming it must follow it there, or the new pane lands on
+      // the visible server while the record still claims to be backgrounded.
+      // Surface can be overridden away from herdr on resume (headless has no
+      // pane at all), so the bg path only applies when it stays herdr.
+      const oldRef = rec.paneId;
+      const wasBg = surface === "herdr" && oldRef !== undefined && parsePaneRef(oldRef).server === "bg";
+      if (wasBg && (!opts.bg || !opts.bgClaims || !opts.lifecycle)) {
+        return { ok: false, error: "bg launches require the rt daemon (rt daemon start)" };
+      }
       try {
-        const res = await launch(attempt, { kind: "resume", sessionId: rec.sessionId }, payload.prompt, tabLabel, workspaceLabel);
+        let bgSocket: string | undefined;
+        if (wasBg) {
+          const ensured = await opts.bg!.ensure();
+          bgSocket = ensured.socket;
+          opts.lifecycle!.watch(ensured.socket);
+        }
+        const res = await launch(attempt, { kind: "resume", sessionId: rec.sessionId }, payload.prompt, tabLabel, workspaceLabel, {
+          ...(bgSocket !== undefined && { herdrSocket: bgSocket }),
+        });
         if (!res.ok) return res;
         const now = Date.now();
         markAgentResumed(rec.id, now, db);
+        if (wasBg && attempt.paneId) {
+          // Same owner, new pane: release the stale claim by the exact ref
+          // it was registered under (releaseByPane's own convention), then
+          // reclaim under the new ref before it is ever stored, so the DB
+          // row and the claim agree from the same instant onward.
+          opts.bgClaims!.releaseByPane(oldRef!);
+          attempt.paneId = formatPaneRef(attempt.paneId, "bg");
+          opts.bgClaims!.claim(agentOwner(rec.id), attempt.paneId);
+        }
         if (surface === "herdr" && attempt.paneId && attempt.tabId && attempt.workspaceId) {
           updateAgentPane(rec.id, { paneId: attempt.paneId, tabId: attempt.tabId, workspaceId: attempt.workspaceId }, db);
         }

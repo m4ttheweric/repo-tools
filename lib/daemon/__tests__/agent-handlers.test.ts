@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "os";
 import { join } from "path";
+import { mkdtempSync, rmSync } from "fs";
+import pino from "pino";
 import { AGENT_NAMES } from "../../chat-names.ts";
 import { openStateDb, signIn } from "../../state/index.ts";
 import { createAgentHandlers, type HeadlessChild } from "../handlers/agent.ts";
+import { createBgClaimsStore, type BgClaimsStore } from "../bg-claims-store.ts";
 import type { HerdrRunner } from "../../agent-herdr.ts";
 import { repoLabel } from "../../repo-arg.ts";
 
@@ -47,12 +50,19 @@ function fakeBg(over: { socket?: string; ensureError?: Error; drift?: string[] }
 
 interface FakeBgClaims {
   claim: (owner: string, pane?: string) => void;
+  releaseByPane: (pane: string) => string[];
   claims: Array<{ owner: string; pane?: string }>;
+  released: string[];
 }
 
 function fakeBgClaims(): FakeBgClaims {
   const claims: Array<{ owner: string; pane?: string }> = [];
-  return { claims, claim: (owner, pane) => { claims.push({ owner, pane }); } };
+  const released: string[] = [];
+  return {
+    claims, released,
+    claim: (owner, pane) => { claims.push({ owner, pane }); },
+    releaseByPane: (pane) => { released.push(pane); return []; },
+  };
 }
 
 interface FakeLifecycle {
@@ -72,7 +82,7 @@ function fresh(over: {
   emit?: (t: string, p?: unknown) => void;
   insertAgentFn?: (...args: unknown[]) => void;
   bg?: FakeBg;
-  bgClaims?: FakeBgClaims;
+  bgClaims?: FakeBgClaims | Pick<BgClaimsStore, "claim" | "releaseByPane">;
   lifecycle?: FakeLifecycle;
 } = {}) {
   const db = openStateDb(join(tmpdir(), `agent-h-${process.pid}-${n++}.db`));
@@ -460,4 +470,73 @@ test("agent:start bg launch failure NOT shaped as command-not-found never reprob
   const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", bg: true });
   expect(res.ok).toBe(false);
   expect(bg.reprobeCalls).toBe(0);
+});
+
+// Resume must follow a bg-launched record to the bg server -- a record
+// whose paneId is a bg: ref that resumed on the visible server would
+// silently drop off the background server while still claiming to be on
+// it. Uses the REAL BgClaimsStore, not a spy, so the row is only ever
+// mutated through the two production calls (claim, releaseByPane).
+test("agent:resume of a bg-launched record follows it to the bg server and rekeys the real claim to the new ref", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "rt-agent-resume-bg-"));
+  try {
+    const bgClaims = createBgClaimsStore({ dbPath: join(dir, "bg-claims.db"), log: pino({ level: "silent" }) });
+    const lifecycle = fakeLifecycle();
+    const bg = fakeBg({ socket: "/bg.sock" });
+    const seenSockets: string[] = [];
+    let creates = 0;
+    const runnerFactory = (socket: string): HerdrRunner => {
+      seenSockets.push(socket);
+      return async (args) => {
+        if (args[0] === "workspace" && args[1] === "list") return { stdout: JSON.stringify({ result: { workspaces: [] } }), exitCode: 0 };
+        if (args[0] === "workspace" && args[1] === "create") {
+          creates++;
+          const paneId = creates === 1 ? "w1:p1" : "w1:p2";
+          return { stdout: JSON.stringify({ result: { root_pane: { pane_id: paneId, tab_id: `t${creates}`, workspace_id: "w1" } } }), exitCode: 0 };
+        }
+        return { stdout: "{}", exitCode: 0 };
+      };
+    };
+    const h = fresh({ runnerFactory, bg, bgClaims, lifecycle });
+
+    const started = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", bg: true });
+    if (!started.ok) throw new Error(started.error);
+    expect(started.data.paneId).toBe("bg:w1:p1");
+    expect(bg.ensureCalls).toBe(1);
+    expect(bgClaims.list()).toHaveLength(1);
+
+    const resumed = await h["agent:resume"]({ id: started.data.id });
+    if (!resumed.ok) throw new Error(resumed.error);
+    expect(bg.ensureCalls).toBe(2);
+    expect(seenSockets).toEqual(["/bg.sock", "/bg.sock"]);
+    expect(resumed.data.paneId).toBe("bg:w1:p2");
+
+    const rows = bgClaims.list();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ owner: `agent:${started.data.id}`, pane: "bg:w1:p2" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A visible-surface record must never touch the bg machinery on resume --
+// pins the "byte-identical to today" requirement.
+test("agent:resume of a visible record never touches bg: no ensure, no claim/release, no watch", async () => {
+  const calls: string[][] = [];
+  const bg = fakeBg();
+  const bgClaims = fakeBgClaims();
+  const lifecycle = fakeLifecycle();
+  const h = fresh({ runner: okRunner(calls), bg, bgClaims, lifecycle });
+  const started = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr" });
+  if (!started.ok) throw new Error(started.error);
+  expect(started.data.paneId).toBe("w1:p1");
+
+  const resumed = await h["agent:resume"]({ id: started.data.id });
+  if (!resumed.ok) throw new Error(resumed.error);
+  expect(resumed.data.paneId).toBe("w1:p1");
+  expect(bg.ensureCalls).toBe(0);
+  expect(bg.reprobeCalls).toBe(0);
+  expect(bgClaims.claims).toEqual([]);
+  expect(bgClaims.released).toEqual([]);
+  expect(lifecycle.watched).toEqual([]);
 });
