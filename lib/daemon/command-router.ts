@@ -22,6 +22,7 @@ import { createProjectMRsHandlers } from "./handlers/project-mrs.ts";
 import { createEventsHandlers } from "./handlers/events.ts";
 import { createGateHandlers } from "./handlers/gate.ts";
 import { createHerdHandlers, type HerdDeps } from "./handlers/herd.ts";
+import { createBgHandlers } from "./handlers/bg.ts";
 import { createChatHandlers } from "./handlers/chat.ts";
 import { createAgentHandlers } from "./handlers/agent.ts";
 import { createPaneHandlers } from "./handlers/pane.ts";
@@ -43,6 +44,8 @@ import type { HerdStore } from "./herd-store.ts";
 import type { GatePush } from "./gate-push.ts";
 import type { HomeSnapshotHandle } from "./home-snapshot.ts";
 import type { TeamSnapshotsHandle } from "./team-snapshots.ts";
+import type { BgService } from "./bg-service.ts";
+import type { BgClaimsStore } from "./bg-claims-store.ts";
 
 // The exported return type is the plain `Record<string, Handler>` a router
 // lookup needs; the exhaustiveness proof against the rt-client catalog
@@ -69,6 +72,10 @@ export function buildRoutedHandlers(opts: {
   herdLifecycle: HerdDeps["lifecycle"];
   /** The hidden herdr session a `--hidden` herd's panes run in. */
   herdHidden: HerdDeps["hidden"];
+  /** The daemon-owned background herdr server bg:* drives (spec "The bg service"). */
+  bgService: BgService;
+  /** Who is holding the bg server up; gates bg:stop. */
+  bgClaims: BgClaimsStore;
   /** Root of the per-job report directories (`<RT_DIR>/herds`); passed in because the router itself resolves no paths. */
   herdJobsRoot: string;
   /** Home-repo snapshot daemon (H2) — inert handle when disabled/not-a-repo. */
@@ -130,6 +137,11 @@ export function buildRoutedHandlers(opts: {
     jobsRoot: opts.herdJobsRoot,
     log: ctx.log,
   });
+  const bgHandlers = createBgHandlers({
+    service: opts.bgService,
+    claims: opts.bgClaims,
+    lifecycle: opts.herdLifecycle,
+  });
   const handlers: TypedHandlers & HandlerMap = {
     ...createCacheHandlers({ cache: ctx.cache, refreshCache: ctx.refreshCache }),
     ...createHooksHandlers({
@@ -153,6 +165,7 @@ export function buildRoutedHandlers(opts: {
     ...createEventsHandlers(opts.eventsBus, broadcast),
     ...gateHandlers,
     ...herdHandlers,
+    ...bgHandlers,
     ...chatHandlers,
     ...agentHandlers,
     ...paneHandlers,

@@ -148,9 +148,13 @@ export function createBgService(opts: {
     return seeded;
   }
 
+  /** Sequential, not Promise.all: defaultProbePane spawns its throwaway pane
+      into a shared "bg-probe" workspace label, so running both probes
+      concurrently is a create-create race on that workspace. */
   async function runParity(socket: string): Promise<void> {
     try {
-      const [bg, visible] = await Promise.all([probePane(socket, PROBE_CMD), probePane(null, PROBE_CMD)]);
+      const bg = await probePane(socket, PROBE_CMD);
+      const visible = await probePane(null, PROBE_CMD);
       const report = diffParity(bg, visible);
       lastParityReport = report;
       if (!report.ok) opts.log.warn({ drift: report.drift }, "bg: environment parity drift against the visible server");

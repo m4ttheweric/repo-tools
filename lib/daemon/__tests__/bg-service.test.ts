@@ -241,6 +241,32 @@ describe("bg service", () => {
     expect(warns.some((a) => String(a[1] ?? "").includes("parity probe failed"))).toBe(true);
   });
 
+  // defaultProbePane launches its throwaway pane into a shared "bg-probe"
+  // workspace label; running both sides concurrently is a create-create
+  // race against that label. Pins the fix: the bg-socket probe must finish
+  // before the visible-server probe starts.
+  test("reprobe runs the bg probe and the visible probe sequentially, not concurrently", async () => {
+    const events: string[] = [];
+    let resolveBg: (() => void) | undefined;
+    const s = createBgService({
+      log, home: "/h",
+      available: async () => true,
+      probePane: async (socket) => {
+        const label = socket === null ? "visible" : "bg";
+        events.push(`start:${label}`);
+        if (label === "bg") await new Promise<void>((resolve) => { resolveBg = resolve; });
+        events.push(`end:${label}`);
+        return "same";
+      },
+    });
+    const reprobe = s.reprobe();
+    await Bun.sleep(10);
+    expect(events).toEqual(["start:bg"]);
+    resolveBg?.();
+    await reprobe;
+    expect(events).toEqual(["start:bg", "end:bg", "start:visible", "end:visible"]);
+  });
+
   test("reprobe re-runs both probes against a running server and updates lastParity", async () => {
     const s = createBgService({
       log, home: "/h",

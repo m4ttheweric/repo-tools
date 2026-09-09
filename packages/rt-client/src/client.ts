@@ -640,3 +640,32 @@ export function herdStopHidden(
 ): Promise<RtResponse<Commands["herd:stop-hidden"]["data"]>> {
   return rtCommand<Commands["herd:stop-hidden"]["data"]>("herd:stop-hidden", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }
+
+// ─── Background server (daemon-owned headless herdr session) ──────────────
+
+/** May spawn `herdr server` and wait for it to bind; budget matches bg-service's own 10s readyTimeoutMs plus margin. */
+export function bgEnsure(
+  a: Commands["bg:ensure"]["payload"] = {},
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["bg:ensure"]["data"]>> {
+  const payload: Record<string, unknown> = {};
+  if (a.claim !== undefined) payload.claim = a.claim;
+  return rtCommand<Commands["bg:ensure"]["data"]>("bg:ensure", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 15_000 });
+}
+
+/** Never ensures/spawns; a plain read of the current state. */
+export function bgStatus(o: RtClientOptions = {}): Promise<RtResponse<Commands["bg:status"]["data"]>> {
+  return rtCommand<Commands["bg:status"]["data"]>("bg:status", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+/** Runs `herdr session stop`, one CLI call under the runner's own 15s budget; refuses while any claim is live. */
+export function bgStop(o: RtClientOptions = {}): Promise<RtResponse<Commands["bg:stop"]["data"]>> {
+  return rtCommand<Commands["bg:stop"]["data"]>("bg:stop", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
+}
+
+export function bgRelease(
+  a: Commands["bg:release"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["bg:release"]["data"]>> {
+  return rtCommand<Commands["bg:release"]["data"]>("bg:release", { claim: a.claim }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}

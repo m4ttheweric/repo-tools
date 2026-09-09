@@ -68,6 +68,10 @@ export {
   herdAttend,
   herdWrapUp,
   herdStopHidden,
+  bgEnsure,
+  bgStatus,
+  bgStop,
+  bgRelease,
 } from "./client.ts";
 
 export { COMMAND_NAMES, GATE_BY_PANE, gateOptionValue, gateOptionLabel } from "./commands.ts";

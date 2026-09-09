@@ -666,6 +666,13 @@ export interface Commands {
   "worktree:restore": { payload: { repoName: string; tree: string }; data: WorktreeRestoreData };
   "worktree:freshen": { payload: { repoName?: string; tree?: string }; data: WorktreeFreshenData };
   "worktree:adopt": { payload: { repoName: string; claim?: boolean }; data: WorktreeAdoptData };
+
+  // ─── Background server (daemon-owned headless herdr session) ────────────
+  "bg:ensure": { payload: { claim?: string }; data: { socket: string; started: boolean; parity: { ok: boolean; drift: string[] } | null } };
+  "bg:status": { payload: Record<string, never>; data: { up: boolean; socket: string; claims: Array<{ owner: string; pane: string | null; createdAt: number }> } };
+  /** Rejects (`ok:false`) naming every live claim owner while any claim is held. */
+  "bg:stop": { payload: Record<string, never>; data: { stopped: boolean } };
+  "bg:release": { payload: { claim: string }; data: { released: boolean } };
 }
 
 export type CommandName = keyof Commands;
@@ -777,4 +784,9 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "worktree:restore",
   "worktree:freshen",
   "worktree:adopt",
+
+  "bg:ensure",
+  "bg:status",
+  "bg:stop",
+  "bg:release",
 ];
