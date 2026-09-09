@@ -20,6 +20,7 @@ rt endpoint lookup <role> [flags]
 | Flag / Arg | Type | Default | Description |
 | --- | --- | --- | --- |
 | `<role>` | text |  | Role name declared in the repo's endpoint config |
+| `--path` | text |  | Resolve the claim for this worktree instead of the cwd |
 | [`--json`](/guides/common-flags) | boolean | `false` | Emit machine-readable JSON instead of a plain line |
 
 _See code: [commands/endpoint.ts › endpointLookup](https://github.com/m4ttstack/rt/blob/main/commands/endpoint.ts)_
