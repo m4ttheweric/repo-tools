@@ -537,7 +537,7 @@ describe("gate:open W4 fields", () => {
   test("stores context and origin, serves them on the row AND the opened event payload", async () => {
     const { handlers, store, emitted } = harness();
     const origin = { paneId: "p1", worktree: "/tmp/wt", presentation: "form" as const };
-    const r = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), context: "the material", origin });
+    const r = await handlers["gate:open"]({ subject: "run:r1", kind: "clarify", questions: qs(), context: "the material", origin, nudge: { session: "sess-1" } });
     const id = (r as { data: { id: string } }).data.id;
     const row = store.get(id)!;
     expect(row.context).toBe("the material");
@@ -627,15 +627,75 @@ describe("gate:open supersede push (final-review advisory: no self-Escape on rel
   test("neither paneId nor nudge.session comparable: falls back to keeping the push", async () => {
     const { push, closedIds } = closedPushSpy();
     const { handlers } = harness({ push });
+    // wait presentation: the only origin shape that can legitimately carry
+    // no injectable pane (a form open without one is rejected upstream).
     const first = await handlers["gate:open"]({
       subject: "mr:https://x/1", kind: "review-post", questions: qs(),
-      nudge: { session: "sess-1" }, origin: { presentation: "form" } as never,
+      origin: { presentation: "wait" } as never,
     });
     const firstId = (first as { data: { id: string } }).data.id;
     await handlers["gate:open"]({
       subject: "mr:https://x/1", kind: "review-post", questions: qs(),
-      nudge: { session: "sess-2" }, origin: { presentation: "form" } as never,
+      origin: { presentation: "wait" } as never,
     });
     expect(closedIds).toEqual([firstId]);
+  });
+
+  test("same-pane supersede matches origin.paneId against a relaunch carrying only the top-level pane (SKILLS-60)", async () => {
+    const { push, closedIds } = closedPushSpy();
+    const { handlers } = harness({ push });
+    await handlers["gate:open"]({
+      subject: "mr:https://x/1", kind: "review-post", questions: qs(),
+      nudge: { session: "sess-1" }, origin: { presentation: "form", paneId: "pane-7" } as never,
+    });
+    await handlers["gate:open"]({
+      subject: "mr:https://x/1", kind: "review-post", questions: qs(),
+      pane: "pane-7", nudge: { session: "sess-2" }, origin: { presentation: "form" } as never,
+    });
+    expect(closedIds).toEqual([]);
+  });
+});
+
+describe("gate:open form-presentation validation (SKILLS-60: no silently-unblockable form gates)", () => {
+  const formOpen = (extra: Record<string, unknown>) => ({
+    subject: "run:r1", kind: "clarify", questions: qs(), ...extra,
+  });
+
+  test("rejects a form-presentation open with no injectable pane", async () => {
+    const { handlers } = harness();
+    const r = await handlers["gate:open"](formOpen({
+      nudge: { session: "sess-1" }, origin: { presentation: "form" } as never,
+    }));
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toContain("injectable pane");
+  });
+
+  test("a top-level pane satisfies the injectable-pane requirement", async () => {
+    const { handlers } = harness();
+    const r = await handlers["gate:open"](formOpen({
+      pane: "w1:p2", nudge: { session: "sess-1" }, origin: { presentation: "form" } as never,
+    }));
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects a form-presentation open with no nudge (nothing ever delivers the doorbell the Escape follows)", async () => {
+    const { handlers } = harness();
+    const r = await handlers["gate:open"](formOpen({
+      origin: { presentation: "form", paneId: "w1:p2" } as never,
+    }));
+    expect(r.ok).toBe(false);
+    expect((r as { error: string }).error).toContain("nudge");
+  });
+
+  test("wait presentation needs neither pane nor nudge", async () => {
+    const { handlers } = harness();
+    const r = await handlers["gate:open"](formOpen({ origin: { presentation: "wait" } as never }));
+    expect(r.ok).toBe(true);
+  });
+
+  test("an origin-less open (herd:ask shape) is untouched by the form checks", async () => {
+    const { handlers } = harness();
+    const r = await handlers["gate:open"](formOpen({ pane: "w1:p2", nudge: { session: "sess-1" } }));
+    expect(r.ok).toBe(true);
   });
 });
