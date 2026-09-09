@@ -23,25 +23,25 @@ function lookupFrom(map: Record<string, CacheEntry>) {
 
 test("worktree branches are always selected, even when cached merged and fresh", () => {
   const sel = selectEnrichmentBranches(
-    [cand("cv-1", true), cand("cv-2", true)],
-    lookupFrom({ "cv-1": entry("merged"), "cv-2": entry(null) }),
+    [cand("acme-1", true), cand("acme-2", true)],
+    lookupFrom({ "acme-1": entry("merged"), "acme-2": entry(null) }),
     NOW,
   );
-  expect(sel.map((s) => s.branch).sort()).toEqual(["cv-1", "cv-2"]);
+  expect(sel.map((s) => s.branch).sort()).toEqual(["acme-1", "acme-2"]);
 });
 
 test("a branch the cache has never seen is selected", () => {
-  const sel = selectEnrichmentBranches([cand("cv-new")], lookupFrom({}), NOW);
-  expect(sel.map((s) => s.branch)).toEqual(["cv-new"]);
+  const sel = selectEnrichmentBranches([cand("acme-new")], lookupFrom({}), NOW);
+  expect(sel.map((s) => s.branch)).toEqual(["acme-new"]);
 });
 
 test("branches with a cached open or draft MR stay hot", () => {
   const sel = selectEnrichmentBranches(
-    [cand("cv-open"), cand("cv-draft")],
-    lookupFrom({ "cv-open": entry("opened"), "cv-draft": entry("draft") }),
+    [cand("acme-open"), cand("acme-draft")],
+    lookupFrom({ "acme-open": entry("opened"), "acme-draft": entry("draft") }),
     NOW,
   );
-  expect(sel.map((s) => s.branch).sort()).toEqual(["cv-draft", "cv-open"]);
+  expect(sel.map((s) => s.branch).sort()).toEqual(["acme-draft", "acme-open"]);
 });
 
 test("freshly-checked merged, closed, and no-MR branches are not selected", () => {
@@ -49,26 +49,26 @@ test("freshly-checked merged, closed, and no-MR branches are not selected", () =
   // merged/closed/MR-less, and re-asking GitLab about all of them every cycle
   // held the query at ~29s against the ~30s server budget.
   const sel = selectEnrichmentBranches(
-    [cand("cv-merged"), cand("cv-closed"), cand("cv-none"), cand("cv-open")],
+    [cand("acme-merged"), cand("acme-closed"), cand("acme-none"), cand("acme-open")],
     lookupFrom({
-      "cv-merged": entry("merged"),
-      "cv-closed": entry("closed"),
-      "cv-none": entry(null),
-      "cv-open": entry("opened"),
+      "acme-merged": entry("merged"),
+      "acme-closed": entry("closed"),
+      "acme-none": entry(null),
+      "acme-open": entry("opened"),
     }),
     NOW,
   );
-  expect(sel.map((s) => s.branch)).toEqual(["cv-open"]);
+  expect(sel.map((s) => s.branch)).toEqual(["acme-open"]);
 });
 
 test("a cold branch overdue for its recheck is selected again", () => {
   const overdue = NOW - COLD_RECHECK_MS - 1;
   const sel = selectEnrichmentBranches(
-    [cand("cv-merged")],
-    lookupFrom({ "cv-merged": entry("merged", overdue) }),
+    [cand("acme-merged")],
+    lookupFrom({ "acme-merged": entry("merged", overdue) }),
     NOW,
   );
-  expect(sel.map((s) => s.branch)).toEqual(["cv-merged"]);
+  expect(sel.map((s) => s.branch)).toEqual(["acme-merged"]);
 });
 
 test("overdue cold branches are capped per cycle, stalest first; hot is never capped", () => {
