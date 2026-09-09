@@ -32,7 +32,10 @@ public enum DaemonOrigin {
         for line in headerBlock.components(separatedBy: "\r\n").dropFirst() {
             guard let colon = line.firstIndex(of: ":") else { continue }
             guard line[..<colon].lowercased() == name.lowercased() else { continue }
-            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            // Capped: the value lands in every lifecycle log line, and
+            // tray.sock accepts requests up to the socket receive limit, so an
+            // uncapped value lets one client inflate the log at will.
+            let value = String(line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces).prefix(128))
             return value.isEmpty ? nil : value
         }
         return nil
@@ -59,10 +62,21 @@ public actor DaemonLifecycleGate {
     private var waiters: [CheckedContinuation<Void, Never>] = []
     private var startPending = false
     private var startJoiners: [CheckedContinuation<Bool, Never>] = []
+    /// Latched by `retire`. Ops that arrive — or were already parked — after
+    /// the latch skip their bodies: a start that ran after teardown's
+    /// unregister would re-register the agent this app just gave up, leaving
+    /// two flavors registered (the situation /flavor/retire exists to end).
+    private var isRetired = false
+
+    /// Check-harness introspection; production code has no business reading
+    /// these.
+    public var startJoinerCount: Int { startJoiners.count }
+    public var waiterCount: Int { waiters.count }
 
     public init() {}
 
     public func run(_ op: DaemonLifecycleOp, _ body: @Sendable () async -> Bool) async -> Bool {
+        if isRetired { return false }
         if op == .start {
             if startPending {
                 return await withCheckedContinuation { startJoiners.append($0) }
@@ -71,16 +85,35 @@ public actor DaemonLifecycleGate {
         }
 
         await acquire()
+        // Re-checked after the wait: a retire that took the slot while this op
+        // was parked has latched, and the body must not run behind it.
+        if isRetired {
+            release()
+            if op == .start { settleStart(with: false) }
+            return false
+        }
         let result = await body()
         release()
 
-        if op == .start {
-            startPending = false
-            let joiners = startJoiners
-            startJoiners = []
-            for joiner in joiners { joiner.resume(returning: result) }
-        }
+        if op == .start { settleStart(with: result) }
         return result
+    }
+
+    /// Runs `body` (the teardown unregister) with no other op in flight, then
+    /// latches the gate shut: every later or still-parked op no-ops.
+    public func retire(_ body: @Sendable () async -> Bool) async -> Bool {
+        await acquire()
+        isRetired = true
+        let result = await body()
+        release()
+        return result
+    }
+
+    private func settleStart(with result: Bool) {
+        startPending = false
+        let joiners = startJoiners
+        startJoiners = []
+        for joiner in joiners { joiner.resume(returning: result) }
     }
 
     private func acquire() async {

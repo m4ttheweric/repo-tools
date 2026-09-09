@@ -93,13 +93,14 @@ class DaemonLifecycle: @unchecked Sendable {
         _ = await gate.run(.stop) { self.stopDaemonUngated(origin: origin) }
     }
 
-    /// The teardown stop: app termination and flavor handover, both of which
-    /// need the post-state synchronously and are followed by this app going
-    /// away. Deliberately skips the gate — there is no later op for it to
-    /// race, and parking teardown behind an in-flight start would only delay
-    /// the handover the incoming flavor is waiting on.
-    func stopDaemonForTeardown(origin: String) {
-        stopDaemonUngated(origin: origin)
+    /// The teardown stop for flavor handover: waits for any in-flight
+    /// lifecycle op, unregisters, and latches the gate shut so a start or
+    /// restart already parked behind it (the client herd discovering the
+    /// daemon down) can no longer re-register the agent this app just gave
+    /// up — that would leave both flavors registered, fighting over
+    /// rt.pid/rt.sock.
+    func stopDaemonForTeardown(origin: String) async {
+        _ = await gate.retire { self.stopDaemonUngated(origin: origin) }
     }
 
     @discardableResult

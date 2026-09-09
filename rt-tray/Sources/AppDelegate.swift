@@ -213,15 +213,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             showFlavorMismatchAlert(intended: intended, myFlavor: myFlavor,
                                     intendedBundle: bundle, resumeStartup: true)
         case .silent:
-            retireSelf(intended: intended, myFlavor: myFlavor)
+            Task { @MainActor in await retireSelf(intended: intended, myFlavor: myFlavor) }
         }
     }
 
     @MainActor
-    private func retireSelf(intended: String, myFlavor: String) {
-        daemonLifecycle.stopDaemonForTeardown(origin: DaemonOrigin.flavorRetire)
+    private func retireSelf(intended: String, myFlavor: String) async {
+        await daemonLifecycle.stopDaemonForTeardown(origin: DaemonOrigin.flavorRetire)
         do {
-            try SMAppService.mainApp.unregister()
+            try await SMAppService.mainApp.unregister()
         } catch {
             // Unregistering an already-unregistered login item throws; the
             // status logged below is the ground truth.

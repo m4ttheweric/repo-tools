@@ -378,20 +378,24 @@ class TrayServer {
                 // re-register dance), which existed only for the in-place
                 // binary swaps that no longer happen.
                 //
-                // Runs synchronously on main so the reply reflects the
-                // actual post-state, not an intention.
-                var errs: [String] = []
-                var daemonAfter = "unknown"
-                var loginAfter = "unknown"
-                DispatchQueue.main.sync {
+                // The reply is sent only after the awaits below settle, so it
+                // still reflects the actual post-state, not an intention. The
+                // teardown stop goes through the lifecycle gate: it waits out
+                // any in-flight start/restart and latches later ones off, so
+                // the client herd can't re-register the agent behind the
+                // retire (CodeRabbit #219 finding).
+                Task { @MainActor in
+                    var errs: [String] = []
+                    var daemonAfter = "unknown"
+                    var loginAfter = "unknown"
                     if let lifecycle = self.daemonLifecycle {
-                        lifecycle.stopDaemonForTeardown(origin: DaemonOrigin.flavorRetire)   // service.unregister(), logs itself
+                        await lifecycle.stopDaemonForTeardown(origin: DaemonOrigin.flavorRetire)   // service.unregister(), logs itself
                         daemonAfter = Self.statusName(lifecycle.status)
                     } else {
                         errs.append("no daemonLifecycle wired")
                     }
                     do {
-                        try SMAppService.mainApp.unregister()
+                        try await SMAppService.mainApp.unregister()
                     } catch {
                         // Unregistering an already-unregistered login item
                         // throws; the status check below is the ground truth.
@@ -399,25 +403,25 @@ class TrayServer {
                         errs.append(String(describing: error))
                     }
                     loginAfter = Self.statusName(SMAppService.mainApp.status)
-                }
 
-                // Ground truth, not intention: retired means neither
-                // registration is enabled any more.
-                let retired = daemonAfter != "enabled" && loginAfter != "enabled"
-                if retired {
-                    TrayLog.info("flavor retired",
-                                 ["daemon": daemonAfter, "loginItem": loginAfter,
-                                  "label": self.daemonLifecycle?.label ?? "(none)"])
-                    self.sendResponse(connection: connection, status: 200,
-                                      body: "{\"ok\":true,\"daemon\":\"\(daemonAfter)\",\"loginItem\":\"\(loginAfter)\"}")
-                } else {
-                    let errMsg = errs.joined(separator: "; ")
-                        .replacingOccurrences(of: "\"", with: "\\\"")
-                    TrayLog.error("flavor retire failed",
-                                  ["daemon": daemonAfter, "loginItem": loginAfter, "err": errMsg])
-                    self.sendResponse(connection: connection, status: 500,
-                                      body: "{\"ok\":false,\"daemon\":\"\(daemonAfter)\",\"loginItem\":\"\(loginAfter)\",\"error\":\"\(errMsg)\"}",
-                                      path: path)
+                    // Ground truth, not intention: retired means neither
+                    // registration is enabled any more.
+                    let retired = daemonAfter != "enabled" && loginAfter != "enabled"
+                    if retired {
+                        TrayLog.info("flavor retired",
+                                     ["daemon": daemonAfter, "loginItem": loginAfter,
+                                      "label": self.daemonLifecycle?.label ?? "(none)"])
+                        self.sendResponse(connection: connection, status: 200,
+                                          body: "{\"ok\":true,\"daemon\":\"\(daemonAfter)\",\"loginItem\":\"\(loginAfter)\"}")
+                    } else {
+                        let errMsg = errs.joined(separator: "; ")
+                            .replacingOccurrences(of: "\"", with: "\\\"")
+                        TrayLog.error("flavor retire failed",
+                                      ["daemon": daemonAfter, "loginItem": loginAfter, "err": errMsg])
+                        self.sendResponse(connection: connection, status: 500,
+                                          body: "{\"ok\":false,\"daemon\":\"\(daemonAfter)\",\"loginItem\":\"\(loginAfter)\",\"error\":\"\(errMsg)\"}",
+                                          path: path)
+                    }
                 }
 
             } else if method == "GET" && path == "/daemon/status" {
