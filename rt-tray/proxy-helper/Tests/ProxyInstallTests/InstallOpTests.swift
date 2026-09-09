@@ -156,8 +156,8 @@ final class InstallOpTests: XCTestCase {
         XCTAssertTrue(fs.made.contains(ProxyPaths.logDir))
     }
 
-    // MINOR 3: the mode and owner land on the stage BEFORE it goes into place,
-    // never on the live file afterwards.
+    // The mode and owner land on the stage BEFORE it goes into place, never on
+    // the live file afterwards.
     func testStagedFilesAreRootModedAndOwnedBeforeGoingIntoPlace() throws {
         _ = makeOp().execute()
         XCTAssertEqual(fs.modes[LaunchdPlist.stagePath], 0o644)
@@ -240,10 +240,9 @@ final class InstallOpTests: XCTestCase {
         XCTAssertTrue(fs.replaced.isEmpty)
     }
 
-    // IMPORTANT 1 / finding-1 proof. portless's own `service install` leaves the
-    // plist behind, and this dev machine already has it, so a re-install writes
-    // over files that exist. With a non-clobbering rename it would throw (the
-    // moveItem behavior the fake now reproduces); the atomic replace clobbers.
+    // portless's own `service install` leaves the plist behind, so a re-install
+    // writes over files that exist. With a non-clobbering rename it would throw
+    // (the moveItem behavior the fake reproduces); the atomic replace clobbers.
     func testReinstallOverExistingFilesClobbersAndSucceeds() {
         fs.existingPaths.insert(LaunchdPlist.path)
         fs.existingPaths.insert(Sudoers.path)
@@ -251,8 +250,8 @@ final class InstallOpTests: XCTestCase {
         XCTAssertEqual(fs.replaced.map(\.to), [LaunchdPlist.path, Sudoers.path])
     }
 
-    // IMPORTANT 2: the fake reproduces moveItem, so a test cannot pass against
-    // behavior RealFileOps could not.
+    // The fake reproduces moveItem, so a test cannot pass against behavior
+    // RealFileOps could not.
     func testFakeRenameRefusesAnExistingDestinationButReplaceClobbers() {
         fs.existingPaths.insert("/x/dest")
         XCTAssertThrowsError(try fs.rename(from: URL(fileURLWithPath: "/x/src"), to: URL(fileURLWithPath: "/x/dest")))
@@ -292,9 +291,9 @@ final class InstallOpTests: XCTestCase {
         XCTAssertTrue(fs.removed.contains(Sudoers.path))
     }
 
-    // IMPORTANT 1, the self-inflicted wedge: run A fails at bootstrap mid-upgrade
-    // and must leave a state run B installs from cleanly. The old wedge left the
-    // sudoers file in place, so run B's non-clobber rename threw 70 forever.
+    // The self-inflicted wedge: run A fails at bootstrap mid-upgrade and must
+    // leave a state run B installs from cleanly. Leaving the sudoers file in
+    // place wedges run B's non-clobber rename at 70 forever.
     func testBootstrapFailThenRetrySucceeds() {
         fs.existingPaths.insert(LaunchdPlist.path)
         fs.existingPaths.insert(Sudoers.path)

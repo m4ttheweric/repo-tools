@@ -104,6 +104,14 @@ let trayRoutesChecks: [Check] = [
         c.expect(ProxyHelper.promptText.contains("ask twice"))
         c.expect(ProxyHelper.trustPromptText.contains("certificate"))
     },
+    // Uninstall shows a root dialog too, and the install copy would describe
+    // the wrong verb and promise a certificate prompt that never comes.
+    Check("the remove prompt describes removing, and promises no second dialog") { c in
+        c.expect(ProxyHelper.removePromptText.contains("administrator"))
+        c.expect(ProxyHelper.removePromptText.contains("remove"))
+        c.expect(!ProxyHelper.removePromptText.contains("twice"), "got: \(ProxyHelper.removePromptText)")
+        c.expect(!ProxyHelper.removePromptText.contains("certificate"), "got: \(ProxyHelper.removePromptText)")
+    },
     Check("GET /setup/need/<id> serves the app-recorded outcome: pending → done/failed; never a POST") { c in
         let (r, _, s, _, _, broker) = makeRoutes()
         let before = try c.requireSome(await r.handle(method: "GET", path: "/setup/need/services.register", body: nil))

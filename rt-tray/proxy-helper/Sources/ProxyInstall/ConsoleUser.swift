@@ -2,8 +2,8 @@ import Foundation
 import SystemConfiguration
 
 // The one principal an install grants anything to: the human at the GUI session
-// who answered the admin prompt. Never `%admin` and never `SUDO_USER` (the
-// escalator sets neither), per the spec's sudoers-principal ruling.
+// who answered the admin prompt. Never `%admin` and never `SUDO_USER`, which
+// the escalator sets neither of.
 struct ConsoleUser: Equatable {
     let name: String
     let home: String

@@ -38,9 +38,9 @@ final class NormalizeTreeTests: XCTestCase {
         try RealFileOps().normalizeTree(root, uid: getuid(), gid: getgid())
     }
 
-    // The finding this closes: `chmod 666` on a bundle payload file rode
-    // through copyItem into the root-owned tree, where a root LaunchDaemon
-    // execs it and the console user could rewrite it at will.
+    // `chmod 666` on a bundle payload file must not ride through copyItem into
+    // the root-owned tree: a root LaunchDaemon execs from it, and the console
+    // user would be able to rewrite it at will.
     func testAWorldWritablePayloadFileLands644() throws {
         let loose = try file("portless-dist/dist/cli.js", 0o666)
         try normalize()

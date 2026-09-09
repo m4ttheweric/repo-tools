@@ -13,7 +13,7 @@ final class PrivilegedInstaller: PrivilegedInstalling, @unchecked Sendable {
     }
 
     func proxyInstall() async -> NeedResult { await run(op: "install", prompt: ProxyHelper.promptText) }
-    func proxyRemove() async -> NeedResult { await run(op: "remove", prompt: ProxyHelper.promptText) }
+    func proxyRemove() async -> NeedResult { await run(op: "remove", prompt: ProxyHelper.removePromptText) }
     func proxyTrust() async -> NeedResult { await run(op: "trust", prompt: ProxyHelper.trustPromptText) }
 
     private func run(op: String, prompt: String) async -> NeedResult {

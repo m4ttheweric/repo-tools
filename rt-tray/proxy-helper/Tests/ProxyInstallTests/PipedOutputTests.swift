@@ -35,21 +35,15 @@ final class PipedOutputTests: XCTestCase {
         XCTAssertTrue(result.output.hasSuffix("MATTSTACK_EXIT=77\n"), "got: \(result.output)")
     }
 
-    // Unlike install, remove has no root gate: every step is individually
-    // idempotent against absence, so its unescalated exit code depends on
-    // whether this machine already has real state to fail on removing (0 if
-    // every path was already absent, 70 at the first path that exists but
-    // this process lacks permission to remove). Either outcome proves the
-    // real thing this suite is for: the trailer survives the pipe. Skipping
+    // Remove refuses before it deletes anything, so an unescalated run reaches
+    // exactly one exit code rather than a machine-dependent 0-or-70. Skipping
     // under root is not optional here, unlike the other cases: root would
     // actually delete this machine's real launchd/sudoers/keychain state.
-    func testRemoveTrailerSurvivesPipedStdout() throws {
-        try XCTSkipIf(getuid() == 0, "root would perform the real deletions this test only smokes")
+    func testRemoveRefusesUnescalatedAndStillEmitsTheTrailer() throws {
+        try XCTSkipIf(getuid() == 0, "root would perform the real deletions this refusal exists to prevent")
         let result = runPiped(["remove"])
         XCTAssertEqual(result.reason, .exit)
-        XCTAssertTrue(
-            result.output.hasSuffix("MATTSTACK_EXIT=0\n") || result.output.hasSuffix("MATTSTACK_EXIT=70\n"),
-            "got: \(result.output)")
+        XCTAssertTrue(result.output.hasSuffix("MATTSTACK_EXIT=77\n"), "got: \(result.output)")
     }
 
     // The trust verb refuses the same way install does, so its own exit path

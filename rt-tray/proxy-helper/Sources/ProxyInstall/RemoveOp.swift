@@ -13,7 +13,14 @@ struct RemoveOp {
     let runner: CommandRunner
 
     static func run() -> Int32 {
-        RemoveOp(stateDir: try? ConsoleUser.current().stateDir, fs: RealFileOps(), runner: RealCommandRunner()).execute()
+        // Same refusal install and trust make: unescalated, every deletion
+        // below still runs for real against launchd and the System keychain,
+        // and the EPERM that follows reports as this helper's own failure.
+        guard geteuid() == 0 else {
+            Report.step("mattstack-proxy-install remove must run as root")
+            return ExitCode.noPerm
+        }
+        return RemoveOp(stateDir: try? ConsoleUser.current().stateDir, fs: RealFileOps(), runner: RealCommandRunner()).execute()
     }
 
     func execute() -> Int32 {
