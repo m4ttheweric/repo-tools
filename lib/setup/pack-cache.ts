@@ -233,6 +233,10 @@ export async function convergePackCache(
   if (servedPacks.packs.length === 0) return result;
 
   const deadline = now() + CONVERGE_BUDGET_MS;
+  // Every exec is capped by what is left, not by PACK_EXEC_TIMEOUT_MS alone: a
+  // call started with milliseconds of budget left would otherwise run the full
+  // 60s and carry the round trip past commands/team.ts's client timeout.
+  const budgetLeft = (): number => Math.max(0, deadline - now());
 
   for (const dir of claudeConfigDirs(p, [])) {
     const before = { updated: result.updated.length, installed: result.installed.length, rolledBack: result.rolledBack.length };
@@ -241,7 +245,13 @@ export async function convergePackCache(
       run: (args, timeoutMs) => p.exec([...claude.exec!, ...args], { env, timeoutMs }),
     };
 
-    const listed = await runner.run(["plugin", "list", "--json"], PACK_EXEC_TIMEOUT_MS);
+    const listBudget = budgetLeft();
+    if (listBudget === 0) {
+      for (const pack of servedPacks.packs) result.skipped.push({ id: pack.id, reason: "converge budget exhausted" });
+      continue;
+    }
+
+    const listed = await runner.run(["plugin", "list", "--json"], Math.min(PACK_EXEC_TIMEOUT_MS, listBudget));
     const installed = listed.code === 0 ? parsePluginList(listed.stdout) : null;
     if (!installed) {
       const detail = listed.code === 0 ? "claude plugin list --json could not be read" : `claude plugin list exited ${listed.code}`;
@@ -264,12 +274,13 @@ export async function convergePackCache(
         result.current.push(pack.id);
         continue;
       }
-      if (now() >= deadline) {
+      const updateBudget = budgetLeft();
+      if (updateBudget === 0) {
         result.skipped.push({ id: pack.id, reason: "converge budget exhausted" });
         continue;
       }
 
-      const updated = await runner.run(["plugin", "update", pack.id, "-y"], PACK_EXEC_TIMEOUT_MS);
+      const updated = await runner.run(["plugin", "update", pack.id, "-y"], Math.min(PACK_EXEC_TIMEOUT_MS, updateBudget));
       if (updated.code === 0) {
         result.updated.push({ id: pack.id, to: pack.servedVersion });
         continue;

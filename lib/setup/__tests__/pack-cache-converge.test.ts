@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { join } from "path";
 import { fakeProbes } from "./fakes.ts";
-import { convergePackCache } from "../pack-cache.ts";
+import { convergePackCache, CONVERGE_BUDGET_MS, PACK_EXEC_TIMEOUT_MS } from "../pack-cache.ts";
 import type { ExecResult } from "../probes.ts";
 
 const home = "/fake-home";
@@ -18,19 +18,21 @@ function pluginJson(pack: string, version: string): Record<string, string> {
   return { [join(clone, "packs", pack, ".claude-plugin", "plugin.json")]: JSON.stringify({ version }) };
 }
 
-/** Builds probes whose exec answers `claude plugin ...` from a scripted table. */
+/** Builds probes whose exec answers `claude plugin ...` from a scripted table. `timeouts` is index-aligned with `execs`. */
 function probesWith(files: Record<string, string>, reply: (argv: string[]) => ExecResult) {
   const execs: string[][] = [];
+  const timeouts: (number | undefined)[] = [];
   const p = fakeProbes({
     home,
     env: { PATH: "/usr/local/bin" },
     files: { "/usr/local/bin/claude": "bin", ...files },
-    exec: async (argv: string[]) => {
+    exec: async (argv: string[], opts) => {
       execs.push(argv);
+      timeouts.push(opts?.timeoutMs);
       return reply(argv);
     },
   });
-  return { p, execs };
+  return { p, execs, timeouts };
 }
 
 const listing = (entries: unknown[]): ExecResult => ({ code: 0, stdout: JSON.stringify(entries), stderr: "" });
@@ -142,6 +144,41 @@ describe("convergePackCache", () => {
     const result = await convergePackCache(p, "acme", quietLog, { now: () => clock });
     expect(result.skipped).toEqual([{ id: "acme-skills@acme-market", reason: "converge budget exhausted" }]);
     expect(execs.some((a) => a[2] === "update")).toBe(false);
+  });
+
+  test("an update started near the deadline runs on the budget left, not the full exec timeout", async () => {
+    let clock = 0;
+    const { p, execs, timeouts } = probesWith(
+      { ...served([{ name: "acme-skills", source: "./packs/acme-skills" }]), ...pluginJson("acme-skills", "0.5.28") },
+      (argv) => {
+        if (argv.includes("list")) {
+          clock += CONVERGE_BUDGET_MS - 5_000;
+          return listing([{ id: "acme-skills@acme-market", version: "0.5.18", enabled: false }]);
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    );
+
+    const result = await convergePackCache(p, "acme", quietLog, { now: () => clock });
+
+    expect(result.updated).toHaveLength(1);
+    const updateAt = execs.findIndex((a) => a[2] === "update");
+    expect(timeouts[updateAt]).toBe(5_000);
+    expect(timeouts[updateAt]).toBeLessThan(PACK_EXEC_TIMEOUT_MS);
+  });
+
+  test("a config dir reached with the budget already spent skips its packs without listing", async () => {
+    // The first read fixes the deadline; every later one lands past it.
+    let reads = 0;
+    const { p, execs } = probesWith(
+      { ...served([{ name: "acme-skills", source: "./packs/acme-skills" }]), ...pluginJson("acme-skills", "0.5.28") },
+      () => listing([]),
+    );
+
+    const result = await convergePackCache(p, "acme", quietLog, { now: () => (reads++ === 0 ? 0 : CONVERGE_BUDGET_MS + 1) });
+
+    expect(result.skipped).toEqual([{ id: "acme-skills@acme-market", reason: "converge budget exhausted" }]);
+    expect(execs).toEqual([]);
   });
 
   test("a listed pack whose update claims absence is recorded failed, and its enablement is untouched", async () => {
