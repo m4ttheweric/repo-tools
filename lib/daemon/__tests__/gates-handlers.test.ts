@@ -52,6 +52,7 @@ function closedPushSpy() {
     onAnswered: async () => {},
     onOpened: async () => {},
     onClosed: async (row) => { closedIds.push(row.id); },
+    retryDeadPanes: async () => ({ retried: 0, delivered: 0, gaveUp: 0 }),
   };
   return { push, closedIds };
 }

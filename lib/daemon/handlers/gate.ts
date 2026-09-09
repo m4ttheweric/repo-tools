@@ -18,6 +18,7 @@ const noopPush: GatePush = {
   onAnswered: async () => {},
   onOpened: async () => {},
   onClosed: async () => {},
+  retryDeadPanes: async () => ({ retried: 0, delivered: 0, gaveUp: 0 }),
 };
 
 // gates.db is a shared registry (mirrors events.ts's DEFAULT_LIST_LIMIT

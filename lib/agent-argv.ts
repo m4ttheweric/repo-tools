@@ -35,6 +35,8 @@ export interface ClaudeInvocation {
   session: { kind: "start"; sessionId: string } | { kind: "resume"; sessionId: string };
   headless: boolean;
   prompt?: string;
+  /** Extra environment for the pane shell, exported before the claude head. Values are single-quoted verbatim. */
+  env?: Record<string, string>;
 }
 
 export function resolveClaudeBin(): string {
@@ -81,5 +83,6 @@ export function buildPaneCommand(cwd: string, inv: ClaudeInvocation): string {
   // prompt equal to a flag like "-p" is still treated as data.
   const quoted = claudeArgs(inv).map(shellSingleQuote);
   const head = inv.account ? `cswap run ${shellSingleQuote(inv.account)} --` : "claude";
-  return `cd ${shellSingleQuote(cwd)} && ${[head, ...quoted].join(" ")}`;
+  const env = Object.entries(inv.env ?? {}).map(([k, v]) => `${k}=${shellSingleQuote(v)}`);
+  return `cd ${shellSingleQuote(cwd)} && ${[...env, head, ...quoted].join(" ")}`;
 }
