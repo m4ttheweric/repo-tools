@@ -174,7 +174,7 @@ export async function spawn(args: string[]): Promise<void> {
     fail((e as Error).message);
   }
   const data = unwrap(await herdSpawn(payload), "spawn");
-  emit(json, data, `${data.job} pane ${data.pane} worktree ${data.worktree} session ${data.sessionId}`);
+  emit(json, data, `${data.job} pane ${data.pane} worktree ${data.worktree} session ${data.sessionId}${data.wasOnDeck === false ? " (cold provision)" : ""}`);
 }
 
 export async function ask(args: string[]): Promise<void> {
