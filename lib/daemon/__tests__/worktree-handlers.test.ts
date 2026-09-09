@@ -91,6 +91,7 @@ interface Harness {
   h: HandlerMap;
   events: Array<{ type: string; data: any }>;
   kicks: number;
+  cdCacheKicks: number;
 }
 
 function makeHandlers(
@@ -98,7 +99,7 @@ function makeHandlers(
   entries: Record<string, any> = {},
 ): Harness {
   const events: Array<{ type: string; data: any }> = [];
-  const state = { kicks: 0 };
+  const state = { kicks: 0, cdCacheKicks: 0 };
   const ctx: Pick<HandlerContext, "repoIndex" | "cache" | "log"> = {
     cache: fakeStore(entries),
     repoIndex: () => repos,
@@ -107,6 +108,7 @@ function makeHandlers(
   const h = createWorktreeHandlers(ctx, {
     emit: (type: string, data: unknown) => events.push({ type, data: data as any }),
     kick: () => { state.kicks++; },
+    cdCacheKick: () => { state.cdCacheKicks++; },
     creationInFlight: () => null,
     withReconcilerHeld: async (fn) => fn(),
   });
@@ -114,6 +116,7 @@ function makeHandlers(
     h,
     events,
     get kicks() { return state.kicks; },
+    get cdCacheKicks() { return state.cdCacheKicks; },
   } as Harness;
 }
 
@@ -619,6 +622,31 @@ describe("worktree:dispose", () => {
     expect(existsSync(dirty.path)).toBe(true);
     expect(loadRegistry("acme").find((t) => t.name === "alpha")).toBeUndefined();
     expect(loadRegistry("beta-repo").find((t) => t.name === "bravo")).toBeDefined();
+  });
+
+  test("a successful dispose kicks the cd-cache so pickers stop offering the trashed tree", async () => {
+    const repo = makeRepo();
+    seedClaimed(repo, repoName, "alpha", "rt-cd-cache-kick");
+
+    const harness = makeHandlers({ [repoName]: repo });
+    const res: any = await harness.h["worktree:dispose"]!({ repoName, tree: "alpha" });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.disposed).toEqual(["alpha"]);
+    expect(harness.cdCacheKicks).toBe(1);
+  });
+
+  test("a refused dispose leaves the cd-cache alone", async () => {
+    const repo = makeRepo();
+    const dirty = seedClaimed(repo, repoName, "alpha", "rt-cd-cache-quiet");
+    writeFileSync(join(dirty.path, "scratch.txt"), "uncommitted\n");
+
+    const harness = makeHandlers({ [repoName]: repo });
+    const res: any = await harness.h["worktree:dispose"]!({ repoName, tree: "alpha" });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.disposed).toEqual([]);
+    expect(harness.cdCacheKicks).toBe(0);
   });
 
   test("a successful dispose reports where the tree stays recoverable", async () => {

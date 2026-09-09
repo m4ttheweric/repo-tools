@@ -87,6 +87,11 @@ export interface WorktreeHandlerOpts {
   emit: (type: string, data: unknown) => void;
   /** Ask the reconciler for a pass (replenish after a claim / disposal). */
   kick: () => void;
+  /**
+   * Refresh the cd-cache now. Without it a disposed tree stays in `rt cd`'s
+   * cache-served picker until the next timer tick (up to REFRESH_MS).
+   */
+  cdCacheKick?: () => void;
   /** The live replenish create for a repo, or null; provision joins it rather than racing it. */
   creationInFlight: (repoName: string) => Promise<void> | null;
   /** Excludes reconciler passes -- not other registry writers -- for the duration of `fn`. */
@@ -611,7 +616,10 @@ export function createWorktreeHandlers(
       }
 
       if (targets.length === 0 && treeName) refused.push({ tree: treeName, reason: "unknown" });
-      if (disposed.length > 0) opts.kick();
+      if (disposed.length > 0) {
+        opts.kick();
+        opts.cdCacheKick?.();
+      }
 
       return { ok: true, data: { disposed, refused, recoverable } };
     },
