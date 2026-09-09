@@ -23,6 +23,8 @@ import type { EndpointClaim } from "../../endpoint/store.ts";
 import { loadClaims, saveClaims } from "../../endpoint/store.ts";
 import type { Probes } from "../../endpoint/allocator.ts";
 import { defaultProbes, isLiveClaim, releaseWorktree, resolveClaim } from "../../endpoint/allocator.ts";
+import { canon } from "../../fs-canon.ts";
+import { findTreeByPath } from "../../worktree/registry.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 
 const url = (port: number): string => `http://localhost:${port}`;
@@ -62,6 +64,50 @@ export interface RoleRef {
   port: number;
   url: string;
   running: boolean;
+}
+
+/** Who actually holds the LISTEN on a looked-up port (RT-115): "a port is listening" is not "my server is listening". */
+export interface ListenerReport {
+  pid: number;
+  command: string;
+  cwd: string | null;
+  /** true/false when attribution succeeded; null when the process's cwd could not be read (unknown, not foreign). */
+  ownsClaim: boolean | null;
+}
+
+/** Registry name for a worktree path, or null for a tree rt doesn't manage. */
+function treeNameFor(path: string): string | null {
+  const hit = findTreeByPath(path) ?? findTreeByPath(canon(path));
+  return hit?.tree ?? null;
+}
+
+/**
+ * Attributes the LISTEN on `port` to the claiming worktree or not. Ownership
+ * is the listener pid being the claim's own pid, or its cwd sitting inside
+ * the claiming worktree — pid equality alone is not required because the
+ * claiming shim usually spawns the real server as a child.
+ */
+async function attributeListener(
+  probes: Probes,
+  port: number,
+  claimWorktree: string,
+  claimPid: number | undefined,
+): Promise<ListenerReport | null> {
+  if (!probes.listeners.has(port)) return null;
+  const info = probes.listenerOf(port);
+  if (!info) return null;
+  const cwd = await probes.pidCwd(info.pid);
+  let ownsClaim: boolean | null;
+  if (claimPid !== undefined && info.pid === claimPid) {
+    ownsClaim = true;
+  } else if (cwd !== undefined) {
+    const wt = canon(claimWorktree);
+    const listenerCwd = canon(cwd);
+    ownsClaim = listenerCwd === wt || listenerCwd.startsWith(wt + "/");
+  } else {
+    ownsClaim = null;
+  }
+  return { pid: info.pid, command: info.command, cwd: cwd ?? null, ownsClaim };
 }
 
 /**
@@ -159,9 +205,10 @@ export function createEndpointHandlers(
       const worktree = payload?.worktree;
       const role = payload?.role;
       if (!payload?.repo || !worktree || !role) return { ok: false, error: "missing repo, worktree, or role" };
+      const resolvedWorktree = { path: worktree, name: treeNameFor(worktree) };
       const decoded = decodeRepo(payload);
       if (!decoded.ok) {
-        return { ok: true, data: { claimed: false, port: null, url: null, running: false } };
+        return { ok: true, data: { claimed: false, port: null, url: null, running: false, worktree: resolvedWorktree, listener: null } };
       }
       const repo = decoded.repo;
 
@@ -173,15 +220,29 @@ export function createEndpointHandlers(
 
       if (roleCfg.fixedPort !== undefined) {
         const port = roleCfg.fixedPort;
-        return { ok: true, data: { claimed: true, port, url: url(port), running: probes.listeners.has(port) } };
+        // No claim row for a fixed port — attribution runs against the
+        // requesting worktree, which is what "mine" means to the caller.
+        const listener = await attributeListener(probes, port, worktree, undefined);
+        return {
+          ok: true,
+          data: { claimed: true, port, url: url(port), running: probes.listeners.has(port), worktree: resolvedWorktree, listener },
+        };
       }
 
       const claim = loadClaims(repo).find((c) => c.worktree === worktree && c.role === role);
-      if (!claim) return { ok: true, data: { claimed: false, port: null, url: null, running: false } };
+      if (!claim) return { ok: true, data: { claimed: false, port: null, url: null, running: false, worktree: resolvedWorktree, listener: null } };
 
+      const listener = await attributeListener(probes, claim.port, claim.worktree, claim.pid);
       return {
         ok: true,
-        data: { claimed: true, port: claim.port, url: url(claim.port), running: isLiveClaim(claim, probes) },
+        data: {
+          claimed: true,
+          port: claim.port,
+          url: url(claim.port),
+          running: isLiveClaim(claim, probes),
+          worktree: resolvedWorktree,
+          listener,
+        },
       };
     },
 

@@ -25,7 +25,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
 import { execFileSync } from "child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { createTestHome, RT_BINARY } from "../harness.ts";
 import { machineSettingsPath } from "../../lib/rt-paths.ts";
@@ -408,6 +408,13 @@ describe("rt endpoint / intercept (just-works e2e)", () => {
     expect(out.port).toBe(poolBase);
     expect(out.url).toBe(`http://localhost:${poolBase}`);
     expect(out.running).toBe(true);
+
+    // RT-115 provenance, over the REAL probes: repoMain is the indexed
+    // primary checkout (main:true, no registry name), and the fake server's
+    // cwd is the claiming worktree, so the listener attributes as ours.
+    expect(out.worktree).toEqual({ path: realpathSync(repoMain), name: null, main: true });
+    expect(out.listener.pid).toBe(serverPids[0]);
+    expect(out.listener.ownsClaim).toBe(true);
   }, 40_000);
 
   test("rt intercept status reports the shim installed and current", async () => {

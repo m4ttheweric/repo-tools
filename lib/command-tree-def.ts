@@ -483,6 +483,7 @@ const endpointSubcommands: Record<string, CommandNode> = {
     omitBehavior: "picker",
     args: [
       { name: "Role", type: "text", placeholder: "backend", hint: "Role name declared in the repo's endpoint config" },
+      { name: "Path", flag: "--path", type: "text", placeholder: "/path/to/worktree", hint: "Resolve the claim for this worktree instead of the cwd" },
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of a plain line" },
     ],
   },

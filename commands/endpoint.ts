@@ -5,8 +5,8 @@
  * added in S068 as the manual escape hatch for a claim liveness can't clear
  * on its own).
  *
- *   rt endpoint lookup <role> [--json]        does this worktree hold a claim?
- *   rt endpoint release <worktree> [--role]   free a claim by hand
+ *   rt endpoint lookup <role> [--path <dir>] [--json]   does this worktree hold a claim?
+ *   rt endpoint release <worktree> [--role]             free a claim by hand
  *
  * Repo identification mirrors the pattern already used by `rt worktree each`
  * (commands/worktree.ts): derive the repo identity from the cwd's git
@@ -19,7 +19,8 @@
  */
 
 import { basename } from "path";
-import { dim, green, reset, yellow } from "../lib/tui.ts";
+import { dim, green, red, reset, yellow } from "../lib/tui.ts";
+import { canon } from "../lib/fs-canon.ts";
 import { resolveIndexPathForIdentity } from "../lib/repo-index.ts";
 import { runCapture } from "../lib/subprocess.ts";
 import { daemonQuery } from "../lib/daemon-client.ts";
@@ -50,15 +51,113 @@ async function gitRemote(toplevel: string): Promise<string | null> {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+interface LookupWorktree {
+  path: string;
+  name: string | null;
+}
+
+interface LookupListener {
+  pid: number;
+  command: string;
+  cwd: string | null;
+  ownsClaim: boolean | null;
+}
+
 interface LookupData {
   claimed: boolean;
   port: number | null;
   url: string | null;
   running: boolean;
+  /** Absent when the daemon predates RT-115 — buildLookupOutput falls back to the CLI's own resolution. */
+  worktree?: LookupWorktree;
+  listener?: LookupListener | null;
 }
 
-async function pickRole(): Promise<string | null> {
-  const toplevel = await gitToplevel(process.cwd());
+export interface ParsedEndpointLookupArgs {
+  role: string | undefined;
+  path: string | undefined;
+  /** `--path` was present but its value was missing or itself another flag: a real path must never be silently treated as omitted. */
+  pathInvalid: boolean;
+}
+
+/** Pure arg parse for `rt endpoint lookup`, same shape (and same index-exclusion subtlety) as parseEndpointReleaseArgs below. */
+export function parseEndpointLookupArgs(args: string[]): ParsedEndpointLookupArgs {
+  const inlineIdx = args.findIndex((a) => a.startsWith("--path="));
+  if (inlineIdx !== -1) {
+    const inline = args[inlineIdx]!.slice("--path=".length);
+    const roleArgs = args.filter((a) => !a.startsWith("--"));
+    return { role: roleArgs[0], path: inline.length > 0 ? inline : undefined, pathInvalid: inline.length === 0 };
+  }
+  const pathFlagIdx = args.indexOf("--path");
+  const pathValueIdx = pathFlagIdx === -1 ? -1 : pathFlagIdx + 1;
+  const pathValue = pathFlagIdx !== -1 ? args[pathValueIdx] : undefined;
+  const pathInvalid = pathFlagIdx !== -1 && (pathValue === undefined || pathValue.startsWith("--"));
+  const path = pathInvalid ? undefined : pathValue;
+  const roleArgs = args.filter((a, i) => i !== pathFlagIdx && i !== pathValueIdx && !a.startsWith("--"));
+  return { role: roleArgs[0], path, pathInvalid };
+}
+
+export interface LookupCliContext {
+  role: string;
+  repoName: string;
+  toplevel: string;
+  /** Canonical main-checkout path from the repo index; null only when unknown. */
+  indexPath: string | null;
+}
+
+/**
+ * Composes both output modes from one decision pass (RT-115): the --json
+ * payload (daemon data plus `worktree.main`) and the plain lines, which name
+ * the resolved worktree and shout when the listening process is not the
+ * claim's own.
+ */
+export function buildLookupOutput(
+  data: LookupData,
+  ctx: LookupCliContext,
+): { payload: Record<string, unknown>; lines: string[] } {
+  const main = ctx.indexPath !== null && canon(ctx.toplevel) === canon(ctx.indexPath);
+  const worktree = { ...(data.worktree ?? { path: ctx.toplevel, name: null }), main };
+  const listener = data.listener ?? null;
+  const payload = { ok: true, ...data, worktree, listener };
+
+  const lines: string[] = [];
+  const treeLabel = worktree.name !== null ? `${worktree.name} (${worktree.path})` : worktree.path;
+
+  if (!data.claimed) {
+    lines.push(`${dim}no claim for role "${ctx.role}" in ${ctx.repoName}${reset}`);
+  } else {
+    const foreign = listener !== null && listener.ownsClaim === false;
+    const status = foreign
+      ? "port taken"
+      : listener !== null
+        ? "running"
+        : data.running
+          ? "claimed, process alive, not listening yet"
+          : "claimed, not running";
+    const statusColor = foreign ? red : listener !== null ? green : yellow;
+    lines.push(`${statusColor}${data.url}${reset} ${dim}(${status})${reset}`);
+  }
+
+  lines.push(`${dim}worktree ${treeLabel}${reset}`);
+
+  if (listener !== null && listener.ownsClaim === false) {
+    const where = listener.cwd !== null ? `, ${listener.cwd}` : "";
+    lines.push(
+      `${red}⚠ port ${data.port} is listening, but pid ${listener.pid} (${listener.command}${where}) does not belong to this worktree${reset}`,
+    );
+  } else if (listener !== null && listener.ownsClaim === null) {
+    lines.push(`${yellow}the listening process (pid ${listener.pid}, ${listener.command}) could not be attributed to a worktree${reset}`);
+  }
+
+  if (main) {
+    lines.push(`${yellow}⚠ running from the canonical main checkout, not a claimed worktree${reset}`);
+  }
+
+  return { payload, lines };
+}
+
+async function pickRole(cwd: string): Promise<string | null> {
+  const toplevel = await gitToplevel(cwd);
   if (toplevel) {
     const remote = await gitRemote(toplevel);
     const repoName = remote ? deriveRepoName(remote) : basename(toplevel);
@@ -73,24 +172,26 @@ async function pickRole(): Promise<string | null> {
       });
     }
   }
-  fail("usage: rt endpoint lookup <role> [--json]");
+  fail("usage: rt endpoint lookup <role> [--path <dir>] [--json]");
 }
 
 export async function endpointLookup(args: string[]): Promise<void> {
   const json = args.includes("--json");
-  let role = args.find((a) => !a.startsWith("--"));
+  const parsed = parseEndpointLookupArgs(args);
+  if (parsed.pathInvalid) fail("--path needs a value (usage: rt endpoint lookup <role> [--path <dir>] [--json])");
+  const cwd = parsed.path ?? process.cwd();
+  let role = parsed.role;
   if (!role) {
     if (process.stdin.isTTY && !json && !process.env.RT_BATCH) {
-      role = (await pickRole()) ?? undefined;
+      role = (await pickRole(cwd)) ?? undefined;
       if (!role) process.exit(0);
     } else {
-      fail("usage: rt endpoint lookup <role> [--json]");
+      fail("usage: rt endpoint lookup <role> [--path <dir>] [--json]");
     }
   }
 
-  const cwd = process.cwd();
   const toplevel = await gitToplevel(cwd);
-  if (!toplevel) fail("not in a git repo");
+  if (!toplevel) fail(parsed.path ? `--path ${parsed.path} is not in a git repo` : "not in a git repo");
 
   const remote = await gitRemote(toplevel);
   const repoName = remote ? deriveRepoName(remote) : basename(toplevel);
@@ -105,7 +206,8 @@ export async function endpointLookup(args: string[]): Promise<void> {
   // path would false-negative every time). resolveIndexPathForIdentity also
   // accepts a legacy name-keyed row for this repo — migrating it, not
   // registering: a repo in neither form still fails.
-  if ((await resolveIndexPathForIdentity(identity)) === null) {
+  const indexPath = await resolveIndexPathForIdentity(identity);
+  if (indexPath === null) {
     fail(`repo "${repoName}" is not registered — visit it with rt first (repos.json is a derived mirror, not the source of truth)`);
   }
 
@@ -113,19 +215,13 @@ export async function endpointLookup(args: string[]): Promise<void> {
   if (!res) fail("daemon unavailable — rt endpoint lookup needs the rt daemon (rt daemon start)");
   if (!res.ok) fail(res.error ?? "lookup failed");
 
-  const data = res.data as LookupData;
+  const { payload, lines } = buildLookupOutput(res.data as LookupData, { role, repoName, toplevel, indexPath });
 
   if (json) {
-    console.log(JSON.stringify({ ok: true, ...data }));
+    console.log(JSON.stringify(payload));
     return;
   }
-
-  if (!data.claimed) {
-    console.log(`\n  ${dim}no claim for role "${role}" in ${repoName}${reset}\n`);
-    return;
-  }
-  const statusColor = data.running ? green : yellow;
-  console.log(`\n  ${statusColor}${data.url}${reset} ${dim}(${data.running ? "running" : "claimed, not running"})${reset}\n`);
+  console.log(`\n  ${lines.join("\n  ")}\n`);
 }
 
 interface ReleaseData {

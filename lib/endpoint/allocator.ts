@@ -25,13 +25,15 @@
 
 import type { RoleConfig } from "./config.ts";
 import type { EndpointClaim } from "./store.ts";
-import { parseListeningLsof } from "../port-scanner.ts";
+import { parseCwdMap, parseListeningLsof } from "../port-scanner.ts";
 import { runCapture } from "../subprocess.ts";
 
 // ─── Probes ──────────────────────────────────────────────────────────────────
 
 export interface Probes {
   listeners: Set<number>; // ports currently LISTENing
+  listenerOf(port: number): { pid: number; command: string } | undefined; // who holds the LISTEN (RT-115)
+  pidCwd(pid: number): Promise<string | undefined>; // async: a fresh lsof per call, paid only by lookup's owner attribution
   pidAlive(pid: number | undefined): boolean; // kill(0); EPERM counts alive
   pidStartTime(pid: number | undefined): string | undefined; // S068: recycled-pid detection
   canBind(port: number): boolean; // bind-probe (DECK-9)
@@ -203,11 +205,25 @@ export async function defaultProbes(): Promise<Probes> {
     runCapture(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], { timeoutMs: 5000 }),
     runCapture(["ps", "-axo", "pid=,lstart="], { timeoutMs: 5000 }),
   ]);
-  const listeners = new Set(parseListeningLsof(lsofRes.stdout).map((l) => l.port));
+  const listening = parseListeningLsof(lsofRes.stdout);
+  const listeners = new Set(listening.map((l) => l.port));
+  // First LISTEN per port wins — a port bound on both stacks (IPv4 + IPv6)
+  // or via SO_REUSEPORT is still one owner for attribution purposes.
+  const byPort = new Map<number, { pid: number; command: string }>();
+  for (const l of listening) {
+    if (!byPort.has(l.port)) byPort.set(l.port, { pid: l.pid, command: l.command });
+  }
   const startTimes = parsePidStartTimes(psRes.stdout);
 
   return {
     listeners,
+    listenerOf(port) {
+      return byPort.get(port);
+    },
+    async pidCwd(pid) {
+      const res = await runCapture(["lsof", "-a", "-p", String(pid), "-d", "cwd", "-Fpn"], { timeoutMs: 5000 });
+      return parseCwdMap(res.stdout).get(pid);
+    },
     pidAlive(pid) {
       if (pid === undefined) return false;
       try {

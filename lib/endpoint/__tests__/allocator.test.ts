@@ -8,6 +8,8 @@ const probes = (
   over: Partial<{ listeners: number[]; alive: number[]; unbindable: number[]; startTimes: Record<number, string> }> = {},
 ) => ({
   listeners: new Set(over.listeners ?? []),
+  listenerOf: () => undefined,
+  pidCwd: async () => undefined,
   pidAlive: (pid?: number) => (over.alive ?? []).includes(pid ?? -1),
   pidStartTime: (pid?: number) => (pid === undefined ? undefined : (over.startTimes ?? {})[pid]),
   canBind: (p: number) => !(over.unbindable ?? []).includes(p),
