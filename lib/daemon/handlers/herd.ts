@@ -288,10 +288,14 @@ export function createHerdHandlers(deps: HerdDeps) {
       if (prior?.pane) await closePane(herd.herdrSocket, prior.pane, { herd: herdId, job: name });
 
       let worktree = str(p?.dir); let branch: string | null = prior?.branch ?? null; let tree: string | null = prior?.tree ?? null;
+      // null = no provisioning happened (--dir); false is the cold-create
+      // case the caller should announce, since it can take minutes.
+      let wasOnDeck: boolean | null = null;
       if (!worktree) {
         const prov = await deps.worktree["worktree:provision"]({ repoName: herd.repo, branch: name, disposal: "job", owner: `herd:${herdId}` });
         if (!prov.ok) return { ok: false, error: `provision failed: ${prov.error}` };
         worktree = prov.data.path as string; branch = prov.data.branch as string; tree = prov.data.tree as string;
+        wasOnDeck = prov.data.wasOnDeck === true;
       }
       // A respawn that does not repeat --disposable must not un-dispose a
       // reviewer the shepherd already marked throwaway.
@@ -322,7 +326,7 @@ export function createHerdHandlers(deps: HerdDeps) {
 
       if (rec.paneId) await acceptTrustDialog(herd.herdrSocket, rec.paneId, { herd: herdId, job: name });
 
-      return { ok: true, data: { herd: herdId, job: name, pane: rec.paneId ?? "", worktree, branch, tree, agentId: rec.id, sessionId: rec.sessionId, handle } };
+      return { ok: true, data: { herd: herdId, job: name, pane: rec.paneId ?? "", worktree, branch, tree, wasOnDeck, agentId: rec.id, sessionId: rec.sessionId, handle } };
     },
 
     "herd:gates": async (raw: unknown): Promise<CommandResult<"herd:gates">> => {

@@ -395,7 +395,7 @@ describe("herd:spawn", () => {
     expect(signIn.payload).toMatchObject({ sessionId: "sess-w1", baseHandle: "job-a", pane: "w9:p1", noRoom: true });
     expect(chatCalls.filter((c) => c.verb === "join")[1]!.payload).toMatchObject({ room, handle: "job-a", pane: "w9:p1" });
     expect(store.getJob(herd, "job-a")).toMatchObject({ worktree: "/w/job-a", branch: "job-a", tree: "job-a", pane: "w9:p1", agentSession: "sess-w1", agentId: "ag-1", handle: "job-a", status: "spawning", disposable: false });
-    expect(res.data).toMatchObject({ pane: "w9:p1", worktree: "/w/job-a", tree: "job-a", sessionId: "sess-w1" });
+    expect(res.data).toMatchObject({ pane: "w9:p1", worktree: "/w/job-a", tree: "job-a", sessionId: "sess-w1", wasOnDeck: false });
     expect(readFileSync(join(dir, "herds", herd, "job-a", "job.md"), "utf8")).toContain("do the thing");
   });
 
@@ -404,6 +404,7 @@ describe("herd:spawn", () => {
     const first = await h["herd:spawn"]({ herd, job: "job-a", brief: "the brief", dir: "/existing/tree" });
     if (!first.ok) throw new Error(first.error);
     expect(worktreeCalls).toEqual([]);
+    expect(first.data.wasOnDeck).toBeNull();
     expect(store.getJob(herd, "job-a")!.tree).toBeNull();
     expect(herdrCalls).toEqual([]);
     const again = await h["herd:spawn"]({ herd, job: "job-a", dir: "/existing/tree" });

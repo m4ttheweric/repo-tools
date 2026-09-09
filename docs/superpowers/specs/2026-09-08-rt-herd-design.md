@@ -122,10 +122,14 @@ Every verb records what it did. There is no separate bookkeeping verb.
   for herd jobs, so chat and the registry agree on the name), the hidden
   session's socket as a per-call parameter when the herd is hidden,
   `crossSessionInbound: accept` in the passed settings, and env `HERD_ID`,
-  `HERD_JOB`, `HERD_ROOM`; signs the pane in as `<job>` and joins the room
-  (daemon-side, zero worker turns); inserts the job row as `spawning`,
-  flipping to `active` on herdr's `pane.agent_detected`. The
-  fresh-worktree trust dialog is accepted as `spawn-agent.sh` does today.
+  `HERD_JOB`, `HERD_ROOM` (the room name is information for the worker;
+  the verbs themselves read only `HERD_ID` and `HERD_JOB`); signs the pane
+  in as `<job>` and joins the room (daemon-side, zero worker turns); inserts
+  the job row as `spawning`, flipping to `active` on herdr's
+  `pane.agent_detected`. The result carries `wasOnDeck` (null when `--dir`
+  skips provisioning) so the shepherd can announce a cold provision, which
+  can take minutes. The fresh-worktree trust dialog is accepted as
+  `spawn-agent.sh` does today.
   `--dir` on an existing job name is a respawn: the row's previous pane is
   closed first (agent start dedups on the tab label and would otherwise
   focus the dead tab instead of launching), then the row is reused with the
