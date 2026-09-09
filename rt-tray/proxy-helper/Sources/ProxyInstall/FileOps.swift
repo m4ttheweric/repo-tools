@@ -14,20 +14,31 @@ struct PathStat: Equatable {
     let isRegularFile: Bool
     let isDirectory: Bool
     let isGroupOrWorldWritable: Bool
+    let isUserExecutable: Bool
 
     init(
         uid: UInt32,
         isSymlink: Bool = false,
         isRegularFile: Bool = false,
         isDirectory: Bool = false,
-        isGroupOrWorldWritable: Bool = false
+        isGroupOrWorldWritable: Bool = false,
+        isUserExecutable: Bool = false
     ) {
         self.uid = uid
         self.isSymlink = isSymlink
         self.isRegularFile = isRegularFile
         self.isDirectory = isDirectory
         self.isGroupOrWorldWritable = isGroupOrWorldWritable
+        self.isUserExecutable = isUserExecutable
     }
+}
+
+/// What the root-owned tree's entries end up at, whatever mode the bundle copy
+/// carried in.
+enum InstalledMode {
+    static let directory: mode_t = 0o755
+    static let file: mode_t = 0o644
+    static let executable: mode_t = 0o755
 }
 
 // The filesystem seam. CopyStep runs as root over paths a non-root user can
@@ -55,6 +66,12 @@ protocol FileOps {
     /// have been readable or writable at looser terms, even briefly.
     func setMode(_ path: URL, _ mode: mode_t) throws
     func setOwner(_ path: URL, uid: uid_t, gid: gid_t) throws
+    /// Re-owns and re-modes `root` and everything under it (directories 755,
+    /// regular files 644, already-executable files 755). copyItem carries a
+    /// source file's POSIX mode across verbatim and the tree hash covers path
+    /// and content only, so without this a bundle file the console user had
+    /// made writable stays writable inside the tree a root LaunchDaemon execs.
+    func normalizeTree(_ root: URL, uid: uid_t, gid: gid_t) throws
     func treeHash(_ root: URL) throws -> String
     func fileHash(_ path: URL) throws -> String
 }
@@ -136,7 +153,8 @@ struct RealFileOps: FileOps {
             isSymlink: (info.st_mode & S_IFMT) == S_IFLNK,
             isRegularFile: (info.st_mode & S_IFMT) == S_IFREG,
             isDirectory: (info.st_mode & S_IFMT) == S_IFDIR,
-            isGroupOrWorldWritable: (info.st_mode & (S_IWGRP | S_IWOTH)) != 0)
+            isGroupOrWorldWritable: (info.st_mode & (S_IWGRP | S_IWOTH)) != 0,
+            isUserExecutable: (info.st_mode & S_IXUSR) != 0)
     }
 
     func mkdir(_ path: URL) throws {
@@ -172,5 +190,23 @@ struct RealFileOps: FileOps {
         guard Darwin.chown(path.path, uid, gid) == 0 else {
             throw ProxyInstallError("chown(\(path.path)): \(String(cString: strerror(errno)))")
         }
+    }
+
+    func normalizeTree(_ root: URL, uid: uid_t, gid: gid_t) throws {
+        try normalizeEntry(root, uid: uid, gid: gid)
+        guard let walk = fm.enumerator(at: root, includingPropertiesForKeys: nil, options: []) else {
+            throw ProxyInstallError("cannot enumerate \(root.path)")
+        }
+        for case let url as URL in walk { try normalizeEntry(url, uid: uid, gid: gid) }
+    }
+
+    private func normalizeEntry(_ path: URL, uid: uid_t, gid: gid_t) throws {
+        guard let info = try stat(path) else { return }
+        // chmod and chown both follow a final symlink, so one in the staged
+        // tree would re-mode whatever it points at instead of itself.
+        if info.isSymlink { throw ProxyInstallError("symlink in payload: \(path.path)") }
+        try setOwner(path, uid: uid, gid: gid)
+        if info.isDirectory { try setMode(path, InstalledMode.directory); return }
+        try setMode(path, info.isUserExecutable ? InstalledMode.executable : InstalledMode.file)
     }
 }

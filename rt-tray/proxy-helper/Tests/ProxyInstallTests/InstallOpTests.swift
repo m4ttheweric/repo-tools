@@ -68,6 +68,11 @@ final class RecordingFileOps: FileOps {
 
     func setMode(_ path: URL, _ mode: mode_t) throws { modes[path.path] = mode; ops.append("chmod \(path.path)") }
     func setOwner(_ path: URL, uid: uid_t, gid: gid_t) throws { owners[path.path] = "\(uid):\(gid)"; ops.append("chown \(path.path)") }
+
+    func normalizeTree(_ root: URL, uid: uid_t, gid: gid_t) throws {
+        owners[root.path] = "\(uid):\(gid)"
+        ops.append("normalize \(root.path)")
+    }
 }
 
 final class FakeCommandRunner: CommandRunner {

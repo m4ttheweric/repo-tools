@@ -68,6 +68,18 @@ enum CopyStep {
             Report.step("verified portless \(pins.portlessVersion) and the node binary")
 
             try fs.write(pins.portlessVersion, to: stage.appendingPathComponent("VERSION"))
+
+            // Content is pinned, modes are not: the tree hash covers path and
+            // content only, and copyItem carries the bundle's mode across
+            // verbatim, so a payload file the console user made writable would
+            // stay writable in the tree a root LaunchDaemon execs from.
+            try fs.normalizeTree(stage, uid: 0, gid: 0)
+            // The interpreter's mode is set outright rather than inherited: the
+            // daemon's ProgramArguments name this file, so a bundle copy that
+            // arrived without its executable bit would install a proxy that
+            // cannot start.
+            try fs.setMode(stagedNode, InstalledMode.executable)
+
             // rename(2) will not replace a non-empty directory, so an upgrade
             // moves the old tree aside first and puts it back if the swap fails.
             if targetExists { try fs.rename(from: target, to: retired) }

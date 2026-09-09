@@ -40,6 +40,7 @@ final class FakeFileOps: FileOps {
     private(set) var renames: [(from: String, to: String)] = []
     private(set) var removed: [String] = []
     private(set) var treeHashedPath: URL?
+    private(set) var normalized: [(path: String, uid: uid_t, gid: gid_t)] = []
     // Models moveItem's non-clobber semantics: rename onto a path in here throws,
     // so a CopyStep test cannot pass against a rename RealFileOps would refuse.
     private var livePaths: Set<String> = []
@@ -146,10 +147,15 @@ final class FakeFileOps: FileOps {
         removed.append(path.path)
     }
 
-    // CopyStep takes the modes it needs from mkdir and the copy; these exist for
-    // the single-file writes InstallOp does.
-    func setMode(_ path: URL, _ mode: mode_t) throws { log.append("chmod \(path.lastPathComponent)") }
+    func setMode(_ path: URL, _ mode: mode_t) throws { log.append("chmod \(path.lastPathComponent) \(String(mode, radix: 8))") }
     func setOwner(_ path: URL, uid: uid_t, gid: gid_t) throws { log.append("chown \(path.lastPathComponent)") }
+
+    // The mode policy itself is RealFileOps's and is proven against a real
+    // directory in NormalizeTreeTests; here only the call and its ordering.
+    func normalizeTree(_ root: URL, uid: uid_t, gid: gid_t) throws {
+        normalized.append((path: root.path, uid: uid, gid: gid))
+        log.append("normalize \(root.lastPathComponent)")
+    }
 }
 
 final class CopyStepTests: XCTestCase {
@@ -235,6 +241,25 @@ final class CopyStepTests: XCTestCase {
         XCTAssertEqual(fs.written[stage.appendingPathComponent("VERSION").path], "9.9.9")
         XCTAssertNil(fs.written[fs.target.appendingPathComponent("VERSION").path])
         XCTAssertEqual(fs.log.filter { $0.hasPrefix("copy ") }, ["copy portless-dist", "copy node"])
+    }
+
+    // The pins cover path and content, never mode, so the staged tree is
+    // re-owned and re-moded while it is still a stage: after the rename it is
+    // the tree a root LaunchDaemon execs from.
+    func testNormalizesTheStagedTreeToRootBeforeTheRename() throws {
+        let fs = FakeFileOps(treeHash: "cafe")
+        try CopyStep.run(bundleRoot: fs.bundle, targetRoot: fs.target, fs: fs, pins: .fixture(treeSha256: "cafe"))
+        let stage = try XCTUnwrap(fs.stageRoot)
+        XCTAssertEqual(fs.normalized.map(\.path), [stage.path])
+        XCTAssertEqual(fs.normalized.first?.uid, 0)
+        XCTAssertEqual(fs.normalized.first?.gid, 0)
+
+        let normalize = try XCTUnwrap(fs.log.firstIndex(of: "normalize \(stage.lastPathComponent)"))
+        let nodeMode = try XCTUnwrap(fs.log.firstIndex(of: "chmod node 755"))
+        let rename = try XCTUnwrap(fs.log.firstIndex(of: "rename \(stage.lastPathComponent)"))
+        XCTAssertLessThan(normalize, rename)
+        XCTAssertLessThan(normalize, nodeMode, "the interpreter's mode is set after the walk, so the walk cannot undo it")
+        XCTAssertLessThan(nodeMode, rename)
     }
 
     func testUpgradeRetiresTheExistingInstallThenRenames() throws {
