@@ -23,7 +23,8 @@ public struct TrayRoutes: Sendable {
     }
 
     public static let paths: Set<String> = ["/permissions", "/permissions/request", "/services", "/services/register",
-                                            "/services/restart", "/privileged/proxy-install", "/update/check", "/version"]
+                                            "/services/restart", "/privileged/proxy-install", "/privileged/proxy-trust",
+                                            "/update/check", "/version"]
 
     public func handle(method: String, path: String, body: Data?) async -> RouteResponse? {
         let isNeed = path.hasPrefix("/setup/need/")
@@ -47,6 +48,8 @@ public struct TrayRoutes: Sendable {
             return RouteResponse(status: 200, body: "{\"ok\":\(await services.restart(label: label))}")
         case ("POST", "/privileged/proxy-install"):
             return encode(await privileged.proxyInstall())
+        case ("POST", "/privileged/proxy-trust"):
+            return encode(await privileged.proxyTrust())
         case ("GET", _) where isNeed:
             let id = String(path.dropFirst("/setup/need/".count))
             guard !id.isEmpty else { return bad("need id is required") }

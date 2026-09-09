@@ -28,8 +28,10 @@ final class FakeServices: ServicesProviding, @unchecked Sendable {
 final class FakePrivileged: PrivilegedInstalling, @unchecked Sendable {
     var calls = 0
     var removes = 0
+    var trusts = 0
     func proxyInstall() async -> NeedResult { calls += 1; return NeedResult(ok: true, detail: "proxy installed") }
     func proxyRemove() async -> NeedResult { removes += 1; return NeedResult(ok: true, detail: "proxy removed") }
+    func proxyTrust() async -> NeedResult { trusts += 1; return NeedResult(ok: true, detail: "MATTSTACK_TRUST=ok") }
 }
 final class FakeUpdater: UpdateChecking, @unchecked Sendable { var checks = 0; func checkForUpdates() async -> Bool { checks += 1; return true } }
 struct FakeVersion: VersionProviding {
@@ -79,6 +81,36 @@ let trayRoutesChecks: [Check] = [
         c.expectEqual(resp.status, 200)
         c.expectEqual(json(resp.body)["ok"] as? Bool, true)
         c.expectEqual(pr.calls, 1)
+    },
+    // The Retry behind the untrusted-certificate row: its own route, because
+    // proxy-install on an installed machine is a no-op and would leave the row
+    // with nothing to act on.
+    Check("POST /privileged/proxy-trust → NeedResult, and the broker routes proxy-trust to it") { c in
+        let (r, _, _, pr, _, broker) = makeRoutes()
+        let resp = try c.requireSome(await r.handle(method: "POST", path: "/privileged/proxy-trust", body: nil))
+        c.expectEqual(resp.status, 200)
+        c.expectEqual(json(resp.body)["ok"] as? Bool, true)
+        c.expectEqual(pr.trusts, 1)
+        c.expectEqual(pr.calls, 0, "trusting must not reinstall the proxy")
+        let need = await broker.perform(id: "proxy.trust", request: NeedRequest(type: "app-privileged", plists: nil, op: "proxy-trust"))
+        c.expectEqual(need.detail, "MATTSTACK_TRUST=ok")
+        c.expectEqual(pr.trusts, 2)
+    },
+    // The install raises two dialogs (the escalation, then macOS's own
+    // certificate-trust prompt, which no caller can pre-authorize), so the copy
+    // must not promise one.
+    Check("the privileged prompt says macOS asks twice") { c in
+        c.expect(!ProxyHelper.promptText.contains("access once"), "got: \(ProxyHelper.promptText)")
+        c.expect(ProxyHelper.promptText.contains("ask twice"))
+        c.expect(ProxyHelper.trustPromptText.contains("certificate"))
+    },
+    // Uninstall shows a root dialog too, and the install copy would describe
+    // the wrong verb and promise a certificate prompt that never comes.
+    Check("the remove prompt describes removing, and promises no second dialog") { c in
+        c.expect(ProxyHelper.removePromptText.contains("administrator"))
+        c.expect(ProxyHelper.removePromptText.contains("remove"))
+        c.expect(!ProxyHelper.removePromptText.contains("twice"), "got: \(ProxyHelper.removePromptText)")
+        c.expect(!ProxyHelper.removePromptText.contains("certificate"), "got: \(ProxyHelper.removePromptText)")
     },
     Check("GET /setup/need/<id> serves the app-recorded outcome: pending → done/failed; never a POST") { c in
         let (r, _, s, _, _, broker) = makeRoutes()

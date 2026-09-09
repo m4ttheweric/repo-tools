@@ -5,6 +5,10 @@ dist/
 *.vsix
 extensions/vscode/rt-context/package-lock.json
 rt-tray/.build/
+rt-tray/proxy-helper/.build/
+# Written by rt-tray/proxy-helper/scripts/gen-pins.sh at build time; a committed
+# copy would outlive the deps.lock row it was generated from.
+rt-tray/proxy-helper/Sources/ProxyInstall/Pins.generated.swift
 rt-tray/rt-tray.app/
 rt-tray/mattstack.app/
 rt-tray/mattstack-dev.app/

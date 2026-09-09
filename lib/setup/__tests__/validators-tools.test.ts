@@ -1,6 +1,10 @@
-import { describe, test, expect } from "bun:test";
-import { readFileSync } from "fs";
+import { afterEach, beforeEach, describe, test, expect } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
+import { __test__ as bundleLayoutTest } from "../../bundle-layout.ts";
+import { setSetting } from "../../settings/write.ts";
+import { STEP_IDS } from "../contract.ts";
 import { toolRows, extractVersion } from "../validators/tools.ts";
 import type { ToolsSeams } from "../validators/tools.ts";
 import { fakeProbes, ok, missing } from "./fakes.ts";
@@ -11,6 +15,7 @@ import type { DetectedEditor } from "../../editors.ts";
 import type { ExecResult } from "../probes.ts";
 import type { Row } from "../contract.ts";
 import type { SecretPresence } from "../validators/accounts.ts";
+import { PORTLESS_LAUNCHD_PLIST } from "../steps/services.ts";
 
 // ─── ground truth, shaped from the real CLIs captured on 2026-09-03 ───
 // The fixtures under ./fixtures/ preserve the captured shape exactly (every field,
@@ -1052,6 +1057,195 @@ describe("toolRows: tool.linear-mcp", () => {
       const r = await rowFor(conf({}), secrets);
       expect([r.required, r.optionalNote]).toEqual([false, "Installed by Install (linear.mcp)."]);
     }
+  });
+});
+
+// ─── toolRows: tool.proxy ────────────────────────────────────────────────────
+// pinnedPortlessVersion reads deps.lock off REAL disk (bundle-layout.ts's
+// readDepsLock, not the Probes seam; same rule steps-b.test.ts documents for
+// appBundlePath/bundledToolPath), so a "bundle pins version X" case needs a
+// real temp bundle root, not just fakeProbes state.
+
+describe("toolRows: tool.proxy", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+  let appRoot: string;
+
+  beforeEach(() => {
+    bundleLayoutTest.resetBundleLayoutMemo();
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-tool-proxy-home-")));
+    process.env.HOME = home;
+    appRoot = join(realpathSync(mkdtempSync(join(tmpdir(), "rt-tool-proxy-app-"))), "mattstack.app");
+    mkdirSync(join(appRoot, "Contents", "Resources"), { recursive: true });
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+    bundleLayoutTest.resetBundleLayoutMemo();
+  });
+
+  /** Writes a real deps.lock pinning portless at `version` to the real bundle fixture. */
+  function writePinnedPortless(version: string): void {
+    writeFileSync(
+      join(appRoot, "Contents", "Resources", "deps.lock"),
+      JSON.stringify({
+        schema: 1,
+        arch: "arm64",
+        tools: [
+          {
+            name: "portless",
+            version,
+            license: "MIT",
+            url: "https://x/portless.tgz",
+            sha256: "a".repeat(64),
+            archive: "raw",
+            extract: "",
+            bundlePath: "Contents/Helpers/portless",
+            exec: ["Contents/Helpers/portless"],
+            exposeByDefault: true,
+            entitlements: "none",
+            status: "bundled",
+            kind: "helper",
+          },
+        ],
+      }),
+    );
+  }
+
+  /** Points `mattstack.appPath` at the real fixture bundle and mirrors it into fakeProbes' `dirs` so appBundlePath's own `p.exists(appRoot)` check agrees. */
+  function bundledProxyProbes(overrides: Partial<Parameters<typeof fakeProbes>[0]> = {}): ReturnType<typeof fakeProbes> {
+    setSetting("mattstack.appPath", appRoot, "machine");
+    return fakeProbes({ home, env: { PATH: "" }, ...overrides, dirs: { [appRoot]: [], ...overrides.dirs } });
+  }
+
+  test("plist absent -> missing, with the install action", async () => {
+    writePinnedPortless("0.15.6");
+    const p = bundledProxyProbes();
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("missing");
+    expect(r.required).toBe(false);
+    expect(r.action).toEqual({ type: "run", label: "Install proxy", verb: ["setup", "apply", "--only", "proxy.install"] });
+  });
+
+  /** Installed at the pinned version, with the CA portless mints at daemon start. `trusted` drives the `security verify-cert` probe the row runs over it. */
+  function installedProxyProbes(trusted: boolean): ReturnType<typeof fakeProbes> {
+    return bundledProxyProbes({
+      files: {
+        [PORTLESS_LAUNCHD_PLIST]: "<plist/>",
+        "/Library/Application Support/mattstack/proxy/VERSION": "0.15.6\n",
+        [join(home, ".portless", "ca.pem")]: "-----BEGIN CERTIFICATE-----",
+      },
+      exec: async (argv) => ({ code: argv[0] === "security" && !trusted ? 1 : 0, stdout: "", stderr: "" }),
+    });
+  }
+
+  test("plist present, VERSION == pinned, CA trusted -> ready", async () => {
+    writePinnedPortless("0.15.6");
+    const p = installedProxyProbes(true);
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("ready");
+    expect(r.detail).toBe("portless 0.15.6");
+    expect(p.calls.exec).toContainEqual(["security", "verify-cert", "-c", join(home, ".portless", "ca.pem"), "-L", "-l", "-p", "ssl"]);
+  });
+
+  // macOS will not let any process write CA trust without its own dialog, so a
+  // user who declined it lands here: the proxy runs, browsers warn, and the row
+  // is the only place that says so.
+  test("plist present, VERSION == pinned, CA untrusted -> needs-you, with the trust action", async () => {
+    writePinnedPortless("0.15.6");
+    const r = await pickRow(toolRows(installedProxyProbes(false), [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toBe("Browsers will warn until the proxy certificate is trusted");
+    expect(r.action).toEqual({ type: "run", label: "Trust certificate", verb: ["setup", "apply", "--only", "proxy.install"] });
+  });
+
+  // No CA at all is the same story for the user (nothing browsers trust) and
+  // the same remedy: the step raises the trust need for this state too, so the
+  // helper's trust verb runs and reports what it found (steps-b.test.ts).
+  test("plist present, VERSION == pinned, no CA on disk -> needs-you", async () => {
+    writePinnedPortless("0.15.6");
+    const p = bundledProxyProbes({
+      files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", "/Library/Application Support/mattstack/proxy/VERSION": "0.15.6\n" },
+    });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("needs-you");
+    expect(p.calls.exec).not.toContainEqual(expect.arrayContaining(["verify-cert"]));
+  });
+
+  test("plist present, VERSION != pinned -> needs-you, with the update action re-running proxy.install", async () => {
+    writePinnedPortless("0.16.0");
+    const p = bundledProxyProbes({
+      files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", "/Library/Application Support/mattstack/proxy/VERSION": "0.15.6\n" },
+    });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toBe("proxy runs portless 0.15.6, bundle pins 0.16.0");
+    expect(r.action).toEqual({ type: "run", label: "Update proxy", verb: ["setup", "apply", "--only", "proxy.install"] });
+  });
+
+  // Every machine that followed deck's README (`portless service install`) is
+  // in this state, including the developer's own. It used to render as an
+  // error with no action, which no remedy anywhere could clear.
+  test("plist present, no VERSION at all -> needs-you, adopted by the update action", async () => {
+    writePinnedPortless("0.15.6");
+    const p = bundledProxyProbes({ files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>" } });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toBe("An existing portless install predates mattstack; Update proxy adopts it");
+    expect(r.action).toEqual({ type: "run", label: "Update proxy", verb: ["setup", "apply", "--only", "proxy.install"] });
+  });
+
+  test("plist present, VERSION unreadable -> error", async () => {
+    writePinnedPortless("0.15.6");
+    const versionPath = "/Library/Application Support/mattstack/proxy/VERSION";
+    const p = bundledProxyProbes({
+      files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", [versionPath]: "0.15.6" },
+      unreadable: [versionPath],
+    });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain(versionPath);
+  });
+
+  // A blank file names no version, so it cannot be compared either; reading it
+  // as the empty version would render "proxy runs portless , bundle pins X".
+  test("plist present, VERSION blank -> error, never a drift row", async () => {
+    writePinnedPortless("0.15.6");
+    const p = bundledProxyProbes({
+      files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", "/Library/Application Support/mattstack/proxy/VERSION": "  \n" },
+    });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("error");
+  });
+
+  test("never required, so it can neither block Install nor fail verify", async () => {
+    writePinnedPortless("0.15.6");
+    const p = bundledProxyProbes();
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.required).toBe(false);
+  });
+
+  // Every remedy this row offers has to name a step that exists and acts on
+  // the state the row just described. The drift row shipped for a week naming
+  // a step that returned "already installed" before it ever compared
+  // versions, so the button was there and did nothing. It also has to name
+  // that step ALONE: `--from` would carry the rest of the install (down to
+  // snapshot.push) behind a button labelled "Trust certificate".
+  test("every remedy names a real step, alone, and drift's names the one that updates", async () => {
+    writePinnedPortless("0.16.0");
+    const rows = await Promise.all([
+      pickRow(toolRows(bundledProxyProbes(), [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy"),
+      pickRow(toolRows(installedProxyProbes(false), [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy"),
+    ]);
+    expect(rows.map((r) => r.status)).toEqual(["missing", "needs-you"]);
+    for (const r of rows) {
+      expect(r.action?.type).toBe("run");
+      const verb = (r.action as { verb: string[] }).verb;
+      expect(verb.slice(0, 3)).toEqual(["setup", "apply", "--only"]);
+      expect(STEP_IDS as readonly string[]).toContain(verb[3]!);
+    }
+    expect(rows[1]!.detail).toBe("proxy runs portless 0.15.6, bundle pins 0.16.0");
   });
 });
 

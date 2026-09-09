@@ -205,10 +205,62 @@ ax_wait_status_not() {  # <rowId> <status-to-leave> <timeout-s>
 # One-shot, non-blocking: returns immediately when no dialog is up. A poll loop must use this
 # form, not ax_admin_auth's own 30s wait-for-appearance — that form belongs only at call sites
 # that just triggered a privileged action and expect the dialog imminently.
+#
+# SecurityAgent can hold more than one window at a time (an escalation prompt
+# stacked over a CA trust prompt nobody answered), and `window 1` is then
+# whichever happens to be on top: the credentials get written into one dialog
+# and the click lands on another. Both branches below resolve their own window
+# by what it says, never by index.
+#
+# The trust prompt is a product fact, not a defect to route around:
+# `com.apple.trust-settings.admin` is `entitled` OR `authenticate-admin`, and
+# `authenticate-admin` carries `timeout 0`, so its credential is never cached
+# and every trust-settings write asks again, no matter who calls it. Typing
+# rather than writing the value is what gets that dialog accepted.
+#
+# AX_TRUST_DECLINE=1 cancels it instead, which is the second scenario's whole
+# point: the install must survive a user who says no to the certificate.
 ax_admin_auth_once() {
-  local u p; u=$(ax_esc "$VM_ADMIN_USER"); p=$(ax_esc "$VM_ADMIN_PASS")
-  if ax_osa 'tell application "System Events" to exists window 1 of process "SecurityAgent"' 2>/dev/null | grep -q true; then
-    ax_osa "tell application \"System Events\" to tell process \"SecurityAgent\" to tell window 1
+  local u p windows trust other; u=$(ax_esc "$VM_ADMIN_USER"); p=$(ax_esc "$VM_ADMIN_PASS")
+  # One probe answers "is a dialog up, and which window is which": the
+  # no-dialog path is polled every couple of seconds by screen_install and is
+  # bounded at 3s by check-vm-scripts.sh, so it can afford no extra round trip.
+  windows=$(ax_osa 'tell application "System Events" to tell process "SecurityAgent"
+    set t to 0
+    set e to 0
+    repeat with i from 1 to (count of windows)
+      try
+        if exists (first static text of window i whose name contains "Certificate Trust Settings") then
+          if t = 0 then set t to i
+        else
+          if e = 0 then set e to i
+        end if
+      end try
+    end repeat
+    return (t as text) & "," & (e as text)
+  end tell' 2>/dev/null | tr -d ' \n')
+  trust="${windows%%,*}"; other="${windows##*,}"
+  if [ "${trust:-0}" -gt 0 ] 2>/dev/null && [ "${AX_TRUST_DECLINE:-0}" = 1 ]; then
+    ax_osa "tell application \"System Events\" to tell process \"SecurityAgent\"
+      set frontmost to true
+      tell window $trust to click (first button whose name is \"Cancel\")
+    end tell" >/dev/null && { ax_log "admin auth declined (SecurityAgent: certificate trust)"; return 0; }
+  fi
+  if [ "${trust:-0}" -gt 0 ] 2>/dev/null; then
+    ax_osa "tell application \"System Events\" to tell process \"SecurityAgent\"
+      set frontmost to true
+      tell window $trust to set focused of text field 1 to true
+      key code 0 using {command down}
+      keystroke \"$u\"
+      tell window $trust to set focused of text field 2 to true
+      key code 0 using {command down}
+      keystroke \"$p\"
+      delay 1
+      tell window $trust to click (first button whose name is \"Update Settings\")
+    end tell" >/dev/null && { ax_log "admin auth typed (SecurityAgent: certificate trust)"; return 0; }
+  fi
+  if [ "${other:-0}" -gt 0 ] 2>/dev/null; then
+    ax_osa "tell application \"System Events\" to tell process \"SecurityAgent\" to tell window $other
       set value of text field 1 to \"$u\"
       set value of text field 2 to \"$p\"
       click (first button whose name is \"OK\" or name is \"Unlock\" or name is \"Modify Settings\" or name is \"Install Helper\")

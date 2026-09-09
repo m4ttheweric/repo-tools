@@ -404,6 +404,126 @@ describe("runApplyWith — --from resume", () => {
   });
 });
 
+// The checklist's own row remedies run one step, not "this step and the
+// fourteen after it": a `tool.proxy` button labelled "Trust certificate" used
+// to reach `snapshot.push`.
+describe("runApplyWith: --only", () => {
+  test("runs exactly the named step: nothing before it, nothing after it", async () => {
+    const { ctx, events } = testCtx();
+    const order: string[] = [];
+    const steps: StepDef[] = ["home.init", "home.restore", "team.create"].map((id) =>
+      fakeStep(id as StepId, async () => {
+        order.push(id);
+        return { state: "done" };
+      }),
+    );
+
+    const result = await runApplyWith(steps, ctx, { only: "home.restore" });
+
+    expect(result).toEqual({ ok: true });
+    expect(order).toEqual(["home.restore"]);
+    expect(events.filter((e) => e.event === "step")).toEqual([
+      { event: "step", id: "home.restore", state: "running" },
+      { event: "step", id: "home.restore", state: "done" },
+    ]);
+    // Same rule --from follows: the plan is the whole run, so the app never
+    // drops rows it is holding done state for.
+    expect(events[0]).toEqual({
+      event: "plan",
+      steps: [
+        { id: "home.init", title: "home.init", kind: "rt" },
+        { id: "home.restore", title: "home.restore", kind: "rt" },
+        { id: "team.create", title: "team.create", kind: "rt" },
+      ],
+    });
+  });
+
+  test("a failing --only step fails the run and names itself", async () => {
+    const { ctx } = testCtx();
+    const steps: StepDef[] = [
+      fakeStep("home.init", { state: "done" }),
+      fakeStep("proxy.install", { state: "failed", detail: "no" }),
+    ];
+
+    expect(await runApplyWith(steps, ctx, { only: "proxy.install" })).toEqual({ ok: false, failedStep: "proxy.install" });
+  });
+
+  test("an unknown --only id is a user-actionable exit-2 error, and runs nothing", async () => {
+    const { ctx, events } = testCtx();
+    let ran = false;
+    const steps: StepDef[] = [
+      fakeStep("home.init", async () => {
+        ran = true;
+        return { state: "done" };
+      }),
+    ];
+
+    const err = await runApplyWith(steps, ctx, { only: "not-a-real-step-id" as StepId }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(UserActionableError);
+    expect((err as UserActionableError).message).toContain("not-a-real-step-id");
+    expect(ran).toBe(false);
+    expect(events).toEqual([]);
+  });
+
+  // Unlike --from, which resumes at the next applicable step, --only names ONE
+  // step: running the one that happens to sit at its position would run
+  // something nobody asked for.
+  test("a valid --only id gated out by applies() runs nothing at all", async () => {
+    const { ctx, events } = testCtx();
+    const order: string[] = [];
+    const steps: StepDef[] = [
+      fakeStep("home.init", async () => {
+        order.push("home.init");
+        return { state: "done" };
+      }),
+      fakeStep(
+        "home.restore",
+        async () => {
+          order.push("home.restore");
+          return { state: "done" };
+        },
+        { applies: false },
+      ),
+      fakeStep("team.create", async () => {
+        order.push("team.create");
+        return { state: "done" };
+      }),
+    ];
+
+    expect(await runApplyWith(steps, ctx, { only: "home.restore" })).toEqual({ ok: true });
+    expect(order).toEqual([]);
+    expect(events.some((e) => e.event === "step")).toBe(false);
+  });
+
+  // The intent is the in-flight create/join choice the REST of the install
+  // still reads. A row's Retry runs one step through --only and leaves every
+  // other step still to come, so clearing it here strands them with no team.
+  test("a successful --only run keeps the setup intent", async () => {
+    const { ctx } = testCtx({ intent: { v: 1, at: "x", mode: "create" } });
+    const p = ctx.p as ReturnType<typeof fakeProbes>;
+    p.writeFile("/fake-home/.mattstack/rt/setup-intent.json", "{}");
+
+    await runApplyWith([fakeStep("proxy.install", { state: "done" })], ctx, { only: "proxy.install" });
+
+    expect(p.readFile("/fake-home/.mattstack/rt/setup-intent.json")).toBe("{}");
+    // Still terminal bookkeeping: the run happened, whatever it narrowed to.
+    expect(JSON.parse(p.readFile("/fake-home/.mattstack/rt/setup-state.json")!).lastApplyAt).toBe(ctx.p.now().toISOString());
+  });
+
+  // --from is the other half of the same rule: it resumes and then runs
+  // everything left, so the run it finishes IS the install.
+  test("a successful --from run still clears the intent", async () => {
+    const { ctx } = testCtx({ intent: { v: 1, at: "x", mode: "create" } });
+    const p = ctx.p as ReturnType<typeof fakeProbes>;
+    p.writeFile("/fake-home/.mattstack/rt/setup-intent.json", "{}");
+
+    await runApplyWith([fakeStep("home.init", { state: "done" }), fakeStep("proxy.install", { state: "done" })], ctx, { from: "proxy.install" });
+
+    expect(p.readFile("/fake-home/.mattstack/rt/setup-intent.json")).toBeNull();
+  });
+});
+
 describe("runApplyWith — need-bearing steps", () => {
   type NeedRequestForTest = Parameters<ApplyContext["need"]>[1];
 

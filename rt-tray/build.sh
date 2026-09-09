@@ -117,6 +117,17 @@ if [ "$BUILD_CONFIG" = "debug" ]; then
     exit 0
 fi
 
+# ─── Version ─────────────────────────────────────────────────────────────────
+# Resolved here rather than beside the Info.plist writes below because the proxy
+# helper bakes this value into its pins at compile time, and that compile runs
+# first. The plist writes stay where $INFO exists.
+RT_VERSION="${RT_VERSION:-$(cd "$REPO_DIR" && git describe --tags --abbrev=0 2>/dev/null || echo dev)}"
+RT_VERSION="${RT_VERSION#v}"
+RT_BUILD=""
+if [ "$RT_VERSION" != "dev" ]; then
+    RT_BUILD="$(numeric_build "$RT_VERSION")" || { echo "  ✗ RT_VERSION '$RT_VERSION' is not semver (expected X.Y.Z)" >&2; exit 1; }
+fi
+
 # ─── Assemble ────────────────────────────────────────────────────────────────
 echo "  Assembling $APP_NAME.app..."
 rm -rf "$APP_BUNDLE"
@@ -294,6 +305,12 @@ if [ "$IS_DEV" != true ]; then
     fi
 fi
 
+# The privileged proxy helper would belong here, beside rt-ui. It is built
+# after the helper signing pass instead (see "Build + embed the privileged
+# proxy helper" below): its pins describe the payload it copies into a
+# root-owned tree, and codesign rewrites a Mach-O in place, so the bytes worth
+# pinning are the ones that survive signing.
+
 # ─── Extension ───────────────────────────────────────────────────────────────
 if [ -n "${RT_VSIX:-}" ]; then
     [ -f "$RT_VSIX" ] || { echo "  ✗ RT_VSIX=$RT_VSIX not found"; exit 1; }
@@ -333,10 +350,7 @@ plist_set() { # key type value
 plist_set MSDevBuild bool "$IS_DEV"
 plist_set LSMinimumSystemVersion string 14.0
 
-RT_VERSION="${RT_VERSION:-$(cd "$REPO_DIR" && git describe --tags --abbrev=0 2>/dev/null || echo dev)}"
-RT_VERSION="${RT_VERSION#v}"
 if [ "$RT_VERSION" != "dev" ]; then
-    RT_BUILD="$(numeric_build "$RT_VERSION")" || { echo "  ✗ RT_VERSION '$RT_VERSION' is not semver (expected X.Y.Z)" >&2; exit 1; }
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $RT_VERSION" "$INFO"
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $RT_BUILD" "$INFO"
     echo "  ✓ Version $RT_VERSION (build $RT_BUILD)"
@@ -453,6 +467,32 @@ for entry in "${HELPER_ENTITLEMENTS[@]+"${HELPER_ENTITLEMENTS[@]}"}"; do
     sign_helper_tree "$path" "$ent"
     echo "  ✓ Signed Helpers/$(basename "$path") ($ent, $SIGNED_FILE_COUNT files)"
 done
+
+# ─── Build + embed the privileged proxy helper ────────────────────────────────
+# Deliberately after the loop above and not beside rt-ui. The helper refuses to
+# copy a payload whose bytes do not match its compiled-in pins, and the payload
+# it copies is the SIGNED Helpers/node and Helpers/portless-dist: codesign
+# rewrites a Mach-O in place, so a pin taken from the fetched dep can never
+# match what ships. Pinning here means node is signed exactly once, by the loop
+# above, before gen-pins reads it; the outer seal below writes CodeResources
+# and leaves nested binaries alone. check-bundle.sh re-checks the node pin
+# against the shipped binary so a future reorder cannot quietly undo this.
+#
+# The prod-only gate mirrors rt-ui's: the dev bundle ships without the helper
+# and check-bundle's assertions are mattstack-gated to match.
+if [ "$IS_DEV" != true ]; then
+    bash "$REPO_DIR/rt-tray/proxy-helper/scripts/gen-pins.sh" "$RT_VERSION" \
+        "$CONTENTS/Helpers/portless-dist" "$CONTENTS/Helpers/node/bin/node"
+    ( cd "$REPO_DIR/rt-tray/proxy-helper" && swift build -c release --disable-sandbox )
+    cp "$REPO_DIR/rt-tray/proxy-helper/.build/release/ProxyInstall" "$CONTENTS/Helpers/mattstack-proxy-install"
+    chmod +x "$CONTENTS/Helpers/mattstack-proxy-install"
+    xattr -cr "$CONTENTS/Helpers/mattstack-proxy-install" 2>/dev/null || true
+    # Signed here rather than through HELPER_ENTITLEMENTS: the loop has already
+    # run, and re-running it over Helpers/node is exactly what this ordering
+    # exists to avoid.
+    sign -i "com.mattstack.helper.mattstack-proxy-install" "$CONTENTS/Helpers/mattstack-proxy-install"
+    echo "  ✓ Signed Helpers/mattstack-proxy-install (none, 1 files)"
+fi
 
 if [ -f "$CONTENTS/MacOS/rt" ]; then
     sign -i rt --entitlements "$ENTITLEMENTS_JIT" "$CONTENTS/MacOS/rt"

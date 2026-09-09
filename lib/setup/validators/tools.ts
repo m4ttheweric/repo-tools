@@ -26,6 +26,7 @@ import { parsePluginList, readServedPacks, type ServedPack } from "../pack-cache
 import type { ExecResult, Probes } from "../probes.ts";
 import type { PackRequirements, ToolRequirement } from "../requirements.ts";
 import { atLeast } from "../semver.ts";
+import { deployedProxyVersion, pinnedPortlessVersion, PORTLESS_LAUNCHD_PLIST, PROXY_VERSION_PATH, proxyCaIsTrusted, proxyPredatesMattstack } from "../steps/services.ts";
 import { isValidBrewFormula } from "../tools-install.ts";
 import type { SecretPresence } from "./accounts.ts";
 
@@ -543,6 +544,51 @@ function pluginsRow(pluginList: ExecResult): Row {
   return row({ ...base, status: "ready", detail: `${BASE_PLUGINS.length} plugins installed` });
 }
 
+// ─── tool.proxy ─────────────────────────────────────────────────────────────
+
+/** Every remedy this row offers runs the same step, which reads the same three facts this row does and decides from them whether to install, update, or only trust (lib/setup/steps/services.ts). A remedy that named a different route could disagree with the row that offered it. `--only`, never `--from`, which would also run the fourteen steps after it (down to `snapshot.push`) for a button that says "Trust certificate". */
+function reRunProxyInstallAction(label: string): Action {
+  return { type: "run", label, verb: ["setup", "apply", "--only", "proxy.install"] };
+}
+
+async function proxyRow(p: Probes): Promise<Row> {
+  const base = {
+    id: "tool.proxy",
+    kind: "tool" as const,
+    title: "Local proxy",
+    why: "Serves apps on .localhost/.mattstack domains instead of raw ports.",
+    required: false,
+    optionalNote: "Works without this; apps serve on their ports meanwhile.",
+    recheck: "on-activate" as const,
+  };
+  if (!p.exists(PORTLESS_LAUNCHD_PLIST)) return row({ ...base, status: "missing", detail: "not installed", action: reRunProxyInstallAction("Install proxy") });
+
+  // A plist with no VERSION beside it is the machine deck's own README
+  // produces (`portless service install`), not a broken install: the same
+  // remedy adopts it, because the helper replaces whatever daemon is running.
+  if (proxyPredatesMattstack(p)) {
+    return row({ ...base, status: "needs-you", detail: "An existing portless install predates mattstack; Update proxy adopts it", action: reRunProxyInstallAction("Update proxy") });
+  }
+
+  const deployedVersion = deployedProxyVersion(p);
+  if (deployedVersion === null) return row({ ...base, status: "error", detail: `${PROXY_VERSION_PATH} could not be read` });
+
+  const pinned = pinnedPortlessVersion(p);
+  if (!pinned) return row({ ...base, status: "error", detail: "bundle's deps.lock has no pinned portless version" });
+  if (deployedVersion !== pinned) {
+    return row({ ...base, status: "needs-you", detail: `proxy runs portless ${deployedVersion}, bundle pins ${pinned}`, action: reRunProxyInstallAction("Update proxy") });
+  }
+
+  // The right version, running, but untrusted: macOS gates the trust write
+  // behind its own uncacheable authorization, so an install where the user
+  // declined that second dialog lands here. The proxy serves either way; only
+  // browser trust is missing, which is why this is needs-you and not an error.
+  if (!(await proxyCaIsTrusted(p))) {
+    return row({ ...base, status: "needs-you", detail: "Browsers will warn until the proxy certificate is trusted", action: reRunProxyInstallAction("Trust certificate") });
+  }
+  return row({ ...base, status: "ready", detail: `portless ${deployedVersion}` });
+}
+
 // ─── tool.linear-mcp ────────────────────────────────────────────────────────
 
 const CONNECT_LINEAR_ACTION: Action = { type: "connect", label: "Connect Linear", integration: "linear", fields: integrationDef("linear").fields };
@@ -615,6 +661,7 @@ export async function toolRows(
   if (chromeSignin) rows.push(chromeSignin);
 
   rows.push(await missionControlRow(p));
+  rows.push(await proxyRow(p));
 
   for (const tool of dedupeTeamTools(reqs)) rows.push(await teamToolRow(p, tool, opts.hasBrew));
 

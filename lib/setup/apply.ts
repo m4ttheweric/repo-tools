@@ -134,11 +134,34 @@ function resumeStart(applicable: StepDef[], from: StepId | undefined): number {
   return next < 0 ? applicable.length : next; // nothing left to run — everything at or after `from` is already gone from this run
 }
 
-/** Best-effort bookkeeping after the run: never allowed to suppress the terminal `done` event a throw would otherwise swallow. A failure here becomes a `log` warning (tagged with the last step that actually ran) instead of an exception. */
-function persistTerminalState(ctx: ApplyContext, ok: boolean, lastRanId: StepId | undefined): void {
+/**
+ * Resolves `--only` to the index of the single step to run, applying the same
+ * refusal `resumeStart` does to an id that is not a step id at all. A real id
+ * this run's `applies()` gated out runs nothing (past the end), never the step
+ * that happens to sit at its position: `--only` names one step, and running a
+ * different one would be worse than running none.
+ */
+function onlyIndex(applicable: StepDef[], only: StepId): number {
+  if (!STEP_IDS.includes(only)) {
+    throw new UserActionableError("unknown-step", `unknown --only step id "${only}"; valid ids: ${STEP_IDS.join(", ")}`);
+  }
+  const exact = applicable.findIndex((s) => s.id === only);
+  return exact < 0 ? applicable.length : exact;
+}
+
+/**
+ * Best-effort bookkeeping after the run: never allowed to suppress the terminal `done` event a throw would otherwise swallow. A failure here becomes a `log` warning (tagged with the last step that actually ran) instead of an exception.
+ *
+ * `lastApplyAt` is written for any terminal outcome, but the intent is the
+ * in-flight create/join choice every step still to come reads: only a run that
+ * could have finished the install may clear it. `--only` runs one step for one
+ * row's Retry and leaves the rest untouched, so it never does; `--from`
+ * resumes and then runs everything left, so it does.
+ */
+function persistTerminalState(ctx: ApplyContext, ok: boolean, lastRanId: StepId | undefined, oneStepOnly: boolean): void {
   try {
     updateSetupState(ctx.p, (s) => ({ ...s, lastApplyAt: ctx.p.now().toISOString() }));
-    if (ok) clearIntent(ctx.p);
+    if (ok && !oneStepOnly) clearIntent(ctx.p);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (lastRanId) ctx.emit({ event: "log", id: lastRanId, line: `warn: setup state not persisted: ${message}` });
@@ -152,11 +175,13 @@ function persistTerminalState(ctx: ApplyContext, ok: boolean, lastRanId: StepId 
  * for ids it never saw listed, so a full plan is the only safe choice. Steps
  * before `--from` get NO `step` event at all — the shipped app deliberately
  * preserves a retried run's earlier `done` rows, and a `skipped` event here
- * would overwrite them.
+ * would overwrite them. `--only` runs exactly one step and is silent about
+ * every other id for the same reason.
  */
-export async function runApplyWith(steps: StepDef[], ctx: ApplyContext, opts: { from?: StepId } = {}): Promise<{ ok: boolean; failedStep?: StepId }> {
+export async function runApplyWith(steps: StepDef[], ctx: ApplyContext, opts: { from?: StepId; only?: StepId } = {}): Promise<{ ok: boolean; failedStep?: StepId }> {
   const applicable = steps.filter((s) => s.applies(ctx));
-  const start = resumeStart(applicable, opts.from);
+  const start = opts.only !== undefined ? onlyIndex(applicable, opts.only) : resumeStart(applicable, opts.from);
+  const end = opts.only !== undefined ? Math.min(start + 1, applicable.length) : applicable.length;
 
   ctx.emit({ event: "plan", steps: applicable.map((s) => ({ id: s.id, title: s.title, kind: s.kind })) });
 
@@ -166,7 +191,7 @@ export async function runApplyWith(steps: StepDef[], ctx: ApplyContext, opts: { 
   let bug: unknown;
 
   try {
-    for (let i = start; i < applicable.length; i++) {
+    for (let i = start; i < end; i++) {
       const step = applicable[i]!;
       lastRanId = step.id;
       ctx.emit({ event: "step", id: step.id, state: "running" });
@@ -209,7 +234,7 @@ export async function runApplyWith(steps: StepDef[], ctx: ApplyContext, opts: { 
     // last run". `done` is emitted here, in a `finally`, so no exit path
     // (early return, a rethrown bug) can leave the stream without its one
     // required terminal event.
-    persistTerminalState(ctx, result.ok, lastRanId);
+    persistTerminalState(ctx, result.ok, lastRanId, opts.only !== undefined);
     ctx.emit({ event: "done", ok: result.ok, ...(result.failedStep !== undefined ? { failedStep: result.failedStep } : {}) });
   }
 
@@ -217,7 +242,7 @@ export async function runApplyWith(steps: StepDef[], ctx: ApplyContext, opts: { 
   return result;
 }
 
-export async function runApply(ctx: ApplyContext, opts: { from?: StepId } = {}): Promise<{ ok: boolean; failedStep?: StepId }> {
+export async function runApply(ctx: ApplyContext, opts: { from?: StepId; only?: StepId } = {}): Promise<{ ok: boolean; failedStep?: StepId }> {
   return runApplyWith(STEPS, ctx, opts);
 }
 

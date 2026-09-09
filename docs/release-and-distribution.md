@@ -59,6 +59,80 @@ signed with a warning when they are not; a **tag** hard-fails without them).
 - Updating the installed app (Sparkle or manual) costs the FDA grant —
   quit the app first, expect to re-grant after.
 
+## Privileged proxy helper (mattstack-proxy-install)
+
+The bundle ships a first-party Swift helper, `rt-tray/proxy-helper/`, built
+by `build.sh` into `Contents/Helpers/mattstack-proxy-install` and signed like
+every other helper. It is what lets `proxy.install` (`rt setup apply`)
+install portless as a root LaunchDaemon on 443 instead of skipping. portless
+itself is vendored and pinned through `rt-tray/deps.lock` like any other
+third-party tool (`bundlePath: Contents/Helpers/portless-dist`); the already
+bundled `node` row runs it, so no extra runtime ships. The helper's argv
+contract (`install`, `remove`, `trust`, `--version`) is consumed by
+`PrivilegedInstaller.swift` in this same repo, which is why it is a checked-in
+SwiftPM target rather than a deps.lock-pinned release artifact.
+
+Pin model: root must never run a payload it cannot verify, so `install`
+refuses a `portless-dist`/`node` tree whose sha256 does not match the values
+compiled into the helper at build time. Those pins come from
+`rt-tray/proxy-helper/scripts/gen-pins.sh <app-version> <portless-dist-dir>
+<node-binary>` (three required path arguments, no default for any of them).
+`build.sh` runs it AFTER the Helpers signing loop, not before: codesign
+rewrites a Mach-O in place, so a pin taken from the fetched (pre-sign) dep
+would describe bytes that never ship, and the helper would refuse its own
+payload at install time. `check-bundle.sh` re-asserts the shipped
+`--version` line, the codesign identifier
+(`com.mattstack.helper.mattstack-proxy-install`), and that `portless-dist`
+ships, so a build that skips or reorders `gen-pins.sh` fails there instead of
+at install time on someone's machine.
+
+Install raises two admin dialogs, not one: the escalation prompt
+(`AuthorizationExecuteWithPrivileges`) that reaches the helper at all, and
+then macOS's own Certificate Trust Settings prompt for `security
+add-trusted-cert`. The two cannot collapse into one: `com.apple.trust-settings.admin`
+requires its own interactive `authenticate-admin` every time, root and
+Developer ID signing included, and the credential the first prompt collected
+is never reused for the second. `NeedModels.swift`'s prompt text says so up
+front ("macOS will ask twice").
+
+CA trust is the one non-fatal step in the install, and it runs LAST, after
+`launchctl bootstrap`: portless does not mint its CA until the daemon it just
+started actually runs, so there is nothing to trust until the LaunchDaemon is
+up (the helper polls for `ca.pem` for up to 20s). A declined or failed trust
+write does not fail the install: the proxy installs and serves untrusted,
+and the outcome travels back on its own stdout line
+(`MATTSTACK_TRUST=ok|declined|failed`) ahead of the `MATTSTACK_EXIT` trailer.
+The `tool.proxy` validator row (`lib/setup/validators/tools.ts`) turns an
+untrusted-but-current-version install into a `needs-you` row ("Browsers will
+warn until the proxy certificate is trusted") with a "Trust certificate"
+action; a version-drifted install gets the same treatment with "Update
+proxy". Both actions, and a plain "Install proxy", resolve to the same
+`setup apply --only proxy.install` verb (`--only` runs that step alone, where
+`--from` would carry the rest of the install behind it): the step itself reads
+plist presence, deployed-vs-pinned version, and CA trust state, and decides
+whether to install, update, adopt a portless install that predates mattstack
+(a plist with no VERSION beside it), or only re-run the trust write (the
+helper's `trust` op, reached through its own tray route
+`POST /privileged/proxy-trust` beside
+`/privileged/proxy-install`), so no remedy can point at a route that disagrees
+with what the row reported.
+
+A version-drifted proxy (the deployed `/Library/Application
+Support/mattstack/proxy/VERSION` disagreeing with the bundle's pinned
+portless) re-runs that same install step rather than a separate update path:
+the helper boots the running daemon out before bootstrapping the
+replacement, so an update costs one admin prompt, same as a fresh install,
+and root never follows a bundle update on its own.
+
+Remove ties into `rt uninstall`'s existing `proxy.remove` action: bootout,
+delete the plist and the sudoers rule, delete the CA from the System
+keychain (its common name is read back from the installed `ca.pem`, since
+deletion has to name the certificate), and delete the root copy. Every step
+is idempotent: absence at any point is success, not something to report as
+a failure.
+
+Full security model and rulings: `docs/superpowers/specs/2026-09-08-proxy-helper-design.md`.
+
 ## The clean-room proof (what "it installs" means here)
 
 Two layers, both green as of 2026-08-24:
