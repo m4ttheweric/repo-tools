@@ -47,7 +47,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 | `lib/daemon/herd-session.ts` | Delete (superseded by bg-service; its test migrates) |
 | `lib/daemon/pane-ref-socket.ts` | Create: `resolvePaneRef()` ref -> socket resolver |
 | `lib/daemon/inject.ts`, `lib/daemon/gate-escape.ts` | Modify: socket threading by ref |
-| `lib/daemon/handlers/pane.ts` | Modify: ref parsing on peek/send; dual-server list; focus fork |
+| `lib/daemon/handlers/pane.ts`, `commands/pane.ts` | Modify: ref parsing on peek/send; dual-server list; focus fork + CLI attend rendering |
 | `lib/daemon/handlers/chat.ts` | Modify: ref-aware pane->session resolution |
 | `lib/daemon/handlers/agent.ts`, `commands/agent.ts` | Modify: `--bg` flag, ensure+claim, ref in results |
 | `commands/runner.ts` | Modify: `--herdr` gets socket via daemon ensure+claim; release in teardown |
@@ -313,7 +313,7 @@ export function attendPane(opts: {
 ### Task 7: The socket sweep -- inject, escape, pane, chat
 
 **Files:**
-- Modify: `lib/daemon/inject.ts`, `lib/daemon/gate-escape.ts`, `lib/daemon/handlers/pane.ts`, `lib/daemon/handlers/chat.ts`, `lib/daemon/handlers/herd.ts` (gate origin refs)
+- Modify: `lib/daemon/inject.ts`, `lib/daemon/gate-escape.ts`, `lib/daemon/handlers/pane.ts`, `commands/pane.ts`, `lib/daemon/handlers/chat.ts`, `lib/daemon/handlers/herd.ts` (gate origin refs)
 - Test: existing handler tests + new cases
 
 **Interfaces:**

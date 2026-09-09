@@ -175,7 +175,8 @@ that every self-dispatching leaf module consults the new guard.
 - e2e (opt-in, tagged, the chat/herd recipe): ensure, spawn a pane, peek
   and send via `bg:` ref, focus-as-attend, stop refused while a claim is
   live, stop clean after release.
-- The regression test from RT-114 across the whole command tree.
+- RT-114 coverage: the tree's leaf-guard tests plus the structural check
+  that every self-dispatching leaf module consults the verb-help guard.
 
 ## Rollout: hard cutover
 
