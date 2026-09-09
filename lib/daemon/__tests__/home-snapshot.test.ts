@@ -2673,25 +2673,64 @@ describe("startSnapshot: pull", () => {
     expect(h.seen).toEqual([]);
   });
 
-  test("a push fires no converge, even though its pull moves HEAD", async () => {
-    const seen: string[] = [];
+  test("the converge the pre-push pull suppressed runs once the push settles, never inside it", async () => {
+    // One timeline for both the push exec and the hook: the ordering is the
+    // claim, since a pull that fast-forwarded here leaves every later pull
+    // reading up-to-date, with no second chance to converge.
+    const timeline: string[] = [];
     const { fn } = makeFakeExec([...pullResponders({ behind: 1, ahead: 0 }), ...defaultResponders({ statusZ: "?? mattstack/new.jsonc\0" })]);
-    const { deps, timers } = baseDeps({ exec: fn });
+    const exec: NonNullable<HomeSnapshotDeps["exec"]> = async (argv, opts) => {
+      if (gitVerb(argv) === "push") timeline.push("push");
+      return fn(argv, opts);
+    };
+    const { deps, timers } = baseDeps({ exec });
     const { repoDir: _repoDir, ...specDeps } = deps;
     const handle = startSnapshot(
-      { ...teamSpecFor(), pull: { intervalSec: 300, onPulled: async (o: string) => { seen.push(o); } } },
+      { ...teamSpecFor(), pull: { intervalSec: 300, onPulled: async () => { timeline.push("converge"); } } },
       specDeps,
     );
     await handle.ready;
     await flushAsync();
-    seen.length = 0;
+    timeline.length = 0;
 
     await handle.runNow("manual");
     timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
     await flushAsync();
     handle.stop();
 
-    expect(seen).toEqual([]);
+    expect(timeline).toEqual(["push", "converge"]);
+  });
+
+  test("a converge deferred by a push does not latch when the hook throws", async () => {
+    const dirty = "?? mattstack/new.jsonc\0";
+    const exec = makeSwitchableExec([...pullResponders({ behind: 1, ahead: 0 }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps, timers, log } = baseDeps({ exec: exec.fn });
+    const { repoDir: _repoDir, ...specDeps } = deps;
+    let hookCalls = 0;
+    const handle = startSnapshot(
+      { ...teamSpecFor(), pull: { intervalSec: 300, onPulled: async () => { hookCalls += 1; throw new Error("converge blew up"); } } },
+      specDeps,
+    );
+    await handle.ready;
+    await flushAsync();
+    hookCalls = 0;
+
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+    expect(hookCalls).toBe(1);
+    expect(handle.status().lastPushError).toBeNull();
+
+    // A later push whose own pull brought nothing must not re-run the converge
+    // the throwing one consumed.
+    exec.setResponders([...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: dirty })]);
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+    handle.stop();
+
+    expect(hookCalls).toBe(1);
+    expect(log.calls.some((c) => c.level === "warn" && String(c.args[1]).includes("post-pull hook failed"))).toBe(true);
   });
 
   test("the timer-driven pull re-arms after its hook returns", async () => {
@@ -2733,21 +2772,30 @@ describe("startSnapshot: pull", () => {
     expect(hookCalls).toBe(1);
   });
 
-  test("the inline replay after a rejected push fires no converge either", async () => {
-    const seen: string[] = [];
-    const rejectPush: Responder = (argv) => gitVerb(argv) === "push"
-      ? { stdout: "", stderr: "! [rejected] main -> main (fetch first)", exitCode: 1 }
-      : undefined;
-    const { fn, calls } = makeFakeExec([rejectPush, ...pullResponders({ behind: 1, ahead: 0 }), ...defaultResponders({ statusZ: "?? mattstack/new.jsonc\0" })]);
-    const { deps, timers } = baseDeps({ exec: fn });
+  test("the converge the rejected-push replay suppressed runs once the push settles", async () => {
+    const timeline: string[] = [];
+    const dirty = "?? mattstack/new.jsonc\0";
+    // The remote moves only under the rejected push, so the pre-push pull sees
+    // nothing and the replay's pull is the sole source of the converge here.
+    let pushes = 0;
+    const pushResponder: Responder = (argv) => {
+      if (gitVerb(argv) !== "push") return undefined;
+      pushes += 1;
+      timeline.push("push");
+      if (pushes > 1) return { stdout: "", stderr: "", exitCode: 0 };
+      exec.setResponders([pushResponder, ...pullResponders({ behind: 1, ahead: 0 }), ...defaultResponders({ statusZ: dirty })]);
+      return { stdout: "", stderr: "! [rejected] main -> main (fetch first)", exitCode: 1 };
+    };
+    const exec = makeSwitchableExec([pushResponder, ...pullResponders({ behind: 0, ahead: 0 }), ...defaultResponders({ statusZ: dirty })]);
+    const { deps, timers } = baseDeps({ exec: exec.fn });
     const { repoDir: _repoDir, ...specDeps } = deps;
     const handle = startSnapshot(
-      { ...teamSpecFor(), pull: { intervalSec: 300, onPulled: async (o: string) => { seen.push(o); } } },
+      { ...teamSpecFor(), pull: { intervalSec: 300, onPulled: async () => { timeline.push("converge"); } } },
       specDeps,
     );
     await handle.ready;
     await flushAsync();
-    seen.length = 0;
+    timeline.length = 0;
 
     await handle.runNow("manual");
     timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
@@ -2756,8 +2804,7 @@ describe("startSnapshot: pull", () => {
 
     // Two pushes means the rejected one AND the inline replay's retry ran, which
     // is the only way through the pullNow call this test guards.
-    expect(calls.filter((c) => gitVerb(c) === "push")).toHaveLength(2);
-    expect(seen).toEqual([]);
+    expect(timeline).toEqual(["push", "push", "converge"]);
   });
 
   test("a pull-only spec fetches and fast-forwards but never commits or pushes", async () => {
