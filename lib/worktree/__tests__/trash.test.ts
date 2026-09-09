@@ -5,6 +5,7 @@ import { basename, dirname, join } from "path";
 import {
   RETENTION_MS,
   TRASH_PREFIX,
+  isTrashPath,
   reapExpiredTrash,
   reapTrashDir,
   reapTrashInRoots,
@@ -460,5 +461,25 @@ describe("worktree trash", () => {
       const { log } = capturingLog();
       expect(await reapTrashInRoots([root, root], log)).toBe(1);
     });
+  });
+});
+
+describe("isTrashPath", () => {
+  test("a path inside a retention store segment is trash", () => {
+    expect(isTrashPath("/pool/gh-x-y/.trash/alpha-1725000000000")).toBe(true);
+    expect(isTrashPath("/pool/gh-x-y/.trash/alpha-1725000000000/src/deep.ts")).toBe(true);
+  });
+
+  test("a crash-leftover .trash-* directory is trash", () => {
+    expect(isTrashPath(`/pool/gh-x-y/${TRASH_PREFIX}alpha-1725000000000`)).toBe(true);
+  });
+
+  test("ordinary pool trees are not trash", () => {
+    expect(isTrashPath("/pool/gh-x-y/alpha")).toBe(false);
+    expect(isTrashPath("/Users/m/Documents/GitHub/repo-tools")).toBe(false);
+  });
+
+  test("a segment merely starting with .trash but not the marker spellings is not trash", () => {
+    expect(isTrashPath("/pool/gh-x-y/.trashcan/alpha")).toBe(false);
   });
 });

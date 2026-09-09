@@ -40,6 +40,16 @@ const RETAIN_DIR = ".trash";
 export const RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 
 /**
+ * Whether `path` sits inside the trash: under a `.trash/` retention store or a
+ * `.trash-*` crash leftover. Dispose's rename and its `git worktree prune` are
+ * two steps, so git (and any snapshot built from it) can briefly still carry a
+ * trashed tree; every worktree enumeration a picker reads must drop these.
+ */
+export function isTrashPath(path: string): boolean {
+  return path.split("/").some((seg) => seg === RETAIN_DIR || seg.startsWith(TRASH_PREFIX));
+}
+
+/**
  * A ms-epoch rt actually wrote (`${name}-${Date.now()}`) is always after
  * this. A trailing small integer — a manual "backup-3" or "notes-42"
  * dropped "with the other trash" — parses as a number just fine and, taken
