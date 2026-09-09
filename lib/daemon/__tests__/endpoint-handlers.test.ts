@@ -8,6 +8,7 @@ import { rtDir, teamSettingsPath } from "../../rt-paths.ts";
 import { endpointsPath, loadClaims, rekeyEndpointClaimsTable } from "../../endpoint/store.ts";
 import { closeStateDb, listEndpointClaims } from "../../state/index.ts";
 import { serializeIdentity } from "../../settings/identity.ts";
+import { saveRegistry } from "../../worktree/registry.ts";
 import type { HandlerContext, RepoIndex } from "../handlers/types.ts";
 import { createEndpointHandlers, releaseEndpointsForWorktree } from "../handlers/endpoint.ts";
 
@@ -18,7 +19,14 @@ import { createEndpointHandlers, releaseEndpointsForWorktree } from "../handlers
  */
 let repoIndex: RepoIndex = {};
 let ctx: Pick<HandlerContext, "log" | "repoIndex">;
-const fakeProbes = async () => ({ listeners: new Set<number>(), pidAlive: () => true, pidStartTime: () => undefined, canBind: () => true });
+const fakeProbes = async () => ({
+  listeners: new Set<number>(),
+  listenerOf: () => undefined,
+  pidCwd: async () => undefined,
+  pidAlive: () => true,
+  pidStartTime: () => undefined,
+  canBind: () => true,
+});
 
 const DEFAULT_ROLES = {
   backend: { pool: [{ from: 10400, to: 10402 }], env: { PORT: "${port}" } },
@@ -119,7 +127,10 @@ describe("endpoint handlers", () => {
     const r = await handlers["endpoint:claim"]({ repo: "repoA", worktree: "/wt/a", role: "backend" });
     expect(r).toEqual({ ok: false, error: "repo-unknown" });
     const lk = await handlers["endpoint:lookup"]({ repo: "repoA", worktree: "/wt/a", role: "backend" });
-    expect(lk).toEqual({ ok: true, data: { claimed: false, port: null, url: null, running: false } });
+    expect(lk).toEqual({
+      ok: true,
+      data: { claimed: false, port: null, url: null, running: false, worktree: { path: "/wt/a", name: null }, listener: null },
+    });
     const rel = await handlers["endpoint:release"]({ repo: "repoA", worktree: "/wt/a" });
     expect(rel).toEqual({ ok: true, data: { released: 0 } });
     const status = await handlers["endpoint:status"]({ repo: "repoA" });
@@ -202,5 +213,104 @@ describe("endpoint handlers", () => {
     const rekeyReport = await rekeyEndpointClaimsTable();
     expect(rekeyReport.migrated).toEqual([]); // already identity-keyed — nothing to do
     expect(listEndpointClaims(serialized)).toHaveLength(1);
+  });
+
+  describe("lookup provenance (RT-115)", () => {
+    /** Handlers over probes where `port` is bound by `pid`/`command` whose cwd is `cwd` (undefined = lsof couldn't answer). */
+    function listenerHandlers(port: number, pid: number, command: string, cwd: string | undefined) {
+      return createEndpointHandlers(ctx, {
+        probes: async () => ({
+          listeners: new Set([port]),
+          listenerOf: (p: number) => (p === port ? { pid, command } : undefined),
+          pidCwd: async (p: number) => (p === pid ? cwd : undefined),
+          pidAlive: () => true,
+          pidStartTime: () => undefined,
+          canBind: () => true,
+        }),
+      });
+    }
+
+    test("lookup echoes the resolved worktree path, with the registry name when one exists", async () => {
+      declareRoles("repoWt");
+      await handlers["endpoint:claim"]({ repo: idOf("repoWt"), worktree: "/wt/a", role: "portal", pid: 7 });
+
+      let lk = await handlers["endpoint:lookup"]({ repo: idOf("repoWt"), worktree: "/wt/a", role: "portal" });
+      expect(lk.data.worktree).toEqual({ path: "/wt/a", name: null });
+
+      saveRegistry(idOf("repoWt"), [
+        { name: "seamus", path: "/wt/a", kind: "ephemeral", branch: null, createdAt: new Date().toISOString() },
+      ]);
+      lk = await handlers["endpoint:lookup"]({ repo: idOf("repoWt"), worktree: "/wt/a", role: "portal" });
+      expect(lk.data.worktree).toEqual({ path: "/wt/a", name: "seamus" });
+
+      const unclaimed = await handlers["endpoint:lookup"]({ repo: idOf("repoWt"), worktree: "/wt/other", role: "portal" });
+      expect(unclaimed.data).toMatchObject({ claimed: false, worktree: { path: "/wt/other", name: null } });
+    });
+
+    test("a listening claimed port whose process cwd is inside the claiming worktree reports ownsClaim true", async () => {
+      declareRoles("repoOwn");
+      await handlers["endpoint:claim"]({ repo: idOf("repoOwn"), worktree: "/wt/a", role: "portal", pid: 7 });
+
+      const lk = await listenerHandlers(4001, 55, "node", "/wt/a/apps/web")["endpoint:lookup"]({
+        repo: idOf("repoOwn"), worktree: "/wt/a", role: "portal",
+      });
+      expect(lk.data.running).toBe(true);
+      expect(lk.data.listener).toEqual({ pid: 55, command: "node", cwd: "/wt/a/apps/web", ownsClaim: true });
+    });
+
+    test("a listening claimed port bound from a different worktree reports ownsClaim false", async () => {
+      declareRoles("repoForeign");
+      await handlers["endpoint:claim"]({ repo: idOf("repoForeign"), worktree: "/wt/a", role: "portal", pid: 7 });
+
+      const lk = await listenerHandlers(4001, 99, "node", "/wt/dobby")["endpoint:lookup"]({
+        repo: idOf("repoForeign"), worktree: "/wt/a", role: "portal",
+      });
+      expect(lk.data.running).toBe(true);
+      expect(lk.data.listener).toEqual({ pid: 99, command: "node", cwd: "/wt/dobby", ownsClaim: false });
+    });
+
+    test("a claim live via pid but with nothing listening reports listener null", async () => {
+      declareRoles("repoBoot");
+      await handlers["endpoint:claim"]({ repo: idOf("repoBoot"), worktree: "/wt/a", role: "portal", pid: 7 });
+
+      const lk = await handlers["endpoint:lookup"]({ repo: idOf("repoBoot"), worktree: "/wt/a", role: "portal" });
+      expect(lk.data.running).toBe(true);
+      expect(lk.data.listener).toBeNull();
+    });
+
+    test("a listener whose pid is the claim's own pid owns the claim even when its cwd is unknown", async () => {
+      declareRoles("repoPid");
+      await handlers["endpoint:claim"]({ repo: idOf("repoPid"), worktree: "/wt/a", role: "portal", pid: 7 });
+
+      const lk = await listenerHandlers(4001, 7, "bun", undefined)["endpoint:lookup"]({
+        repo: idOf("repoPid"), worktree: "/wt/a", role: "portal",
+      });
+      expect(lk.data.listener).toEqual({ pid: 7, command: "bun", cwd: null, ownsClaim: true });
+    });
+
+    test("an unattributable listener (unknown cwd, foreign pid) reports ownsClaim null, not false", async () => {
+      declareRoles("repoUnknown");
+      await handlers["endpoint:claim"]({ repo: idOf("repoUnknown"), worktree: "/wt/a", role: "portal", pid: 7 });
+
+      const lk = await listenerHandlers(4001, 99, "node", undefined)["endpoint:lookup"]({
+        repo: idOf("repoUnknown"), worktree: "/wt/a", role: "portal",
+      });
+      expect(lk.data.listener).toEqual({ pid: 99, command: "node", cwd: null, ownsClaim: null });
+    });
+
+    test("a fixedPort role attributes the listener against the requesting worktree", async () => {
+      declareRoles("repoFixed", { web: { fixedPort: 8080 } });
+
+      const owned = await listenerHandlers(8080, 55, "vite", "/wt/a")["endpoint:lookup"]({
+        repo: idOf("repoFixed"), worktree: "/wt/a", role: "web",
+      });
+      expect(owned.data).toMatchObject({ claimed: true, port: 8080, running: true, worktree: { path: "/wt/a", name: null } });
+      expect(owned.data.listener).toEqual({ pid: 55, command: "vite", cwd: "/wt/a", ownsClaim: true });
+
+      const foreign = await listenerHandlers(8080, 55, "vite", "/wt/dobby")["endpoint:lookup"]({
+        repo: idOf("repoFixed"), worktree: "/wt/a", role: "web",
+      });
+      expect(foreign.data.listener).toEqual({ pid: 55, command: "vite", cwd: "/wt/dobby", ownsClaim: false });
+    });
   });
 });
