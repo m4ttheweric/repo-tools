@@ -152,7 +152,11 @@ compiled in):
   (`/Library/Application Support/mattstack/proxy/VERSION`, written by the
   helper at install) against the bundle's pinned version: match = ready,
   drift = needs-you with an "Update proxy" action that re-runs the helper
-  (one prompt). Root never auto-follows a bundle update.
+  (one prompt). Root never auto-follows a bundle update. A plist present
+  with NO VERSION file is a portless install that predates mattstack: the
+  row offers the same Update proxy action, and the helper's install op
+  adopts it (bootout, replace, record). Every remedy invokes the narrow
+  `setup apply --only proxy.install` form, never a full apply run.
 - The same validator checks CA trust: the root copy's `ca.pem` must be
   present in the System keychain with trustRoot settings (`security
   verify-cert -c <ca.pem> -p ssl` under the admin trust domain, or the
@@ -164,6 +168,9 @@ compiled in):
   that state; only browser trust is missing.
 - deck: no changes, since it already talks to portless and holds the kickstart
   path; the sudoers rule is what makes its reload work on a fresh machine.
+  On an adopted machine deck's own `/etc/sudoers.d/local-apps-proxy-restart`
+  may sit beside the helper's file with the identical rule; harmless, and
+  removed only by deck's own uninstall.
 
 ## Error handling
 
