@@ -14,6 +14,9 @@ import type { AgentSurface, RtResponse } from "../packages/rt-client/src/index.t
 export const HEADLESS_NEEDS_DAEMON =
   "headless needs the rt daemon to reap completion; start it (rt daemon start) or use --surface herdr";
 
+export const BG_NEEDS_DAEMON =
+  "--bg needs the rt daemon (it owns the background herdr server); start it (rt daemon start)";
+
 type FallbackCommand = "agent:start" | "agent:resume" | "agent:get" | "agent:list";
 
 export async function runAgentFallback<T>(
@@ -23,9 +26,14 @@ export async function runAgentFallback<T>(
 ): Promise<RtResponse<T>> {
   const db = deps.db ?? openStateDbGuarded(stateDbPath());
 
-  // Headless pre-gate, before any handler runs.
+  // Headless and bg pre-gates, before any handler runs: neither surface has
+  // anything this in-process fallback can drive (headless needs a reaper,
+  // bg needs the daemon-owned background server).
   if (command === "agent:start" && ((payload.surface as AgentSurface | undefined) ?? "herdr") === "headless") {
     return { ok: false, error: HEADLESS_NEEDS_DAEMON };
+  }
+  if (command === "agent:start" && payload.bg === true) {
+    return { ok: false, error: BG_NEEDS_DAEMON };
   }
   if (command === "agent:resume") {
     const rec = getAgent(payload.id as string, db);

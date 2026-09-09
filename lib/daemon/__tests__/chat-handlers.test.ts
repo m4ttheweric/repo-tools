@@ -7,6 +7,7 @@ import { join } from "path";
 import { openStateDb, postMessage } from "../../state/index.ts";
 import { createChatHandlers, inviteText, renderWelcome, type InboxDeps } from "../handlers/chat.ts";
 import { herdrRequest } from "../../herdr/client.ts";
+import { bgSocketPath } from "../bg-service.ts";
 import { fakeHerdr, HerdrFakeError, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
 import { deriveRoomForCwd } from "../../chat-room-cli.ts";
 import { runCapture } from "../../subprocess.ts";
@@ -780,6 +781,51 @@ test("chat:sign-out viaPane refuses a pane herdr has no Claude session for", asy
   expect(res.error).toContain("w1:p1");
 });
 
+// ─── pane refs: bg-socket resolution (Task 7 sweep) ────────────────────────
+
+/** Routes a herdr call to whichever fake server matches the sockPath the
+    handler asked for: an unset sockPath (the visible default) falls back to
+    the visible socket, a bg: ref's resolved sockPath goes to the bg one. */
+function dualSocketHerdr(visibleSock: string, bgSock: string): typeof herdrRequest {
+  return (m, p, o) => herdrRequest(m, p, { ...o, sockPath: o?.sockPath === bgSocketPath() ? bgSock : (o?.sockPath ?? visibleSock) });
+}
+
+test("chat:sign-in viaPane with a bg: ref resolves the session against the bg socket and stores the bg: ref", async () => {
+  const uuid = "44444444-4444-4444-4444-444444444444";
+  const { sock: visibleSock, stop: stopVisible } = fakeHerdr(() => ({ snapshot: { workspaces: [], panes: [] } }));
+  stops.push(stopVisible);
+  const { sock: bgSock, stop: stopBg } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid));
+  stops.push(stopBg);
+  const db = openStateDb(join(tmpdir(), `chat-viapane-bg-${process.pid}-${n++}.db`));
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr: dualSocketHerdr(visibleSock, bgSock) });
+
+  const res = await h["chat:sign-in"]({ pane: "bg:w1:p1", viaPane: true, baseHandle: "kai" });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.sessionId).toBe(uuid);
+
+  const presence = db.query("SELECT session_id, pane FROM chat_presence WHERE session_id = ?").get(uuid) as
+    | { session_id: string; pane: string }
+    | null;
+  expect(presence).toMatchObject({ session_id: uuid, pane: "bg:w1:p1" });
+});
+
+test("chat:sign-out viaPane with a bg: ref resolves against the bg socket", async () => {
+  const uuid = "55555555-5555-5555-5555-555555555555";
+  const { sock: visibleSock, stop: stopVisible } = fakeHerdr(() => ({ snapshot: { workspaces: [], panes: [] } }));
+  stops.push(stopVisible);
+  const { sock: bgSock, stop: stopBg } = fakeHerdr(paneSnapshotHandler("w1:p1", uuid));
+  stops.push(stopBg);
+  const db = openStateDb(join(tmpdir(), `chat-viapane-bg-out-${process.pid}-${n++}.db`));
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr: dualSocketHerdr(visibleSock, bgSock) });
+
+  await h["chat:sign-in"]({ sessionId: uuid, baseHandle: "x" });
+  const res = await h["chat:sign-out"]({ pane: "bg:w1:p1", viaPane: true });
+  expect(res.ok).toBe(true);
+  if (!res.ok) throw new Error("unreachable");
+  expect(res.data.sessionId).toBe(uuid);
+});
+
 test("chat:away sets status_text and chat:back clears it, both refusing an unsigned session", async () => {
   const h = freshHandlers();
   await h["chat:sign-in"]({ sessionId: "s1", baseHandle: "x" });
@@ -1017,6 +1063,21 @@ test("chat:invite queues into a working pane without waiting", async () => {
   const res = await h["chat:invite"]({ paneId: "w1:p1", room: "build", from: "matt" });
   expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "queued" } });
   expect(seen.find((s) => s.method === "agent.prompt")!.params).toEqual({ target: "w1:p1", text: "/chat:join build" });
+});
+
+test("chat:invite with a bg: ref reaches the bg socket and echoes the bg: ref back", async () => {
+  const { sock: visibleSock, stop: stopVisible } = fakeHerdr(() => new HerdrFakeError("invalid_request", "unused"));
+  stops.push(stopVisible);
+  const { sock: bgSock, stop: stopBg } = fakeHerdr((method, params) => {
+    if (method === "agent.get") return agent("idle");
+    if (method === "agent.prompt") return { type: "agent_prompted", agent: { ...agent("working").agent, text: params.text } };
+    return new HerdrFakeError("invalid_request", method);
+  });
+  stops.push(stopBg);
+  const db = openStateDb(join(tmpdir(), `chat-inv-bg-${process.pid}-${n++}.db`));
+  const h = createChatHandlers({ db, emitEvent: () => 0, herdr: (m, p, o) => herdrRequest(m, p, { ...o, sockPath: o?.sockPath === bgSocketPath() ? bgSock : (o?.sockPath ?? visibleSock) }) });
+  const res = await h["chat:invite"]({ paneId: "bg:w1:p1", room: "build", from: "matt" });
+  expect(res).toEqual({ ok: true, data: { paneId: "bg:w1:p1", delivered: "accepted" } });
 });
 
 test("chat:invite refuses a blocked pane without sending anything", async () => {

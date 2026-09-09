@@ -92,7 +92,8 @@ import { createEventsBus, type EventsBus } from "./daemon/events-bus.ts";
 import { createGatesStore, type GatesStore } from "./daemon/gates-store.ts";
 import { createHerdStore, type HerdStore } from "./daemon/herd-store.ts";
 import { createHerdLifecycle, type HerdLifecycle } from "./daemon/herd-lifecycle.ts";
-import { createHiddenSession } from "./daemon/herd-session.ts";
+import { createBgService, type BgService } from "./daemon/bg-service.ts";
+import { createBgClaimsStore, type BgClaimsStore } from "./daemon/bg-claims-store.ts";
 import { createGatePush, type GatePush } from "./daemon/gate-push.ts";
 import { createEscapeInjector } from "./daemon/gate-escape.ts";
 import { deliverToInbox } from "./daemon/inbox.ts";
@@ -282,6 +283,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
   let gatesStore: GatesStore;
   let herdStore: HerdStore;
   let herdLifecycle: HerdLifecycle | undefined;
+  let bgClaims: BgClaimsStore;
   let gatePush: GatePush;
   let identity: {
     flavor: "dev" | "prod";
@@ -559,6 +561,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         eventsBus = createEventsBus({ dbPath: join(RT_DIR, "events.db"), log });
         gatesStore = createGatesStore({ dbPath: join(RT_DIR, "gates.db"), log });
         herdStore = createHerdStore({ dbPath: join(RT_DIR, "herds.db"), log });
+        bgClaims = createBgClaimsStore({ dbPath: join(RT_DIR, "bg-claims.db"), log });
         // Session id -> socket resolution goes through the claude-registry
         // (pane inboxes), never a bespoke lookup: it's the same binding
         // rt chat delivery already resolves through.
@@ -579,6 +582,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
         eventsBus?.close();
         gatesStore?.close_();
         herdStore?.close_();
+        bgClaims?.close_();
       },
     },
 
@@ -866,6 +870,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           getLogLevel: () => log.level,
         };
         freshnessEnv = { ctx: handlerCtx, broadcast: emit };
+        const bgService: BgService = createBgService({ log });
         routedHandlers = buildRoutedHandlers({
           ctx: handlerCtx,
           broadcast: emit,
@@ -886,9 +891,11 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           herdLifecycle: {
             connected: (socket) => herdLifecycle?.connected(socket) ?? false,
             watch: (socket) => herdLifecycle?.watch(socket),
+            sweepClaims: () => herdLifecycle?.sweepClaims() ?? Promise.resolve(),
           },
-          herdHidden: createHiddenSession({ log }),
           herdJobsRoot: join(RT_DIR, "herds"),
+          bgService,
+          bgClaims,
           homeSnapshot,
           teamSnapshots,
           repos: {
@@ -905,6 +912,8 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           bus: eventsBus,
           gateStore: gatesStore,
           defaultSocket: herdrSocketPath(),
+          bgSocket: bgService.socketPath(),
+          bgClaims,
           log,
         });
         herdLifecycle.start();

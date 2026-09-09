@@ -13,6 +13,7 @@
  */
 import type { ChatPane, RtResponse } from "../packages/rt-client/src/index.ts";
 import { paneAccounts as paneAccountsRt, paneDirectories as paneDirectoriesRt, paneFocus as paneFocusRt, paneList as paneListRt, panePeek as panePeekRt, paneSend as paneSendRt, paneSpawn as paneSpawnRt } from "../packages/rt-client/src/index.ts";
+import { selfPaneRef } from "../lib/self-pane.ts";
 
 const FLAGS_WITH_VALUES = new Set(["--lines", "--cwd", "--account", "--model", "--effort", "--prompt", "--workspace", "--q", "--sock", "--text"]);
 
@@ -96,18 +97,24 @@ export async function paneSend(args: string[]): Promise<void> {
   const rawText = flagValue(args, "--text");
   if (!paneId || rawText === undefined) fail("usage: rt pane send <pane> --text <text>  (--text - reads stdin)");
   const text = rawText === "-" ? await new Response(Bun.stdin.stream()).text() : rawText;
-  const callerPane = process.env.HERDR_PANE_ID;
+  const callerPane = selfPaneRef();
   const data = unwrap(await paneSendRt({ paneId, text, ...(callerPane ? { callerPane } : {}) }, opts(args)), "pane send");
   if (args.includes("--json")) return void console.log(JSON.stringify({ ok: true, ...data }));
   console.log(`${data.paneId} ${data.delivered}${data.reason ? ` (${data.reason})` : ""}`);
 }
 
+export function renderPaneFocus(data: { paneId: string; focused: boolean; attendTab?: string }): string {
+  if (data.attendTab) return `attached ${data.paneId} in tab ${data.attendTab}; detach with ctrl+b q, then close the tab`;
+  return `${data.paneId} ${data.focused ? "focused" : "not focused"}`;
+}
+
 export async function paneFocus(args: string[]): Promise<void> {
   const paneId = positional(args);
   if (!paneId) fail("usage: rt pane focus <pane>");
-  const data = unwrap(await paneFocusRt({ paneId }, opts(args)), "pane focus");
+  const callerWorkspace = process.env.HERDR_WORKSPACE_ID;
+  const data = unwrap(await paneFocusRt({ paneId, ...(callerWorkspace ? { callerWorkspace } : {}) }, opts(args)), "pane focus");
   if (args.includes("--json")) return void console.log(JSON.stringify({ ok: true, ...data }));
-  console.log(`${data.paneId} ${data.focused ? "focused" : "not focused"}`);
+  console.log(renderPaneFocus(data));
 }
 
 export async function paneAccounts(args: string[]): Promise<void> {

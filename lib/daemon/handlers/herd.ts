@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import type { Logger } from "pino";
 import type { Commands, GateRow, HerdStatusData } from "../../../packages/rt-client/src/commands.ts";
+import { formatPaneRef } from "../../../packages/rt-client/src/index.ts";
 import type { CommandResult } from "./types.ts";
 import type { HerdStore, HerdJobRow } from "../herd-store.ts";
 import { herdPrefix, herdSubject, isValidJobName, mintHerdId } from "../herd-store.ts";
@@ -17,7 +18,12 @@ import type { createAgentHandlers } from "./agent.ts";
 import { waitTimeout, type herdrRequest } from "../../herdr/client.ts";
 import type { HerdrRunner } from "../../agent-herdr.ts";
 import { slugifyChatName } from "../../chat-room-name.ts";
-import { HIDDEN_SESSION } from "../herd-session.ts";
+import { attendPane } from "../attend.ts";
+import { BG_SESSION } from "../bg-service.ts";
+import type { BgService } from "../bg-service.ts";
+import type { BgClaimsStore } from "../bg-claims-store.ts";
+
+const herdOwner = (herdId: string): string => `herd:${herdId}`;
 
 export interface HerdDeps {
   store: HerdStore;
@@ -31,8 +37,9 @@ export interface HerdDeps {
   presenceHandleForSession: (session: string) => string | null;
   herdr: typeof herdrRequest;
   herdrRunnerFor: (socket: string | null) => HerdrRunner;
-  lifecycle: { connected(socket: string | null): boolean; watch(socket: string): void };
-  hidden: { socketPath(): string; ensure(): Promise<string>; up(): Promise<boolean>; stop(): Promise<void> };
+  lifecycle: { connected(socket: string | null): boolean; watch(socket: string): void; sweepClaims(): Promise<void> };
+  bg: BgService;
+  claims: BgClaimsStore;
   /** How long a spawn waits for herdr to register the agent before giving up on
       the trust check; overridable so a test need not burn the real budget. */
   registerBudgetMs?: number;
@@ -56,6 +63,13 @@ const TRUST_BUDGET_MS = 15_000;
 // else settles.
 const SETTLE_UNTIL = ["idle", "blocked", "done"];
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
+/** A bare pane id headed into a gate's `pane` field: formatted per the herd's
+    hidden-ness so the ref rides addressably wherever that field surfaces
+    (display, focus/resume) -- gate-push.ts's own contract for this field is
+    "a focus/resume ref, never a delivery target", so this is not an escape
+    round-trip; herd gates never carry origin.presentation === "form", the
+    only shape gate-push ever escape-injects into. */
+const refPane = (bare: string | undefined, hidden: boolean): string | undefined => (bare ? formatPaneRef(bare, hidden ? "bg" : "visible") : undefined);
 
 /** `shepherd-2` is a collision suffix chat mints, not a name to ask for again. */
 const baseHandleOf = (handle: string): string => handle.replace(/-\d+$/, "");
@@ -106,6 +120,10 @@ export function createHerdHandlers(deps: HerdDeps) {
       const last = j.lastGate ? deps.gateStore.get(j.lastGate) : null;
       return {
         ...j,
+        // Round-trip rule: a job's stored pane is bare, but every surface
+        // that prints one must print it addressable (bg: prefix for a
+        // hidden herd's panes).
+        pane: j.pane ? formatPaneRef(j.pane, herd.hidden ? "bg" : "visible") : j.pane,
         openGate: gates.find((g) => g.subject === herdSubject(herdId, j.name))?.id ?? null,
         paneStatus: j.pane ? (panes.get(j.pane) ?? null) : null,
         lastGateStatus: last?.status ?? null,
@@ -119,7 +137,7 @@ export function createHerdHandlers(deps: HerdDeps) {
     return {
       herd, jobs, unread,
       lifecycleConnected: deps.lifecycle.connected(herd.herdrSocket),
-      hiddenUp: herd.hidden ? await deps.hidden.up() : null,
+      hiddenUp: herd.hidden ? await deps.bg.up() : null,
       subscription: subRow ? { id: subRow.id, dead: subRow.dead, lastDelivery: subRow.lastDelivery } : null,
     };
   }
@@ -200,7 +218,10 @@ export function createHerdHandlers(deps: HerdDeps) {
       let herdrSocket: string | null = null;
       // Awaited before the store row exists, so a failed hidden start leaves
       // no half-registered herd behind.
-      if (hidden) herdrSocket = await deps.hidden.ensure();
+      if (hidden) {
+        const ensured = await deps.bg.ensure();
+        herdrSocket = ensured.socket;
+      }
 
       let handle = deps.presenceHandleForSession(session);
       if (!handle) {
@@ -214,6 +235,10 @@ export function createHerdHandlers(deps: HerdDeps) {
       const sub = await subscribeShepherd(id, session);
       if (!sub.ok) return sub;
       store.create({ id, repo, room, workspace: workspaceLabel(id), shepherdSession: session, shepherdHandle: handle, herdrSocket, hidden });
+      // The claim is only worth registering once the herd row it belongs to
+      // actually exists: any earlier failure returns before this line, so
+      // there is no half-created herd to leave an orphaned claim behind for.
+      if (hidden) deps.claims.claim(herdOwner(id));
       if (herdrSocket) deps.lifecycle.watch(herdrSocket);
       log.info({ herd: id, room, hidden }, "herd started");
       return { ok: true, data: { herd: id, room, workspace: workspaceLabel(id), subscription: sub.data.id, handle, hidden } };
@@ -326,7 +351,8 @@ export function createHerdHandlers(deps: HerdDeps) {
 
       if (rec.paneId) await acceptTrustDialog(herd.herdrSocket, rec.paneId, { herd: herdId, job: name });
 
-      return { ok: true, data: { herd: herdId, job: name, pane: rec.paneId ?? "", worktree, branch, tree, wasOnDeck, agentId: rec.id, sessionId: rec.sessionId, handle } };
+      const paneRef = rec.paneId ? formatPaneRef(rec.paneId, herd.hidden ? "bg" : "visible") : "";
+      return { ok: true, data: { herd: herdId, job: name, pane: paneRef, worktree, branch, tree, wasOnDeck, agentId: rec.id, sessionId: rec.sessionId, handle } };
     },
 
     "herd:gates": async (raw: unknown): Promise<CommandResult<"herd:gates">> => {
@@ -347,11 +373,12 @@ export function createHerdHandlers(deps: HerdDeps) {
       const p = raw as Commands["herd:ask"]["payload"] | undefined;
       const herdId = str(p?.herd); const name = str(p?.job); const session = str(p?.session);
       if (!herdId || !name || !session) return { ok: false, error: "herd, job, and session are required (HERD_ID, HERD_JOB, CLAUDE_CODE_SESSION_ID)" };
-      const job = store.getJob(herdId, name);
-      if (!job) return { ok: false, error: `unknown job "${name}" in herd "${herdId}"` };
+      const herd = store.get(herdId);
+      const job = herd ? store.getJob(herdId, name) : null;
+      if (!herd || !job) return { ok: false, error: `unknown job "${name}" in herd "${herdId}"` };
       const opened = await deps.gate["gate:open"]({
         subject: herdSubject(herdId, name), kind: "question", questions: p!.questions,
-        meta: { herd: herdId, job: name }, agent: name, pane: str(p?.pane) ?? job.pane ?? undefined,
+        meta: { herd: herdId, job: name }, agent: name, pane: refPane(str(p?.pane) ?? job.pane ?? undefined, herd.hidden),
         nudge: { session }, context: str(p?.context),
       });
       if (!opened.ok) return opened;
@@ -372,7 +399,7 @@ export function createHerdHandlers(deps: HerdDeps) {
         subject: herdSubject(herdId, name), kind: "milestone",
         questions: [{ id: "decision", label: summary, multi: false, options: [...MILESTONE_OPTIONS] }],
         meta: { herd: herdId, job: name, artifact, message: posted.data.id },
-        agent: name, pane: str(p?.pane) ?? job.pane ?? undefined, nudge: { session },
+        agent: name, pane: refPane(str(p?.pane) ?? job.pane ?? undefined, herd.hidden), nudge: { session },
       });
       if (!opened.ok) return opened;
       store.setJobStatus(herdId, name, "at-milestone", { lastGate: opened.data.id });
@@ -411,40 +438,22 @@ export function createHerdHandlers(deps: HerdDeps) {
       if (!herd || !job) return { ok: false, error: `unknown job "${name}" in herd "${herdId}"` };
       if (!herd.hidden || !herd.herdrSocket) return { ok: false, error: "herd is not hidden; focus the pane directly" };
       if (!job.pane) return { ok: false, error: `job "${name}" has no pane` };
-      const hiddenRunner = deps.herdrRunnerFor(herd.herdrSocket);
-      const got = await hiddenRunner(["pane", "get", job.pane]);
-      if (got.exitCode !== 0) return { ok: false, error: `herdr pane get failed: ${got.stdout.slice(0, 200)}` };
-      let termId: string | undefined;
-      try {
-        const parsed = JSON.parse(got.stdout)?.result;
-        const raw = parsed?.pane?.terminal_id ?? parsed?.terminal_id;
-        // termId rides into a shell command unquoted (the `attach` line below),
-        // so it must be shell-inert on top of being a string.
-        if (typeof raw === "string" && /^[A-Za-z0-9_.:-]+$/.test(raw)) termId = raw;
-      } catch { /* handled below */ }
-      if (!termId) return { ok: false, error: "hidden pane reported no terminal id" };
-      const visible = deps.herdrRunnerFor(null);
-      const tab = await visible(["tab", "create", "--workspace", callerWorkspace, "--label", `attend: ${name}`, "--focus"]);
-      if (tab.exitCode !== 0) return { ok: false, error: `herdr tab create failed: ${tab.stdout.slice(0, 200)}` };
-      let root: { pane_id?: unknown; tab_id?: unknown } | undefined;
-      try {
-        root = JSON.parse(tab.stdout)?.result?.root_pane;
-      } catch { return { ok: false, error: "herdr tab create returned invalid JSON" }; }
-      const rootPane = typeof root?.pane_id === "string" ? root.pane_id : null;
-      const tabId = typeof root?.tab_id === "string" ? root.tab_id : null;
-      if (!rootPane) return { ok: false, error: "herdr tab create returned no root pane" };
-      if (!tabId) return { ok: false, error: "herdr tab create returned no tab id" };
-      const attach = `env -u HERDR_SOCKET_PATH HERDR_SESSION=${HIDDEN_SESSION} herdr terminal attach ${termId} --takeover`;
-      const ran = await visible(["pane", "run", rootPane, attach]);
-      if (ran.exitCode !== 0) return { ok: false, error: `herdr pane run failed: ${ran.stdout.slice(0, 200)}` };
-      return { ok: true, data: { tab: tabId, pane: job.pane } };
+      const res = await attendPane({
+        socket: herd.herdrSocket, paneId: job.pane, session: BG_SESSION, label: `attend: ${name}`,
+        callerWorkspace, herdrRunnerFor: deps.herdrRunnerFor,
+      });
+      if (!res.ok) return res;
+      // Round-trip rule: attend only ever runs for a hidden herd (guarded
+      // above), so this is always a bg: ref -- formatted explicitly rather
+      // than assumed, so the field stays honest if that guard ever loosens.
+      return { ok: true, data: { tab: res.tab, pane: formatPaneRef(res.pane, herd.hidden ? "bg" : "visible") } };
     },
 
     "herd:stop-hidden": async (_payload: unknown): Promise<CommandResult<"herd:stop-hidden">> => {
-      const active = store.list({ status: "active" }).filter((h) => h.hidden);
-      if (active.length > 0) return { ok: false, error: `hidden herd(s) still active: ${active.map((h) => h.id).join(", ")}; wrap them up first` };
+      const live = deps.claims.list();
+      if (live.length > 0) return { ok: false, error: `bg server has live claims: ${live.map((c) => c.owner).join(", ")}; wrap them up first` };
       try {
-        await deps.hidden.stop();
+        await deps.bg.stop();
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
@@ -498,6 +507,7 @@ export function createHerdHandlers(deps: HerdDeps) {
       }
 
       store.setHerdStatus(herdId, "wrapped");
+      if (herd.hidden) deps.claims.release(herdOwner(herdId));
       return { ok: true, data: { closed, workspaceClosed, disposed, refused, deletedJobDirs, archived } };
     },
   };

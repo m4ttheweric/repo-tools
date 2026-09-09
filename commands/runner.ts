@@ -1,13 +1,14 @@
 /**
  * rt runner: a board of services, run in a detached tmux session by
- * default or in headless herdr panes under --herdr. The command is the
+ * default or in background herdr panes under --herdr. The command is the
  * gate and the wiring; the loop lives in lib/runner/runner.ts and the two
  * backends in lib/runner/engine.ts (herdr) and lib/runner/tmux-engine.ts.
  */
 import { spawnSync } from "child_process";
 import { randomBytes } from "crypto";
 import type { CommandContext } from "../lib/command-tree.ts";
-import { herdrAvailable, herdrRequest, herdrSocketPath } from "../lib/herdr/client.ts";
+import { herdrRequest } from "../lib/herdr/client.ts";
+import { bgEnsure, bgRelease } from "../packages/rt-client/src/index.ts";
 import { HerdrEngine } from "../lib/runner/engine.ts";
 import { Runner, SessionDied, type RunnerDeps, type SeedEntry } from "../lib/runner/runner.ts";
 import { createTmuxEngine, killTmuxServer } from "../lib/runner/tmux-engine.ts";
@@ -22,6 +23,35 @@ export function tmuxAvailable(path: string = process.env.PATH ?? ""): boolean {
 }
 
 export type { SeedEntry };
+
+/** rtCommand's own daemon-down message shape (transport.ts); the only bg:release failure worth swallowing rather than warning about. */
+function isDaemonUnreachable(error: string | undefined): boolean {
+  return error !== undefined && error.includes("daemon unreachable");
+}
+
+/**
+ * Acquires the daemon-owned bg server for `--herdr` mode: one `bg:ensure`
+ * call under a board claim, and a release closure the caller runs on
+ * teardown. Extracted from the gate so the claim/release wiring is
+ * unit-testable without a real daemon or herdr socket.
+ */
+export async function acquireBgSocket(
+  claim: string,
+  deps: { bgEnsure: typeof bgEnsure; bgRelease: typeof bgRelease } = { bgEnsure, bgRelease },
+): Promise<{ sock: string; release: () => Promise<void> }> {
+  const res = await deps.bgEnsure({ claim });
+  if (!res.ok || !res.data) {
+    throw new Error(res.error ?? "bg:ensure failed");
+  }
+  const sock = res.data.socket;
+  const release = async () => {
+    const r = await deps.bgRelease({ claim });
+    if (!r.ok && !isDaemonUnreachable(r.error)) {
+      process.stderr.write(`  rt runner: bg release failed (${r.error})\n`);
+    }
+  };
+  return { sock, release };
+}
 
 /** The exact deps the success path hands to Runner; pulled out so the assembly is unit-testable without a real herdr socket. */
 export function buildRunnerDeps(args: string[], ctx: CommandContext, sock: string, seed?: SeedEntry[]): RunnerDeps {
@@ -115,14 +145,27 @@ async function gateAndRun(ctx: CommandContext, args: string[], seed?: SeedEntry[
   const cleanArgs = args.filter((a) => a !== "--herdr" && a !== "--tmux");
 
   let runner: Runner;
+  let releaseBgSocket: (() => Promise<void>) | undefined;
   if (useHerdr) {
-    const sock = herdrSocketPath();
-    if (!(await herdrAvailable(sock))) {
-      process.stderr.write(`herdr is not answering at ${sock}; start herdr and run rt runner from one of its panes\n`);
+    // buildRunnerDeps/new Runner live inside this same try, not after it: a
+    // throw from either after acquireBgSocket succeeds would otherwise skip
+    // releaseBgSocket entirely and leak the claim -- nothing past this block
+    // ever runs release() for a herdr-path failure.
+    try {
+      const acquired = await acquireBgSocket("runner:" + process.pid);
+      releaseBgSocket = acquired.release;
+      await reconcileRunnerWorkspaces(acquired.sock);
+      runner = new Runner(buildRunnerDeps(cleanArgs, ctx, acquired.sock, seed));
+    } catch (err) {
+      await releaseBgSocket?.();
+      const message = err instanceof Error ? err.message : String(err);
+      if (isDaemonUnreachable(message)) {
+        process.stderr.write("the rt daemon is required for --herdr mode; start it and retry\n");
+      } else {
+        process.stderr.write(`  rt runner: ${message}\n`);
+      }
       return exit(1);
     }
-    await reconcileRunnerWorkspaces(sock);
-    runner = new Runner(buildRunnerDeps(cleanArgs, ctx, sock, seed));
   } else {
     if (!tmuxAvailable()) {
       process.stderr.write("rt runner needs tmux on PATH (or pass --herdr to use herdr panes)\n");
@@ -133,11 +176,13 @@ async function gateAndRun(ctx: CommandContext, args: string[], seed?: SeedEntry[
   }
 
   // The board dies with this process: a signal tears the workspace down
-  // before exit so no headless pane outlives its board. SIGHUP (a closed
+  // before exit so no background pane outlives its board. SIGHUP (a closed
   // terminal window) gets the same best-effort teardown; a launch this
   // catches never leaves a workspace for the next reconcile to find.
   const onSignal = () => {
-    void runner.teardown().finally(() => process.exit(130));
+    void runner.teardown()
+      .finally(() => releaseBgSocket?.())
+      .finally(() => process.exit(130));
   };
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
@@ -155,6 +200,7 @@ async function gateAndRun(ctx: CommandContext, args: string[], seed?: SeedEntry[
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
     process.off("SIGHUP", onSignal);
+    await releaseBgSocket?.();
   }
 }
 

@@ -53,6 +53,7 @@ import { chatViewerUrl, readChatViewerUrlSetting } from "../../chat-viewer-url.t
 import { getSetting } from "../../settings/resolve.ts";
 import { herdrRequest } from "../../herdr/client.ts";
 import { injectIntoPane, herdrError } from "../inject.ts";
+import { resolvePaneRef } from "../pane-ref-socket.ts";
 import type { HerdrSnapshot } from "./pane.ts";
 import { resolveInbox, inboxAlive } from "../../claude-registry.ts";
 import { deliverToInbox, deliveryLabel, renderDeliveries, REPLY_STEER, wrapCrossSession } from "../inbox.ts";
@@ -158,8 +159,11 @@ function nextBadgeSeq(): number {
  * its caller regardless of that -- a badge that never lands must not break
  * message delivery.
  */
-async function reportUnreadBadge(herdr: typeof herdrRequest, paneId: string | undefined, count: number): Promise<void> {
-  if (!paneId) return;
+async function reportUnreadBadge(herdr: typeof herdrRequest, pane: string | undefined, count: number): Promise<void> {
+  if (!pane) return;
+  // presence.pane is bound in ref space (a bg row round-trips as `bg:...`);
+  // herdr itself only ever knows the bare id, and only on its own socket.
+  const { paneId, sockPath } = resolvePaneRef(pane);
   try {
     await herdr("pane.report_metadata", {
       pane_id: paneId,
@@ -172,7 +176,7 @@ async function reportUnreadBadge(herdr: typeof herdrRequest, paneId: string | un
       tokens: { chat_unread: String(count) },
       ttl_ms: 600_000,
       seq: nextBadgeSeq(),
-    });
+    }, { sockPath });
   } catch {
     /* best-effort */
   }
@@ -724,16 +728,21 @@ const PANE_SESSION_POLL_MS = 200;
  * a different failure than a not-yet-registered session, and retrying it
  * would only spend the budget on a snapshot call that keeps failing the
  * same way.
+ *
+ * `paneId` here is always a bare herdr id; callers resolve the incoming ref
+ * (bare or `bg:`) to `{ paneId, sockPath }` before calling in, same as
+ * inject.ts's callers.
  */
 async function findPaneSessionRetrying(
   herdr: typeof herdrRequest,
   paneId: string,
   budgetMs: number,
   pollMs: number,
+  sockPath?: string,
 ): Promise<{ ok: true; session: { sessionId: string; cwd?: string } } | { ok: false; error: string }> {
   const deadline = Date.now() + budgetMs;
   for (;;) {
-    const snap = await herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {});
+    const snap = await herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {}, { sockPath });
     if (!snap.ok) return herdrError(snap);
     const resolved = findPaneSession(snap.result.snapshot, paneId);
     if (resolved) return { ok: true, session: resolved };
@@ -1084,7 +1093,8 @@ export function createChatHandlers(opts: {
 
       if (viaPane) {
         if (!pane) return { ok: false, error: "chat: sign-in --pane requires a pane id" };
-        const resolved = await findPaneSessionRetrying(herdr, pane, paneSessionBudgetMs, paneSessionPollMs);
+        const { paneId: paneRef, sockPath } = resolvePaneRef(pane);
+        const resolved = await findPaneSessionRetrying(herdr, paneRef, paneSessionBudgetMs, paneSessionPollMs, sockPath);
         if (!resolved.ok) return resolved;
         sessionId = resolved.session.sessionId;
         if (signInCwd === undefined) signInCwd = resolved.session.cwd;
@@ -1175,9 +1185,10 @@ export function createChatHandlers(opts: {
       let sessionId = payload.sessionId;
       if (payload.viaPane) {
         if (!payload.pane) return { ok: false, error: "chat: sign-out --pane requires a pane id" };
-        const snap = await herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {});
+        const { paneId: paneRef, sockPath } = resolvePaneRef(payload.pane);
+        const snap = await herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {}, { sockPath });
         if (!snap.ok) return herdrError(snap);
-        const resolved = findPaneSession(snap.result.snapshot, payload.pane);
+        const resolved = findPaneSession(snap.result.snapshot, paneRef);
         if (!resolved) return { ok: false, error: `chat: no Claude session found for pane "${payload.pane}"` };
         sessionId = resolved.sessionId;
       }
@@ -1238,7 +1249,11 @@ export function createChatHandlers(opts: {
       const { paneId, room, note, from, callerPane } = payload;
       if (!isValidChatName(room)) return { ok: false, error: `invalid room "${room}"` };
       if (!isValidChatName(from)) return { ok: false, error: `invalid handle "${from}"` };
-      return injectIntoPane({ paneId, text: inviteText(room, from, note), callerPane, herdr });
+      const resolved = resolvePaneRef(paneId);
+      const res = await injectIntoPane({ paneId: resolved.paneId, text: inviteText(room, from, note), callerPane, herdr, sockPath: resolved.sockPath });
+      if (!res.ok) return res;
+      // Round-trip: echo the ref the caller addressed, not the bare id.
+      return { ok: true, data: { ...res.data, paneId } };
     },
 
     "chat:archive": async (rawPayload: unknown): Promise<CommandResult<"chat:archive">> => {

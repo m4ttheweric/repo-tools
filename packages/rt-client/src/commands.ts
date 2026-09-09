@@ -244,7 +244,10 @@ export interface InviteResult { paneId: string; delivered: "accepted" | "queued"
 /** Duplicated shape on purpose: mirrors lib/daemon/inject.ts's InjectResult. */
 export type PaneDelivery = "accepted" | "queued" | "refused";
 export interface PaneSendResult { paneId: string; delivered: PaneDelivery; reason?: string }
-export interface PaneFocusResult { paneId: string; focused: boolean }
+/** `attendTab` is set only for a `bg:` ref: focus for a background pane IS
+    the attend flow (a visible tab running a terminal attach), and this is
+    that tab's id. */
+export interface PaneFocusResult { paneId: string; focused: boolean; attendTab?: string }
 
 // SKILLS-53: one judgment, computed once in rt, so the console and the tray
 // never derive two verdicts that can disagree.
@@ -555,7 +558,7 @@ export interface Commands {
   "chat:dm-open": { payload: { from: string; to: string; sessionId?: string }; data: { room: string; created: boolean } };
 
   // ─── Agent handoff (rt agent) ────────────────────────────────────────────
-  "agent:start": { payload: { repo: string; cwd: string; prompt?: string; surface?: AgentSurface; model?: string; effort?: string; account?: string; label?: string; caller?: string; workspace?: string; tab?: string; extraArgs?: string; env?: Record<string, string>; herdrSocket?: string; handle?: string }; data: AgentRecord };
+  "agent:start": { payload: { repo: string; cwd: string; prompt?: string; surface?: AgentSurface; model?: string; effort?: string; account?: string; label?: string; caller?: string; workspace?: string; tab?: string; extraArgs?: string; env?: Record<string, string>; herdrSocket?: string; handle?: string; bg?: boolean }; data: AgentRecord };
   "agent:resume": { payload: { id: string; prompt?: string; surface?: AgentSurface; workspace?: string; tab?: string }; data: AgentRecord };
   "agent:get": { payload: { id: string }; data: AgentRecord };
   "agent:list": { payload: { repo?: string }; data: { agents: AgentRecord[] } };
@@ -569,7 +572,9 @@ export interface Commands {
     data: { pane: ChatPane; ready: boolean };
   };
   "pane:send": { payload: { paneId: string; text: string; callerPane?: string }; data: PaneSendResult };
-  "pane:focus": { payload: { paneId: string }; data: PaneFocusResult };
+  /** `callerWorkspace` (HERDR_WORKSPACE_ID) is required only for a `bg:`
+      ref, whose focus opens an attend tab in the caller's own workspace. */
+  "pane:focus": { payload: { paneId: string; callerWorkspace?: string }; data: PaneFocusResult };
 
   // ─── R013/R016 ────────────────────────────────────────────────
   "cache:read": { payload: { branches?: string[]; maxAgeMs?: number; repoIdentity?: string }; data: Record<string, BranchEnrichment> };
@@ -666,6 +671,13 @@ export interface Commands {
   "worktree:restore": { payload: { repoName: string; tree: string }; data: WorktreeRestoreData };
   "worktree:freshen": { payload: { repoName?: string; tree?: string }; data: WorktreeFreshenData };
   "worktree:adopt": { payload: { repoName: string; claim?: boolean }; data: WorktreeAdoptData };
+
+  // ─── Background server (daemon-owned background herdr session) ──────────
+  "bg:ensure": { payload: { claim?: string }; data: { socket: string; started: boolean; parity: { ok: boolean; drift: string[] } | null } };
+  "bg:status": { payload: Record<string, never>; data: { up: boolean; socket: string; claims: Array<{ owner: string; pane: string | null; createdAt: number }> } };
+  /** Rejects (`ok:false`) naming every live claim owner while any claim is held. */
+  "bg:stop": { payload: Record<string, never>; data: { stopped: boolean } };
+  "bg:release": { payload: { claim: string }; data: { released: boolean } };
 }
 
 export type CommandName = keyof Commands;
@@ -777,4 +789,9 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "worktree:restore",
   "worktree:freshen",
   "worktree:adopt",
+
+  "bg:ensure",
+  "bg:status",
+  "bg:stop",
+  "bg:release",
 ];

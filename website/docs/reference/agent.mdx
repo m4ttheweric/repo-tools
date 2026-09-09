@@ -33,6 +33,7 @@ rt agent <verb> <id> [flags]
 | `--workspace` | text |  | herdr workspace label (default: the repo label) |
 | `--tab` | text |  | herdr tab label (default: the label or handoff id) |
 | `--extra-args` | text |  | Opaque extra claude arguments appended to the launch (override agent.extraArgs) |
+| `--bg` | boolean | `false` | Launch onto the daemon-owned background herdr server instead of the visible one (herdr surface only; requires the rt daemon) |
 | [`--json`](/guides/common-flags) | boolean | `false` | Emit the record as JSON |
 
 _See code: [commands/agent.ts › agent](https://github.com/m4ttstack/rt/blob/main/commands/agent.ts)_

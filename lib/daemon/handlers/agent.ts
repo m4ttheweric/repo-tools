@@ -21,7 +21,11 @@ import { repoLabel } from "../../repo-label.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { rtDir } from "../../rt-paths.ts";
 import { lazyChildLogger } from "../../daemon-logger.ts";
+import { formatPaneRef, parsePaneRef } from "../../../packages/rt-client/src/index.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
+import { bgSocketPath } from "../bg-service.ts";
+import type { BgService } from "../bg-service.ts";
+import type { BgClaimsStore } from "../bg-claims-store.ts";
 import type { CommandResult } from "./types.ts";
 
 export interface HeadlessChild {
@@ -67,6 +71,17 @@ function isStringRecord(v: unknown): v is Record<string, string> {
 // the value is quoted), so anything but a shell-inert identifier is injection.
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+const agentOwner = (id: string): string => `agent:${id}`;
+
+/** herdr invoked against a freshly-spawned bg server can fail before any pane
+    ever runs: the bg env's PATH may not carry herdr's own binary yet
+    (`bin not found at ...`) or herdr's own process exits 127 resolving it.
+    Only that shape is worth a reprobe; any other launch failure (dedup,
+    workspace/tab RPC errors) reprobing would not explain. */
+function isCommandNotFoundShape(message: string): boolean {
+  return /\(127\)/.test(message) || /not found at/i.test(message);
+}
+
 export function createAgentHandlers(opts: {
   db: Database;
   emitEvent: (topic: string, payload?: unknown) => unknown;
@@ -76,6 +91,11 @@ export function createAgentHandlers(opts: {
   herdrRunnerForSocket?: (socket: string) => HerdrRunner;
   spawnHeadless?: (argv: string[], cwd: string) => HeadlessChild;
   insertAgentFn?: typeof insertAgent;
+  /** The daemon-owned background herdr server `--bg` launches onto (spec "The bg service"). Omitted, `bg: true` is refused. */
+  bg?: Pick<BgService, "ensure" | "reprobe">;
+  bgClaims?: Pick<BgClaimsStore, "claim" | "releaseByPane">;
+  /** herd-lifecycle.ts's watch is idempotent by socket, so an already-watched bg socket is a no-op here. */
+  lifecycle?: { watch(socket: string): void };
 }):
   // Direct `unknown`-payload members, not `Pick<TypedHandlers, ...>`: a wider
   // `unknown` param still satisfies TypedHandlers' narrower one at the
@@ -161,6 +181,12 @@ export function createAgentHandlers(opts: {
         return { ok: false, error: `invalid surface "${payload.surface}"; must be one of herdr, headless` };
       }
       const surface: AgentSurface = payload.surface ?? "herdr";
+      if (payload.bg && surface === "headless") {
+        return { ok: false, error: "--bg is a herdr-surface option" };
+      }
+      if (payload.bg && (!opts.bg || !opts.bgClaims || !opts.lifecycle)) {
+        return { ok: false, error: "bg launches require the rt daemon (rt daemon start)" };
+      }
       const prompt = payload.prompt;
       if (surface === "headless" && !prompt) {
         return { ok: false, error: "headless launch requires a prompt (claude -p with no prompt blocks on stdin)" };
@@ -222,13 +248,39 @@ export function createAgentHandlers(opts: {
         if (!getAgent(rec.id, db)) {
           return { ok: false, error: "state.db busy: agent not recorded, not launched" };
         }
+        // Awaited before launch, not folded into the launch() extras spread:
+        // a failed ensure must roll the insert back the same way a failed
+        // launch does, and the socket has to be known before launch runs.
+        let bgSocket: string | undefined;
+        if (payload.bg) {
+          const ensured = await opts.bg!.ensure();
+          bgSocket = ensured.socket;
+          opts.lifecycle!.watch(ensured.socket);
+        }
+        const effectiveSocket = bgSocket ?? payload.herdrSocket;
         const res = await launch(rec, { kind: "start", sessionId: rec.sessionId }, prompt, tabLabel, workspaceLabel, {
           ...(payload.env !== undefined && { env: payload.env }),
-          ...(payload.herdrSocket !== undefined && { herdrSocket: payload.herdrSocket }),
+          ...(effectiveSocket !== undefined && { herdrSocket: effectiveSocket }),
         });
         if (!res.ok) {
           deleteAgent(rec.id, db);
           return res;
+        }
+        // A herd-spawned hidden worker rides the bg socket via herdrSocket,
+        // never payload.bg (its claim is the herd's own, not this record's);
+        // the ref must still store bg: or agent:resume's wasBg check misses
+        // it and relaunches on the visible server. `payload.bg` stays the
+        // primary signal (production and every faked-socket test agree on
+        // it); the socket-equality check only widens it to the flagless
+        // herd:spawn path, where the effective socket really is bgSocketPath().
+        if ((payload.bg || effectiveSocket === bgSocketPath()) && rec.paneId) {
+          // The pane column and AgentRecord.paneId both store the ref, never
+          // the bare pane id: releaseByPane is later called with this same
+          // string, and renderRecord/agent:get print it back verbatim.
+          rec.paneId = formatPaneRef(rec.paneId, "bg");
+        }
+        if (payload.bg && rec.paneId) {
+          opts.bgClaims!.claim(agentOwner(rec.id), rec.paneId);
         }
         if (surface === "herdr" && rec.paneId && rec.tabId && rec.workspaceId) {
           updateAgentPane(rec.id, { paneId: rec.paneId, tabId: rec.tabId, workspaceId: rec.workspaceId }, db);
@@ -236,7 +288,22 @@ export function createAgentHandlers(opts: {
         return res;
       } catch (err) {
         deleteAgent(rec.id, db);
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        const message = err instanceof Error ? err.message : String(err);
+        if (payload.bg && opts.bg && isCommandNotFoundShape(message)) {
+          // Advisory only: the failure this branch handles is exactly the
+          // case where the bg server may be unhealthy, so the reprobe itself
+          // can reject. A reprobe rejection must not replace the launch
+          // error the caller actually needs.
+          let drift = "";
+          try {
+            const report = await opts.bg.reprobe();
+            if (report.drift.length > 0) drift = `; bg env drift: ${report.drift.join("; ")}`;
+          } catch (probeErr) {
+            log.warn({ err: probeErr, id: rec.id }, "agent: bg reprobe failed after launch error");
+          }
+          return { ok: false, error: `${message}${drift}` };
+        }
+        return { ok: false, error: message };
       }
     },
 
@@ -256,11 +323,38 @@ export function createAgentHandlers(opts: {
       const tabLabel = payload.tab ?? `↺ ${rec.label ?? rec.id}`;
       const workspaceLabel = payload.workspace ?? repoLabel(rec.repo);
       const attempt: AgentRecord = { ...rec, surface };
+      // A record whose paneId is a bg: ref was launched on the background
+      // server; resuming it must follow it there, or the new pane lands on
+      // the visible server while the record still claims to be backgrounded.
+      // Surface can be overridden away from herdr on resume (headless has no
+      // pane at all), so the bg path only applies when it stays herdr.
+      const oldRef = rec.paneId;
+      const wasBg = surface === "herdr" && oldRef !== undefined && parsePaneRef(oldRef).server === "bg";
+      if (wasBg && (!opts.bg || !opts.bgClaims || !opts.lifecycle)) {
+        return { ok: false, error: "bg launches require the rt daemon (rt daemon start)" };
+      }
       try {
-        const res = await launch(attempt, { kind: "resume", sessionId: rec.sessionId }, payload.prompt, tabLabel, workspaceLabel);
+        let bgSocket: string | undefined;
+        if (wasBg) {
+          const ensured = await opts.bg!.ensure();
+          bgSocket = ensured.socket;
+          opts.lifecycle!.watch(ensured.socket);
+        }
+        const res = await launch(attempt, { kind: "resume", sessionId: rec.sessionId }, payload.prompt, tabLabel, workspaceLabel, {
+          ...(bgSocket !== undefined && { herdrSocket: bgSocket }),
+        });
         if (!res.ok) return res;
         const now = Date.now();
         markAgentResumed(rec.id, now, db);
+        if (wasBg && attempt.paneId) {
+          // Same owner, new pane: release the stale claim by the exact ref
+          // it was registered under (releaseByPane's own convention), then
+          // reclaim under the new ref before it is ever stored, so the DB
+          // row and the claim agree from the same instant onward.
+          opts.bgClaims!.releaseByPane(oldRef!);
+          attempt.paneId = formatPaneRef(attempt.paneId, "bg");
+          opts.bgClaims!.claim(agentOwner(rec.id), attempt.paneId);
+        }
         if (surface === "herdr" && attempt.paneId && attempt.tabId && attempt.workspaceId) {
           updateAgentPane(rec.id, { paneId: attempt.paneId, tabId: attempt.tabId, workspaceId: attempt.workspaceId }, db);
         }

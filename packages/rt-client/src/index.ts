@@ -68,6 +68,10 @@ export {
   herdAttend,
   herdWrapUp,
   herdStopHidden,
+  bgEnsure,
+  bgStatus,
+  bgStop,
+  bgRelease,
 } from "./client.ts";
 
 export { COMMAND_NAMES, GATE_BY_PANE, gateOptionValue, gateOptionLabel } from "./commands.ts";
@@ -129,6 +133,9 @@ export { repoNameForPath } from "./repos.ts";
 
 export { decidePlacement, openSmartPane } from "./smart-pane.ts";
 export type { Placement, PlacementOpts, HerdrCall } from "./smart-pane.ts";
+
+export { BG_PREFIX, parsePaneRef, formatPaneRef } from "./pane-ref.ts";
+export type { PaneServer, PaneRef } from "./pane-ref.ts";
 
 // ─── Settings (RT-50) ────────────────────────────────────────────────────────
 

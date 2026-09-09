@@ -356,7 +356,7 @@ export function agentStart(
   a: Commands["agent:start"]["payload"], o: RtClientOptions = {},
 ): Promise<RtResponse<AgentRecord>> {
   const payload: Record<string, unknown> = { repo: a.repo, cwd: a.cwd };
-  for (const k of ["prompt", "surface", "model", "effort", "account", "label", "caller", "workspace", "tab", "extraArgs", "env", "herdrSocket", "handle"] as const) {
+  for (const k of ["prompt", "surface", "model", "effort", "account", "label", "caller", "workspace", "tab", "extraArgs", "env", "herdrSocket", "handle", "bg"] as const) {
     if (a[k] !== undefined) payload[k] = a[k];
   }
   return rtCommand<AgentRecord>("agent:start", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
@@ -441,7 +441,9 @@ export function paneFocus(
   a: Commands["pane:focus"]["payload"],
   o: RtClientOptions = {},
 ): Promise<RtResponse<Commands["pane:focus"]["data"]>> {
-  return rtCommand<Commands["pane:focus"]["data"]>("pane:focus", { paneId: a.paneId }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+  const payload: Record<string, unknown> = { paneId: a.paneId };
+  if (a.callerWorkspace !== undefined) payload.callerWorkspace = a.callerWorkspace;
+  return rtCommand<Commands["pane:focus"]["data"]>("pane:focus", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
 // ─── Gates (BOARD-20/21 gate facility) ─────────────────────────────────────
@@ -639,4 +641,33 @@ export function herdStopHidden(
   o: RtClientOptions = {},
 ): Promise<RtResponse<Commands["herd:stop-hidden"]["data"]>> {
   return rtCommand<Commands["herd:stop-hidden"]["data"]>("herd:stop-hidden", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
+}
+
+// ─── Background server (daemon-owned background herdr session) ────────────
+
+/** May spawn `herdr server` and wait for it to bind; budget matches bg-service's own 10s readyTimeoutMs plus margin. */
+export function bgEnsure(
+  a: Commands["bg:ensure"]["payload"] = {},
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["bg:ensure"]["data"]>> {
+  const payload: Record<string, unknown> = {};
+  if (a.claim !== undefined) payload.claim = a.claim;
+  return rtCommand<Commands["bg:ensure"]["data"]>("bg:ensure", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 15_000 });
+}
+
+/** Never ensures/spawns; a plain read of the current state. */
+export function bgStatus(o: RtClientOptions = {}): Promise<RtResponse<Commands["bg:status"]["data"]>> {
+  return rtCommand<Commands["bg:status"]["data"]>("bg:status", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+}
+
+/** Asks the daemon to stop the background server; refuses (ok:false) while any claim is live, naming the owners. */
+export function bgStop(o: RtClientOptions = {}): Promise<RtResponse<Commands["bg:stop"]["data"]>> {
+  return rtCommand<Commands["bg:stop"]["data"]>("bg:stop", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
+}
+
+export function bgRelease(
+  a: Commands["bg:release"]["payload"],
+  o: RtClientOptions = {},
+): Promise<RtResponse<Commands["bg:release"]["data"]>> {
+  return rtCommand<Commands["bg:release"]["data"]>("bg:release", { claim: a.claim }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }

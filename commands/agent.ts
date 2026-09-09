@@ -4,7 +4,8 @@
  *   rt agent start  [--repo <path>] [--prompt <text> | --prompt-file <path>]
  *                   [--surface herdr|headless] [--model M] [--effort E]
  *                   [--account A] [--label L] [--caller C]
- *                   [--workspace W] [--tab T] [--extra-args "<tail>"] [--json]
+ *                   [--workspace W] [--tab T] [--extra-args "<tail>"]
+ *                   [--bg] [--json]
  *   rt agent resume <id|session-uuid> [--prompt <text>] [--surface herdr|headless]
  *                   [--workspace W] [--tab T] [--json]
  *   rt agent show   <id|session-uuid> [--json]
@@ -16,6 +17,7 @@
  */
 
 import { readFileSync, realpathSync } from "fs";
+import { verbHelpRequested } from "../lib/cli-verb-help.ts";
 import { isDaemonRunning } from "../lib/daemon-client.ts";
 import { currentRepoIdentity, repoLabel, resolveRepoArg } from "../lib/repo-arg.ts";
 import {
@@ -37,6 +39,14 @@ function fail(msg: string): never {
 function flagValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
+}
+
+function hasFlag(args: string[], flag: string): boolean {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === flag) return true;
+    if (FLAGS_WITH_VALUES.has(args[i]!)) i++;
+  }
+  return false;
 }
 
 function positional(args: string[]): string | undefined {
@@ -82,7 +92,7 @@ function parseSurface(s: string | undefined): AgentSurface | undefined {
 interface StartArgs {
   prompt?: string; surface?: AgentSurface; model?: string; effort?: string;
   account?: string; label?: string; caller?: string; workspace?: string;
-  tab?: string; extraArgs?: string;
+  tab?: string; extraArgs?: string; bg?: boolean;
 }
 
 function parseStartArgs(args: string[]): StartArgs {
@@ -101,6 +111,10 @@ function parseStartArgs(args: string[]): StartArgs {
   ] as const) {
     const v = flagValue(args, flag);
     if (v !== undefined) out[key] = v;
+  }
+  if (hasFlag(args, "--bg")) {
+    if (surface === "headless") throw new Error("--bg is a herdr-surface option");
+    out.bg = true;
   }
   return out;
 }
@@ -212,6 +226,11 @@ async function runList(args: string[]): Promise<void> {
 
 const USAGE = "usage: rt agent <start|resume|show|list> ...";
 
+/** Stdout usage printer, shared by the --help guard below (fail() covers the error path). */
+function usage(): void {
+  console.log(USAGE);
+}
+
 const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   start: runStart, resume: runResume, show: runShow, list: runList,
 };
@@ -243,6 +262,10 @@ export async function agent(args: string[]): Promise<void> {
     } else {
       fail(USAGE);
     }
+  }
+  if (verbHelpRequested(rest)) {
+    usage();
+    return;
   }
   const handler = VERBS[verb];
   if (!handler) fail(`unknown verb "${verb}": ${USAGE}`);

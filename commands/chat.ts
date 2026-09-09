@@ -43,6 +43,8 @@ import { basename } from "path";
 
 import { loadRepoIndex } from "../lib/repo-index.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
+import { verbHelpRequested } from "../lib/cli-verb-help.ts";
+import { selfPaneRef } from "../lib/self-pane.ts";
 import { findGitRoot, repoAliasForPath, resolveMainWorktreePath } from "../lib/repo-for-cwd.ts";
 import { slugifyChatName as slugify } from "../lib/chat-room-name.ts";
 import { roomForIdentity } from "../lib/chat-room.ts";
@@ -569,7 +571,7 @@ async function runJoin(args: string[]): Promise<void> {
     wakeOn = wakeOnRaw;
   }
 
-  const res = await chatJoin({ room, handle, wakeOn, cwd: safeCwd(), pane: process.env.HERDR_PANE_ID });
+  const res = await chatJoin({ room, handle, wakeOn, cwd: safeCwd(), pane: selfPaneRef() });
   const data = unwrap(res, "join");
 
   if (args.includes("--json")) {
@@ -978,7 +980,7 @@ async function runInvite(args: string[]): Promise<void> {
   const note = flagValue(args, "--note");
   const session = readChatSession(currentSessionId(args));
   const from = session?.handle ?? getSetting<string>("chat.humanHandle").value;
-  const callerPane = process.env.HERDR_PANE_ID;
+  const callerPane = selfPaneRef();
   const res = await chatInvite({ paneId, room, note, from, callerPane }, sockOpts(args));
   const data = unwrap(res, "invite");
   if (args.includes("--json")) {
@@ -1024,7 +1026,7 @@ async function runSignIn(args: string[]): Promise<void> {
   const parsedIdentity = identity ? parseIdentity(identity.identity) : null;
   const repo = identity ? repoLabel(identity.identity) : undefined;
   const branch = root ? getCurrentBranch() ?? undefined : undefined;
-  const pane = process.env.HERDR_PANE_ID;
+  const pane = selfPaneRef();
   const statusText = flagValue(args, "--status");
 
   const noRoomFlag = args.includes("--no-room");
@@ -1223,6 +1225,11 @@ async function runBack(args: string[]): Promise<void> {
 const USAGE =
   "usage: rt chat <join|leave|archive|post|read|ack|claim|release|rooms|who|mark|prune|sign-in|sign-out|away|back|buddies|dm|invite> ...";
 
+/** Stdout usage printer, shared by the --help guard below (fail() covers the error path). */
+function usage(): void {
+  console.log(USAGE);
+}
+
 const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   ack: runAck,
   claim: runClaim,
@@ -1286,6 +1293,10 @@ export async function chat(args: string[]): Promise<void> {
     } else {
       fail(USAGE);
     }
+  }
+  if (verbHelpRequested(rest)) {
+    usage();
+    return;
   }
   const handler = VERBS[verb];
   if (!handler) fail(`unknown verb "${verb}" — ${USAGE}`);

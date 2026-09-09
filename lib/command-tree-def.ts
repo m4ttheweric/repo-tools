@@ -1186,6 +1186,7 @@ export const TREE: Record<string, CommandNode> = {
       { name: "Workspace", flag: "--workspace", type: "text", placeholder: "reviews", hint: "herdr workspace label (default: the repo label)" },
       { name: "Tab", flag: "--tab", type: "text", placeholder: "!7", hint: "herdr tab label (default: the label or handoff id)" },
       { name: "Extra args", flag: "--extra-args", type: "text", placeholder: "\"--foo bar\"", hint: "Opaque extra claude arguments appended to the launch (override agent.extraArgs)" },
+      { name: "Background", flag: "--bg", type: "boolean", default: false, hint: "Launch onto the daemon-owned background herdr server instead of the visible one (herdr surface only; requires the rt daemon)" },
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the record as JSON" },
     ],
   },

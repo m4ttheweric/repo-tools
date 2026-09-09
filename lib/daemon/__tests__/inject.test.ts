@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { herdrRequest } from "../../herdr/client.ts";
 import { fakeHerdr, HerdrFakeError, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
 import { injectIntoPane } from "../inject.ts";
+import { bgSocketPath } from "../bg-service.ts";
 
 const stops: Array<() => void> = [];
 afterEach(() => { for (const s of stops) s(); stops.length = 0; });
@@ -102,6 +103,23 @@ test("the caller's own pane is refused before any herdr call", async () => {
   expect(seen).toHaveLength(0);
 });
 
+// Finding 3: the self-refusal compares in ref space, not bare ids -- paneId
+// here is always the bare id the caller's own ref already resolved against
+// (same visible/bg servers can coincidentally share a bare id).
+test("a visible-pane caller is not refused sending to a bg pane sharing its bare id", async () => {
+  const { herdr, seen } = on((method) => (method === "agent.get" ? agent("blocked") : new HerdrFakeError("invalid_request", method)));
+  const res = await injectIntoPane({ paneId: "w1:p1", text: "x", callerPane: "w1:p1", sockPath: bgSocketPath(), herdr });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "at a prompt" } });
+  expect(seen).toHaveLength(1);
+});
+
+test("a bg-pane caller sending to its own bg ref is refused before any herdr call", async () => {
+  const { herdr, seen } = on(() => new HerdrFakeError("invalid_request", "unreachable in this test"));
+  const res = await injectIntoPane({ paneId: "w1:p1", text: "x", callerPane: "bg:w1:p1", sockPath: bgSocketPath(), herdr });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "that is this pane" } });
+  expect(seen).toHaveLength(0);
+});
+
 test("multi-line text is delivered verbatim as the prompt", async () => {
   const { herdr, seen } = on((method) =>
     method === "agent.get" ? agent("idle")
@@ -117,4 +135,33 @@ test("a missing socket is herdr unavailable (ok:false)", async () => {
   expect(res.ok).toBe(false);
   if (res.ok) throw new Error("unreachable");
   expect(res.error.startsWith("herdr unavailable")).toBe(true);
+});
+
+test("every herdr call carries the caller's sockPath through the full accept flow", async () => {
+  const seenSockPaths: Array<string | undefined> = [];
+  const fakeHerdrWithSock: typeof herdrRequest = async (method, params, o) => {
+    seenSockPaths.push(o?.sockPath);
+    if (method === "agent.get") return { ok: true, result: agent("idle") as never };
+    if (method === "agent.prompt") return { ok: true, result: agent("working") as never };
+    return { ok: false, code: "invalid_request", message: method };
+  };
+  const res = await injectIntoPane({ paneId: "w1:p2", text: "do the thing", herdr: fakeHerdrWithSock, sockPath: "/tmp/bg/herdr.sock" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p2", delivered: "accepted" } });
+  expect(seenSockPaths).toEqual(["/tmp/bg/herdr.sock", "/tmp/bg/herdr.sock"]);
+});
+
+test("the stall nudge and its recovery wait also carry sockPath", async () => {
+  const seenSockPaths: Array<string | undefined> = [];
+  const fakeHerdrWithSock: typeof herdrRequest = async (method, params, o) => {
+    seenSockPaths.push(o?.sockPath);
+    if (method === "agent.get") return { ok: true, result: agent("idle") as never };
+    if (method === "agent.prompt") return { ok: false, code: "timeout", message: "timed out waiting for agent status" };
+    if (method === "pane.send_keys") return { ok: true, result: {} as never };
+    if (method === "agent.wait") return { ok: false, code: "timeout", message: "timed out waiting for agent status" };
+    return { ok: false, code: "invalid_request", message: method };
+  };
+  const res = await injectIntoPane({ paneId: "w1:p2", text: "x", herdr: fakeHerdrWithSock, sockPath: "/tmp/bg/herdr.sock" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p2", delivered: "queued" } });
+  expect(seenSockPaths.every((s) => s === "/tmp/bg/herdr.sock")).toBe(true);
+  expect(seenSockPaths).toHaveLength(4);
 });
