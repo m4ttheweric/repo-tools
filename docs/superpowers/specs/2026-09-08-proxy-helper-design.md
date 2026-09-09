@@ -93,7 +93,10 @@ compiled in):
      environment — verified supported by portless's cli — pointing at the
      invoking user's `~/.portless` per the deck-lane contract; the trust
      run gets the same variable).
-  3. Trust the portless CA (NON-FATAL): run
+  3. Trust the portless CA (NON-FATAL, runs AFTER step 5): the CA does not
+     exist until the bootstrapped daemon mints it on first run, so the
+     helper performs this write after `launchctl bootstrap`, waiting up to
+     20s for `ca.pem` to appear. It runs
      `security add-trusted-cert -d -r trustRoot -k
      /Library/Keychains/System.keychain <ca.pem>` as root. macOS gates
      this write behind `com.apple.trust-settings.admin`, whose rule is
