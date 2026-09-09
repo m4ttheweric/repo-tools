@@ -9,6 +9,7 @@ import { setSetting } from "../../settings/write.ts";
 import type { SecretsSeams } from "../../secrets/store.ts";
 import type { RelayClient } from "../../team/relay-client.ts";
 import type { ApplyContext, StepOutcome } from "../apply.ts";
+import { BASE_PLUGINS } from "../base-plugins.ts";
 import { MERGE_MANIFESTS_MISSING_CODE } from "../skills-materialize.ts";
 import { stageSecret } from "../staging.ts";
 import { readSetupState } from "../state.ts";
@@ -146,7 +147,7 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
         files: { "/usr/local/bin/claude": "bin" },
         exec: async (argv) => {
           execCalls.push(argv);
-          return ok("");
+          return argv[2] === "list" ? ok("[]") : ok("");
         },
       });
       const { ctx, logs } = makeCtx(p);
@@ -172,7 +173,7 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
         files: { "/usr/local/bin/claude": "bin", [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills" }] }) },
         exec: async (argv, opts) => {
           execCalls.push({ argv, env: opts?.env });
-          return ok("");
+          return argv[2] === "list" ? ok("[]") : ok("");
         },
       });
       const { ctx } = makeCtx(p, { team: { slug: "acme", name: "Acme", mode: "none" } });
@@ -187,13 +188,8 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
 
       const marketAdds = execCalls.filter((c) => c.argv.includes("marketplace") && c.argv.includes("add"));
       const installs = execCalls.filter((c) => c.argv[1] === "plugin" && c.argv[2] === "install");
-      const enables = execCalls.filter((c) => c.argv[1] === "plugin" && c.argv[2] === "enable");
       expect(marketAdds).toHaveLength(3);
       expect(installs).toHaveLength(4);
-      // Only the trusted plugins (rt's own baseline) are auto-enabled — the
-      // team-authored one is installed but never gets the enable call (R-F3).
-      expect(enables).toHaveLength(3);
-      expect(enables.map((c) => c.argv.at(-1))).not.toContain("acme-skills@acme-market");
       expect(execCalls.every((c) => c.argv[0] === "/usr/local/bin/claude")).toBe(true);
       expect(execCalls.every((c) => c.env?.CLAUDE_CONFIG_DIR === join(home, ".claude"))).toBe(true);
 
@@ -219,7 +215,7 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
         home,
         env: { PATH: "/usr/local/bin", RT_MERGE_MANIFESTS: "/fake/merge-manifests.sh" },
         files: { "/usr/local/bin/claude": "bin" },
-        exec: async () => ok("materialized"),
+        exec: async (argv) => (argv[2] === "list" ? ok("[]") : ok("materialized")),
       });
       const { ctx } = makeCtx(p);
 
@@ -251,7 +247,10 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
         home,
         env: { PATH: "/usr/local/bin" },
         files: { "/usr/local/bin/claude": "bin" },
-        exec: async (argv) => (argv[2] === "install" ? { code: 3, stdout: "", stderr: "network error" } : ok("")),
+        exec: async (argv) => {
+          if (argv[2] === "list") return ok("[]");
+          return argv[2] === "install" ? { code: 3, stdout: "", stderr: "network error" } : ok("");
+        },
       });
       const { ctx } = makeCtx(p);
 
@@ -269,6 +268,7 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
         env: { PATH: "/usr/local/bin" },
         files: { "/usr/local/bin/claude": "bin" },
         exec: async (argv) => {
+          if (argv[2] === "list") return ok("[]");
           if (argv.includes("marketplace") && argv.includes("add")) return { code: 1, stdout: "", stderr: "marketplace already added" };
           if (argv[2] === "install") return { code: 1, stdout: "", stderr: "plugin already installed" };
           if (argv[2] === "enable") return { code: 1, stdout: "", stderr: "error: unknown subcommand 'enable'" };
@@ -281,6 +281,349 @@ describe("apply steps C: plugins, git.identity, fast-browser, herdr, extension, 
       expect(first.state).toBe("done");
       expect(second.state).toBe("done");
     });
+
+    test("a team-authored pack ends DISABLED, asserted on the resulting state rather than the argv", async () => {
+      const teamDir = join(home, ".mattstack", "teams", "acme");
+      const marketplacePath = join(teamDir, ".claude-plugin", "marketplace.json");
+      // Models the real claude: install enables what it installs, disable turns it off.
+      const enabled: Record<string, boolean> = {};
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin", [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills" }] }) },
+        exec: async (argv) => {
+          const [, , verb, id] = argv;
+          if (verb === "list") return ok(JSON.stringify(Object.keys(enabled).map((k) => ({ id: k, version: "1.0.0", enabled: enabled[k] }))));
+          if (verb === "install") {
+            enabled[id!] = true;
+            return ok("");
+          }
+          if (verb === "disable") {
+            enabled[id!] = false;
+            return ok("");
+          }
+          if (verb === "enable") {
+            enabled[id!] = true;
+            return ok("");
+          }
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { team: { slug: "acme", name: "Acme", mode: "none" } });
+
+      const outcome = await pluginsInstallStep.run(ctx);
+
+      expect(outcome.state).toBe("done");
+      expect(enabled["acme-skills@acme-market"]).toBe(false);
+      for (const base of BASE_PLUGINS) expect(enabled[base]).toBe(true);
+    });
+
+    test("apply does not re-enable a pack the member turned off, and does not disable one they turned on", async () => {
+      // The spec Acceptance bullet: "A member who enables the pack, then runs
+      // rt setup apply, still has it enabled afterwards." This is the only test that
+      // enters the already-installed/update branch, so it also covers the restored
+      // trusted enable.
+      const teamDir = join(home, ".mattstack", "teams", "acme");
+      const marketplacePath = join(teamDir, ".claude-plugin", "marketplace.json");
+      const enabled: Record<string, boolean> = {
+        "acme-skills@acme-market": true, // the member enabled the team pack deliberately
+        "mattstack@mattstack": false, // a baseline plugin that drifted off
+        "fast-browser@mattstack": true,
+        "chat@mattstack": true,
+      };
+      const execCalls: string[][] = [];
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin", [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills" }] }) },
+        exec: async (argv) => {
+          execCalls.push(argv);
+          const [, , verb, id] = argv;
+          if (verb === "list") return ok(JSON.stringify(Object.keys(enabled).map((k) => ({ id: k, version: "1.0.0", enabled: enabled[k] }))));
+          if (verb === "update") return ok(""); // moves version, touches nothing else
+          if (verb === "install") {
+            enabled[id!] = true;
+            return ok("");
+          }
+          if (verb === "enable") {
+            enabled[id!] = true;
+            return ok("");
+          }
+          if (verb === "disable") {
+            enabled[id!] = false;
+            return ok("");
+          }
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { team: { slug: "acme", name: "Acme", mode: "none" } });
+
+      const outcome = await pluginsInstallStep.run(ctx);
+
+      expect(outcome.state).toBe("done");
+      expect(enabled["acme-skills@acme-market"]).toBe(true); // deliberate enable survives apply
+      expect(enabled["mattstack@mattstack"]).toBe(true); // trusted plugin got its enable back
+      expect(execCalls.some((a) => a[2] === "install")).toBe(false);
+    });
+
+    test("a team pack the member left disabled is still disabled after apply", async () => {
+      const teamDir = join(home, ".mattstack", "teams", "acme");
+      const marketplacePath = join(teamDir, ".claude-plugin", "marketplace.json");
+      const enabled: Record<string, boolean> = {
+        "acme-skills@acme-market": false,
+        "mattstack@mattstack": true,
+        "fast-browser@mattstack": true,
+        "chat@mattstack": true,
+      };
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin", [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills" }] }) },
+        exec: async (argv) => {
+          const [, , verb, id] = argv;
+          if (verb === "list") return ok(JSON.stringify(Object.keys(enabled).map((k) => ({ id: k, version: "1.0.0", enabled: enabled[k] }))));
+          if (verb === "install") {
+            enabled[id!] = true;
+            return ok("");
+          }
+          if (verb === "enable") {
+            enabled[id!] = true;
+            return ok("");
+          }
+          if (verb === "disable") {
+            enabled[id!] = false;
+            return ok("");
+          }
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { team: { slug: "acme", name: "Acme", mode: "none" } });
+
+      await pluginsInstallStep.run(ctx);
+
+      expect(enabled["acme-skills@acme-market"]).toBe(false);
+    });
+
+    test("a listed team pack whose update claims absence never reaches install, so a deliberate enable survives", async () => {
+      const teamDir = join(home, ".mattstack", "teams", "acme");
+      const marketplacePath = join(teamDir, ".claude-plugin", "marketplace.json");
+      const enabled: Record<string, boolean> = { "acme-skills@acme-market": true };
+      for (const base of BASE_PLUGINS) enabled[base] = true;
+      const execCalls: string[][] = [];
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin", [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills" }] }) },
+        exec: async (argv) => {
+          execCalls.push(argv);
+          const [, , verb, id] = argv;
+          if (verb === "list") return ok(JSON.stringify(Object.keys(enabled).map((k) => ({ id: k, version: "1.0.0", enabled: enabled[k] }))));
+          if (verb === "update") return id === "acme-skills@acme-market" ? { code: 1, stdout: "", stderr: 'Plugin "acme-skills" is not installed' } : ok("");
+          if (verb === "install") {
+            enabled[id!] = true;
+            return ok("");
+          }
+          if (verb === "disable") {
+            enabled[id!] = false;
+            return ok("");
+          }
+          if (verb === "enable") {
+            enabled[id!] = true;
+            return ok("");
+          }
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { team: { slug: "acme", name: "Acme", mode: "none" } });
+
+      const outcome = await pluginsInstallStep.run(ctx);
+
+      expect(outcome.state).toBe("failed");
+      expect(execCalls.some((a) => a[2] === "install")).toBe(false);
+      expect(enabled["acme-skills@acme-market"]).toBe(true);
+    });
+
+    test("a rolled-back pack is not recorded in setup-state as installed", async () => {
+      const teamDir = join(home, ".mattstack", "teams", "acme");
+      const marketplacePath = join(teamDir, ".claude-plugin", "marketplace.json");
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin", [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills" }] }) },
+        exec: async (argv) => {
+          const [, , verb] = argv;
+          if (verb === "list") return ok("[]");
+          if (verb === "disable") return { code: 1, stdout: "", stderr: "boom" };
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { team: { slug: "acme", name: "Acme", mode: "none" } });
+
+      await pluginsInstallStep.run(ctx);
+
+      expect(readSetupState(p).plugins).not.toContain("acme-skills@acme-market");
+    });
+
+    test("a rolled-back pack is in neither the done detail's plugin count nor its pending note", async () => {
+      const teamDir = join(home, ".mattstack", "teams", "acme");
+      const marketplacePath = join(teamDir, ".claude-plugin", "marketplace.json");
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin", [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills" }] }) },
+        exec: async (argv) => {
+          const [, , verb] = argv;
+          if (verb === "list") return ok("[]");
+          if (verb === "disable") return { code: 1, stdout: "", stderr: "boom" };
+          return ok("");
+        },
+      });
+      const { ctx, logs } = makeCtx(p, { team: { slug: "acme", name: "Acme", mode: "none" } });
+
+      const outcome = await pluginsInstallStep.run(ctx);
+
+      expect(outcome.state).toBe("done");
+      expect(detailOf(outcome)).toContain(`${BASE_PLUGINS.length} plugin(s)`);
+      expect(detailOf(outcome)).not.toContain("awaiting your approval");
+      expect(detailOf(outcome)).not.toContain("acme-skills@acme-market");
+      expect(logs.some((l) => l.line.includes("installed but NOT enabled"))).toBe(false);
+    });
+
+    test("a fresh trusted install is enabled by the step, since the install itself leaves it off", async () => {
+      const teamDir = join(home, ".mattstack", "teams", "acme");
+      const marketplacePath = join(teamDir, ".claude-plugin", "marketplace.json");
+      // `install` deliberately does not touch `enabled`, so only an explicit
+      // `enable` can flip one on.
+      const enabled: Record<string, boolean> = {};
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin", [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills" }] }) },
+        exec: async (argv) => {
+          const [, , verb, id] = argv;
+          if (verb === "list") return ok("[]");
+          if (verb === "enable") {
+            enabled[id!] = true;
+            return ok("");
+          }
+          if (verb === "disable") {
+            enabled[id!] = false;
+            return ok("");
+          }
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { team: { slug: "acme", name: "Acme", mode: "none" } });
+
+      const outcome = await pluginsInstallStep.run(ctx);
+
+      expect(outcome.state).toBe("done");
+      for (const base of BASE_PLUGINS) expect(enabled[base]).toBe(true);
+      expect(enabled["acme-skills@acme-market"]).toBe(false);
+    });
+
+    test("a trusted plugin missing from the listing whose install reports already-installed still gets its enable", async () => {
+      const teamDir = join(home, ".mattstack", "teams", "acme");
+      const marketplacePath = join(teamDir, ".claude-plugin", "marketplace.json");
+      // The `current` route: installed at another scope, so possibly disabled
+      // there, and settlePack returns without ever enabling it.
+      const enabled: Record<string, boolean> = {};
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin", [marketplacePath]: JSON.stringify({ name: "acme-market", plugins: [{ name: "acme-skills" }] }) },
+        exec: async (argv) => {
+          const [, , verb, id] = argv;
+          if (verb === "list") return ok("[]");
+          if (verb === "install") return { code: 1, stdout: "", stderr: "plugin already installed" };
+          if (verb === "enable") {
+            enabled[id!] = true;
+            return ok("");
+          }
+          if (verb === "disable") {
+            enabled[id!] = false;
+            return ok("");
+          }
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p, { team: { slug: "acme", name: "Acme", mode: "none" } });
+
+      const outcome = await pluginsInstallStep.run(ctx);
+
+      expect(outcome.state).toBe("done");
+      for (const base of BASE_PLUGINS) expect(enabled[base]).toBe(true);
+      expect("acme-skills@acme-market" in enabled).toBe(false);
+    });
+
+    test("the settlement runs at the step's own 60s timeout, not the converge budget's 30s", async () => {
+      const execCalls: { argv: string[]; timeoutMs?: number }[] = [];
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin" },
+        exec: async (argv, opts) => {
+          execCalls.push({ argv, timeoutMs: opts?.timeoutMs });
+          return argv[2] === "list" ? ok("[]") : ok("");
+        },
+      });
+      const { ctx } = makeCtx(p);
+
+      expect((await pluginsInstallStep.run(ctx)).state).toBe("done");
+
+      const installs = execCalls.filter((c) => c.argv[2] === "install");
+      expect(installs.length).toBe(BASE_PLUGINS.length);
+      expect(installs.every((c) => c.timeoutMs === 60_000)).toBe(true);
+    });
+
+    test("a claude without `plugin update` settles the installed plugin instead of failing the step", async () => {
+      const installed = BASE_PLUGINS.map((id) => ({ id, version: "1.0.0", enabled: true }));
+      const execCalls: string[][] = [];
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin" },
+        exec: async (argv) => {
+          execCalls.push(argv);
+          if (argv[2] === "list") return ok(JSON.stringify(installed));
+          if (argv[2] === "update") return { code: 1, stdout: "", stderr: "error: unknown subcommand 'update'" };
+          if (argv[2] === "install") return { code: 1, stdout: "", stderr: "plugin already installed" };
+          return ok("");
+        },
+      });
+      const { ctx } = makeCtx(p);
+
+      const outcome = await pluginsInstallStep.run(ctx);
+
+      expect(outcome.state).toBe("done");
+      expect(execCalls.some((a) => a[2] === "install")).toBe(true);
+    });
+
+    test.each([['Plugin "foo" not found'], ['Plugin "foo" is not installed']])(
+      "an update failing with %j falls through to the settlement instead of failing the step",
+      async (stderr) => {
+        const installed = BASE_PLUGINS.map((id) => ({ id, version: "1.0.0", enabled: true }));
+        const execCalls: string[][] = [];
+        const p = fakeProbes({
+          home,
+          env: { PATH: "/usr/local/bin" },
+          files: { "/usr/local/bin/claude": "bin" },
+          exec: async (argv) => {
+            execCalls.push(argv);
+            if (argv[2] === "list") return ok(JSON.stringify(installed));
+            if (argv[2] === "update") return { code: 1, stdout: "", stderr };
+            if (argv[2] === "install") return { code: 1, stdout: "", stderr: "plugin already installed" };
+            return ok("");
+          },
+        });
+        const { ctx } = makeCtx(p);
+
+        const outcome = await pluginsInstallStep.run(ctx);
+
+        expect(outcome.state).toBe("done");
+        expect(execCalls.some((a) => a[2] === "install")).toBe(true);
+      },
+    );
   });
 
   // ─── git.identity ───────────────────────────────────────────────────────

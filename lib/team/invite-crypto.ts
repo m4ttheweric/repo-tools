@@ -4,6 +4,7 @@ import type { InvitePointer } from "../setup/intent.ts";
 export const INVITE_ID_BYTES = 16;
 const KEY_BYTES = 32;
 const IV_BYTES = 12;
+const CODE_LENGTH = 77;
 const ID_HEX_PATTERN = new RegExp(`^[0-9a-f]{${INVITE_ID_BYTES * 2}}$`);
 
 // Crockford base32: excludes I, L, O, U to avoid visual/audio ambiguity.
@@ -58,6 +59,35 @@ function normalizeCode(code: string): string {
     .toUpperCase()
     .replace(/O/g, "0")
     .replace(/[IL]/g, "1");
+}
+
+/**
+ * The URL shape is host-agnostic on purpose: a link minted under
+ * RT_JOIN_BASE_URL carries the code in the same fragment, and anchoring this
+ * to mattstack.dev would break the VM harness the override exists for.
+ */
+function codeFromUrl(input: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    return null;
+  }
+  if (url.protocol === "mattstack:") {
+    if (url.host.toLowerCase() !== "join") return null;
+    const parts = url.pathname.split("/").filter(Boolean);
+    return parts.length === 1 ? parts[0]! : null;
+  }
+  return url.hash.startsWith("#") ? url.hash.slice(1) : null;
+}
+
+/** The bare code, whether it arrived bare, as a deep link, or as a join-page URL; null when the input holds no code-shaped value. */
+export function extractInviteCode(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const normalized = normalizeCode(codeFromUrl(trimmed) ?? trimmed);
+  if (normalized.length !== CODE_LENGTH) return null;
+  return [...normalized].every((ch) => CROCKFORD_ALPHABET.includes(ch)) ? normalized : null;
 }
 
 function hexToBytes(hex: string): Uint8Array {
@@ -245,7 +275,7 @@ export function encodeCode(idHex: string, key: Uint8Array): string {
 export function decodeCode(code: string): { idHex: string; key: Uint8Array } {
   const normalized = normalizeCode(code);
   // 16 id bytes + 32 key bytes, base32-encoded without padding, is always 77 chars.
-  if (normalized.length !== 77) {
+  if (normalized.length !== CODE_LENGTH) {
     throw new UserActionableError("invite-malformed", "invite code is the wrong length");
   }
   const bytes = base32Decode(normalized);

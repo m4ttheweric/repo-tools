@@ -12,8 +12,10 @@ import type { Logger } from "pino";
 import { getSetting } from "../settings/resolve.ts";
 import { mattstackHome } from "../rt-paths.ts";
 import { createRealProbes, type Probes } from "../setup/probes.ts";
+import { convergePackCache } from "../setup/pack-cache.ts";
 import { parseOriginUrl } from "../setup/team-settings.ts";
 import { UserActionableError } from "../setup/errors.ts";
+import { readTeamLocal } from "../team/team-local.ts";
 import {
   startSnapshot,
   teamSnapshotSpec,
@@ -44,6 +46,8 @@ export interface TeamSnapshotsDeps {
   clearTimeout?: (h: ReturnType<typeof setTimeout>) => void;
   exec?: Parameters<typeof startSnapshot>[1]["exec"];
   db?: Database;
+  /** Injectable so tests never shell out to a real claude. */
+  converge?: typeof convergePackCache;
 }
 
 export interface TeamSnapshotsHandle {
@@ -73,7 +77,8 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
   const setTimer = rawDeps.setTimeout ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
   const clearTimer = rawDeps.clearTimeout ?? ((h: ReturnType<typeof setTimeout>) => clearTimeout(h));
   const readSettings = rawDeps.readSettings ?? (() => getSetting<TeamSnapshotSettings>("rt.teamSnapshot").value);
-  const instances = new Map<string, { handle: SnapshotHandle; dir: string }>();
+  const converge = rawDeps.converge ?? convergePackCache;
+  const instances = new Map<string, { handle: SnapshotHandle; dir: string; pullOnly: boolean }>();
   const skippedNoRemote = new Set<string>();
   let watcher: { close(): void } | null = null;
   let debounce: ReturnType<typeof setTimeout> | null = null;
@@ -124,6 +129,11 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
     return rest;
   }
 
+  /** A clone that arrived by redeeming an invite does not write the remote. Absent record means false, so nothing that predates the field changes behavior. */
+  function pullOnlyFor(slug: string): boolean {
+    return readTeamLocal(probes, slug).joinedByRt;
+  }
+
   async function rescan(): Promise<void> {
     if (stopped) return;
     const s = settings();
@@ -138,7 +148,17 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
         const dir = join(teamsDir, slug);
         if (!existsSync(join(dir, ".git"))) continue;
         present.add(slug);
-        if (instances.has(slug)) continue;
+        const pullOnly = pullOnlyFor(slug);
+        const running = instances.get(slug);
+        if (running) {
+          // The mode is a fact about the machine, and the record can change
+          // under a running daemon (a join, a hand edit). Re-spec rather than
+          // leaving a member pushing until someone restarts the daemon.
+          if (running.pullOnly === pullOnly) continue;
+          running.handle.stop();
+          instances.delete(slug);
+          rawDeps.log.info({ slug, pullOnly }, "team-snapshots: mode changed; restarting");
+        }
         const originUrl = originOf(dir);
         if (!originUrl) {
           if (!skippedNoRemote.has(slug)) {
@@ -148,7 +168,15 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
           continue;
         }
         skippedNoRemote.delete(slug);
-        const spec = teamSnapshotSpec(slug, dir, { pullIntervalSec: clampPullIntervalSec(s.pullIntervalSec), originUrl, probes });
+        const spec = teamSnapshotSpec(slug, dir, {
+          pullIntervalSec: clampPullIntervalSec(s.pullIntervalSec),
+          originUrl,
+          probes,
+          pullOnly,
+          onPulled: async () => {
+            await converge(probes, slug, rawDeps.log.child({ team: slug }));
+          },
+        });
         const handle = start(spec, {
           log: rawDeps.log.child({ team: slug }),
           broadcast: rawDeps.broadcast,
@@ -159,7 +187,7 @@ export function startTeamSnapshots(rawDeps: TeamSnapshotsDeps): TeamSnapshotsHan
           db: rawDeps.db,
           readSettings: () => snapshotSettings(settings()),
         });
-        instances.set(slug, { handle, dir });
+        instances.set(slug, { handle, dir, pullOnly });
         rawDeps.log.info({ slug }, "team-snapshots: watching");
       }
     }

@@ -5,6 +5,7 @@ import { join } from "path";
 import { startTeamSnapshots } from "../team-snapshots.ts";
 import type { SnapshotSpec } from "../home-snapshot.ts";
 import { fakeProbes } from "../../setup/__tests__/fakes.ts";
+import { writeTeamLocal } from "../../team/team-local.ts";
 
 function fakeLog() {
   const calls: { level: string; args: unknown[] }[] = [];
@@ -25,7 +26,7 @@ const flush = () => new Promise<void>((resolve) => { globalThis.setTimeout(resol
 const warned = (log: ReturnType<typeof fakeLog>, needle: string): boolean =>
   log.calls.some((c) => c.level === "warn" && JSON.stringify(c.args).includes(needle));
 
-function harness() {
+function harness(opts: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), "rt-team-snapshots-"));
   const started: { spec: SnapshotSpec; stopped: boolean }[] = [];
   const watchCalls: { path: string; options: { recursive: boolean } }[] = [];
@@ -70,6 +71,7 @@ function harness() {
       const i = pending.findIndex((t) => t.id === (h as unknown as number));
       if (i >= 0) pending.splice(i, 1);
     },
+    ...opts,
   };
   return {
     root, started, deps, log, settings, watchCalls, pending,
@@ -81,6 +83,8 @@ function harness() {
       if (!timer) throw new Error("no interval rescan is armed");
       timer.cb();
     },
+    startedSpecs: () => started.map((s) => s.spec),
+    stoppedIds: () => started.filter((s) => s.stopped).map((s) => s.spec.id),
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
@@ -278,5 +282,76 @@ describe("startTeamSnapshots", () => {
     expect(h.pending.map((t) => t.ms)).toEqual([30_000]);
     handle.stop();
     h.cleanup();
+  });
+
+  test("each clone's spec carries an onPulled that converges that slug's packs", async () => {
+    const converged: string[] = [];
+    const h = harness({
+      converge: async (_p: unknown, slug: string) => {
+        converged.push(slug);
+        return { updated: [], installed: [], rolledBack: [], current: [], skipped: [], failed: [] };
+      },
+    });
+    clone(h.root, "acme");
+    const handle = startTeamSnapshots(h.deps);
+    await handle.ready;
+
+    const spec = h.started[0]!.spec;
+    expect(typeof spec.pull?.onPulled).toBe("function");
+    await spec.pull!.onPulled!("fast-forwarded");
+    expect(converged).toEqual(["acme"]);
+
+    handle.stop();
+    h.cleanup();
+  });
+
+  describe("pull-only mode", () => {
+    test("a joined clone starts pull-only", async () => {
+      const h = harness();
+      clone(h.root, "acme");
+      writeTeamLocal(h.deps.probes, "acme", { createdByRt: false, joinedByRt: true, rtMayManageMembership: false });
+      const handle = startTeamSnapshots(h.deps);
+      await handle.ready;
+      expect(h.startedSpecs().find((s) => s.id === "team:acme")?.pullOnly).toBe(true);
+      handle.stop();
+      h.cleanup();
+    });
+
+    test("an owner clone is not pull-only", async () => {
+      const h = harness();
+      clone(h.root, "acme");
+      writeTeamLocal(h.deps.probes, "acme", { createdByRt: true, joinedByRt: false, rtMayManageMembership: false });
+      const handle = startTeamSnapshots(h.deps);
+      await handle.ready;
+      expect(h.startedSpecs().find((s) => s.id === "team:acme")?.pullOnly).toBeFalsy();
+      handle.stop();
+      h.cleanup();
+    });
+
+    test("a clone with no record at all keeps pushing, so nothing existing goes inert", async () => {
+      const h = harness();
+      clone(h.root, "acme");
+      const handle = startTeamSnapshots(h.deps);
+      await handle.ready;
+      expect(h.startedSpecs().find((s) => s.id === "team:acme")?.pullOnly).toBeFalsy();
+      handle.stop();
+      h.cleanup();
+    });
+
+    test("a record that changes under a running daemon restarts the instance in the new mode", async () => {
+      const h = harness();
+      clone(h.root, "acme");
+      const handle = startTeamSnapshots(h.deps);
+      await handle.ready;
+      expect(h.startedSpecs().at(-1)?.pullOnly).toBeFalsy();
+
+      writeTeamLocal(h.deps.probes, "acme", { createdByRt: false, joinedByRt: true, rtMayManageMembership: false });
+      await handle.rescan();
+
+      expect(h.startedSpecs().at(-1)?.pullOnly).toBe(true);
+      expect(h.stoppedIds()).toContain("team:acme");
+      handle.stop();
+      h.cleanup();
+    });
   });
 });

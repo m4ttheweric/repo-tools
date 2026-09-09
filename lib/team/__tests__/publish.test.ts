@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { fakeProbes } from "../../setup/__tests__/fakes.ts";
 import { publishTeam } from "../publish.ts";
+import { teamLocalPath } from "../team-local.ts";
 import { UserActionableError } from "../../setup/errors.ts";
 
 const DIR = "/home/x/.mattstack/teams/acme";
@@ -76,6 +77,25 @@ describe("publishTeam", () => {
 
     expect(thrown).toBeInstanceOf(UserActionableError);
     expect((thrown as UserActionableError).code).toBe("no-team-zone");
+    expect(p.calls.exec).toEqual([]);
+  });
+
+  test("publish refuses on a joined clone", async () => {
+    const p = probesWithZone({
+      home: "/home/x",
+      files: { [teamLocalPath("/home/x", "acme")]: JSON.stringify({ createdByRt: false, joinedByRt: true, rtMayManageMembership: false }) },
+    });
+
+    let thrown: unknown;
+    try {
+      await publishTeam(p, "acme", null);
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(UserActionableError);
+    expect((thrown as UserActionableError).code).toBe("team-pull-only");
+    expect((thrown as UserActionableError).message).toMatch(/pull-only/);
     expect(p.calls.exec).toEqual([]);
   });
 

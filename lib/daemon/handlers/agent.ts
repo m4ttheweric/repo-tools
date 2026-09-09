@@ -12,7 +12,7 @@ import { dirname, join } from "path";
 import type { Database } from "bun:sqlite";
 import type { Logger } from "pino";
 import {
-  deleteAgent, finishAgent, getAgent, insertAgent, listAgents, markAgentResumed,
+  deleteAgent, finishAgent, getAgent, insertAgent, isValidChatName, listAgents, markAgentResumed,
   newAgentId, reserveAgentHandle, updateAgentPane, type AgentRecord, type AgentSurface,
 } from "../../state/index.ts";
 import { buildClaudeArgv, buildPaneCommand, type ClaudeInvocation } from "../../agent-argv.ts";
@@ -58,12 +58,22 @@ function agentResultPath(id: string): string {
   return join(rtDir(), "agents", `${id}.json`);
 }
 
+function isStringRecord(v: unknown): v is Record<string, string> {
+  return typeof v === "object" && v !== null && !Array.isArray(v) &&
+    Object.values(v).every((x) => typeof x === "string");
+}
+
+// buildPaneCommand interpolates the key into the pane's shell line raw (only
+// the value is quoted), so anything but a shell-inert identifier is injection.
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 export function createAgentHandlers(opts: {
   db: Database;
   emitEvent: (topic: string, payload?: unknown) => unknown;
   /** Daemon logger, wired from the router's ctx.log; falls back to a lazy child logger for callers (tests) that construct handlers directly. */
   log?: Logger;
   herdrRunner?: HerdrRunner;
+  herdrRunnerForSocket?: (socket: string) => HerdrRunner;
   spawnHeadless?: (argv: string[], cwd: string) => HeadlessChild;
   insertAgentFn?: typeof insertAgent;
 }):
@@ -85,6 +95,7 @@ export function createAgentHandlers(opts: {
     prompt: string | undefined,
     tabLabel: string,
     workspaceLabel: string,
+    extra: { env?: Record<string, string>; herdrSocket?: string } = {},
   ): Promise<CommandResult<"agent:start">> {
     const inv: ClaudeInvocation = {
       session,
@@ -95,10 +106,13 @@ export function createAgentHandlers(opts: {
       ...(rec.handle !== undefined && { name: rec.handle }),
       ...(rec.extraArgs !== undefined && { extraArgs: rec.extraArgs }),
       ...(prompt !== undefined && { prompt }),
+      ...(extra.env !== undefined && { env: extra.env }),
     };
 
     if (rec.surface === "herdr") {
-      const runner = opts.herdrRunner ?? defaultHerdrRunner();
+      const runner = extra.herdrSocket
+        ? (opts.herdrRunnerForSocket ?? ((socket: string) => defaultHerdrRunner({ ...process.env, HERDR_SOCKET_PATH: socket })))(extra.herdrSocket)
+        : (opts.herdrRunner ?? defaultHerdrRunner());
       const out = await launchInWorkspace(
         { workspaceLabel, tabLabel, paneCommand: buildPaneCommand(rec.cwd, inv) },
         runner,
@@ -151,6 +165,21 @@ export function createAgentHandlers(opts: {
       if (surface === "headless" && !prompt) {
         return { ok: false, error: "headless launch requires a prompt (claude -p with no prompt blocks on stdin)" };
       }
+      if (payload.env !== undefined && !isStringRecord(payload.env)) {
+        return { ok: false, error: "env must be an object of strings" };
+      }
+      if (payload.env !== undefined && !Object.keys(payload.env).every((k) => ENV_KEY_RE.test(k))) {
+        return { ok: false, error: "invalid env key" };
+      }
+      // Headless spawns argv directly (no pane shell line for buildPaneCommand
+      // to interpolate env into), so a silently dropped env would run without
+      // the variables the caller thinks it passed.
+      if (payload.env !== undefined && surface === "headless") {
+        return { ok: false, error: "env is only supported for the herdr surface" };
+      }
+      if (payload.handle !== undefined && !isValidChatName(payload.handle)) {
+        return { ok: false, error: "invalid handle" };
+      }
       const rec: AgentRecord = {
         id: newAgentId(),
         repo, cwd, provider: "claude", surface,
@@ -169,6 +198,8 @@ export function createAgentHandlers(opts: {
       if (payload.caller !== undefined) rec.caller = payload.caller;
       if (surface === "headless") {
         rec.resultPath = agentResultPath(rec.id);
+      } else if (payload.handle) {
+        rec.handle = payload.handle;
       } else {
         // Headless never signs into chat (see claudeArgs), so reserving a
         // handle for it would only burn an LRU pool slot no one adopts.
@@ -191,7 +222,10 @@ export function createAgentHandlers(opts: {
         if (!getAgent(rec.id, db)) {
           return { ok: false, error: "state.db busy: agent not recorded, not launched" };
         }
-        const res = await launch(rec, { kind: "start", sessionId: rec.sessionId }, prompt, tabLabel, workspaceLabel);
+        const res = await launch(rec, { kind: "start", sessionId: rec.sessionId }, prompt, tabLabel, workspaceLabel, {
+          ...(payload.env !== undefined && { env: payload.env }),
+          ...(payload.herdrSocket !== undefined && { herdrSocket: payload.herdrSocket }),
+        });
         if (!res.ok) {
           deleteAgent(rec.id, db);
           return res;

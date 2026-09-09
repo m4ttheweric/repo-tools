@@ -3,7 +3,11 @@
  * pass, Task 3). A daemon-internal EventsBus.onBroadcast subscriber that
  * turns a matching `("event", frame)` broadcast into a queued desktop
  * notification, suppressed when the event's paneId is the currently
- * focused pane (the user is already looking at it).
+ * focused pane (the user is already looking at it). A rule's optional `url`
+ * is interpolated the same way as title/message and carried onto the event
+ * for the tray's click routing. The paneId used for both focus lookup and
+ * the event falls back to `payload.origin.paneId` when the payload has no
+ * top-level `paneId` (see resolvePaneId).
  *
  * Rules are re-read per event (deps.rules()), not cached at subscribe time,
  * so a settings edit to rt.notify.eventBridges takes effect on the next
@@ -20,6 +24,48 @@ export interface EventBridgeRule {
   title: string;
   message: string;
   subjectPrefix?: string;
+  url?: string;
+}
+
+/** Parses the rt.notify.eventBridges setting value into rules, shared by the
+    daemon's live setting read and by tests. Non-array input yields `[]`
+    (warns unless `raw` is `undefined`, the unset-setting case). An entry
+    missing pattern/category/title/message, or with a non-string
+    subjectPrefix/url, is skipped with a warn. */
+export function parseEventBridgeRules(raw: unknown, warn: (o: unknown, msg: string) => void): EventBridgeRule[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    warn({ raw }, "rt.notify.eventBridges must be an array; ignoring");
+    return [];
+  }
+  const rules: EventBridgeRule[] = [];
+  for (const entry of raw) {
+    const e = entry as Partial<EventBridgeRule> | null;
+    if (
+      !e || typeof e !== "object" ||
+      typeof e.pattern !== "string" || typeof e.category !== "string" ||
+      typeof e.title !== "string" || typeof e.message !== "string"
+    ) {
+      warn({ entry }, "rt.notify.eventBridges: skipping invalid rule entry");
+      continue;
+    }
+    const rawSubjectPrefix = (e as { subjectPrefix?: unknown }).subjectPrefix;
+    if (rawSubjectPrefix !== undefined && typeof rawSubjectPrefix !== "string") {
+      warn({ entry }, "rt.notify.eventBridges: skipping rule with non-string subjectPrefix");
+      continue;
+    }
+    const rawUrl = (e as { url?: unknown }).url;
+    if (rawUrl !== undefined && typeof rawUrl !== "string") {
+      warn({ entry }, "rt.notify.eventBridges: skipping rule with non-string url");
+      continue;
+    }
+    rules.push({
+      pattern: e.pattern, category: e.category, title: e.title, message: e.message,
+      ...(rawSubjectPrefix !== undefined ? { subjectPrefix: rawSubjectPrefix } : {}),
+      ...(rawUrl !== undefined ? { url: rawUrl } : {}),
+    });
+  }
+  return rules;
 }
 
 interface BroadcastEventFrame {
@@ -59,6 +105,19 @@ function isEventFrame(data: unknown): data is BroadcastEventFrame {
   return typeof d.topic === "string";
 }
 
+/** `payload.paneId` wins when it is a non-empty string; otherwise falls
+    back to `payload.origin.paneId`, since an engine-opened gate carries the
+    pane id only inside `origin`. */
+function resolvePaneId(payload: Record<string, unknown>): string | undefined {
+  if (typeof payload.paneId === "string" && payload.paneId !== "") return payload.paneId;
+  const origin = payload.origin;
+  if (origin && typeof origin === "object") {
+    const originPaneId = (origin as Record<string, unknown>).paneId;
+    if (typeof originPaneId === "string" && originPaneId !== "") return originPaneId;
+  }
+  return undefined;
+}
+
 export function startNotifyBridge(deps: {
   onBroadcast(fn: (type: string, data: unknown) => void): () => void;
   rules(): EventBridgeRule[];
@@ -70,7 +129,7 @@ export function startNotifyBridge(deps: {
 
   const handleMatch = async (frame: BroadcastEventFrame, rule: EventBridgeRule): Promise<void> => {
     const payload = (frame.payload && typeof frame.payload === "object" ? frame.payload : {}) as Record<string, unknown>;
-    const paneId = typeof payload.paneId === "string" ? payload.paneId : undefined;
+    const paneId = resolvePaneId(payload);
 
     if (paneId !== undefined) {
       let focused = false;
@@ -82,6 +141,8 @@ export function startNotifyBridge(deps: {
       if (focused) return;
     }
 
+    const url = typeof rule.url === "string" ? interpolate(rule.url, payload) : "";
+
     const event: NotificationEvent = {
       id: String(frame.id),
       title: interpolate(rule.title, payload),
@@ -89,6 +150,7 @@ export function startNotifyBridge(deps: {
       category: rule.category,
       timestamp: Date.now(),
       paneId,
+      ...(url !== "" ? { url } : {}),
     };
 
     try {

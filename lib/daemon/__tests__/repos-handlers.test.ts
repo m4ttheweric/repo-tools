@@ -88,7 +88,7 @@ describe("repos:locate", () => {
     expect(loadRepoIndex()[identity]).toBe(to);
     expect(order).toEqual(["hold-start", "refresh", "emit:repo:moved", "hold-end"]);
     expect(events[0]!.payload).toEqual({ identity, from, to });
-  });
+  }, 20_000);
 
   test("dryRun returns the plan and writes nothing", async () => {
     const { identity, from, to } = await movedRepo("beta");

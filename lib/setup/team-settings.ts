@@ -135,8 +135,14 @@ export function forgeFromHost(host: string): { host: string; provider: "github" 
   return null;
 }
 
-export function forgeFromRemote(remote: string): { host: string; provider: "github" | "gitlab" } | null {
+/** A remote's bare host, scheme and userinfo stripped, for copy that must name a host rt does not recognize as a forge. */
+export function hostFromRemote(remote: string): string | null {
   const parsed = parseRemoteUrl(remote);
   if (!parsed) return null;
-  return forgeFromHost(stripUserinfo(parsed.host).replace(/^https?:\/\//, ""));
+  return stripUserinfo(parsed.host).replace(/^https?:\/\//, "");
+}
+
+export function forgeFromRemote(remote: string): { host: string; provider: "github" | "gitlab" } | null {
+  const host = hostFromRemote(remote);
+  return host === null ? null : forgeFromHost(host);
 }

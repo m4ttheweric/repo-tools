@@ -21,6 +21,7 @@ import { createSecretsHandlers } from "./handlers/secrets.ts";
 import { createProjectMRsHandlers } from "./handlers/project-mrs.ts";
 import { createEventsHandlers } from "./handlers/events.ts";
 import { createGateHandlers } from "./handlers/gate.ts";
+import { createHerdHandlers, type HerdDeps } from "./handlers/herd.ts";
 import { createChatHandlers } from "./handlers/chat.ts";
 import { createAgentHandlers } from "./handlers/agent.ts";
 import { createPaneHandlers } from "./handlers/pane.ts";
@@ -32,8 +33,13 @@ import { createReposHandlers } from "./handlers/repos.ts";
 import { reconcileFreshness, getFreshnessSnapshot } from "./freshness.ts";
 import { wrapWithDemand } from "./demand-tracker.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
+import { findRun } from "../runs/store.ts";
+import { presenceForSession } from "../state/presence-store.ts";
+import { herdrRequest } from "../herdr/client.ts";
+import { defaultHerdrRunner } from "../agent-herdr.ts";
 import type { EventsBus } from "./events-bus.ts";
 import type { GatesStore } from "./gates-store.ts";
+import type { HerdStore } from "./herd-store.ts";
 import type { GatePush } from "./gate-push.ts";
 import type { HomeSnapshotHandle } from "./home-snapshot.ts";
 import type { TeamSnapshotsHandle } from "./team-snapshots.ts";
@@ -57,6 +63,14 @@ export function buildRoutedHandlers(opts: {
   gatesStore: GatesStore;
   /** Pane push + subscription fan-out for gate:open/gate:answer (BOARD-20/21). */
   gatePush: GatePush;
+  /** Herd registry backing herd:* (one row per shepherd run and worker job). */
+  herdStore: HerdStore;
+  /** Herdr lifecycle-stream liveness the shepherd's status reads. */
+  herdLifecycle: HerdDeps["lifecycle"];
+  /** The hidden herdr session a `--hidden` herd's panes run in. */
+  herdHidden: HerdDeps["hidden"];
+  /** Root of the per-job report directories (`<RT_DIR>/herds`); passed in because the router itself resolves no paths. */
+  herdJobsRoot: string;
   /** Home-repo snapshot daemon (H2) — inert handle when disabled/not-a-repo. */
   homeSnapshot: HomeSnapshotHandle;
   /** One snapshot engine per team clone under ~/.mattstack/teams. */
@@ -98,6 +112,24 @@ export function buildRoutedHandlers(opts: {
   });
   const paneHandlers = createPaneHandlers({ db: opts.stateDb, repoIndex: ctx.repoIndex });
   const agentHandlers = createAgentHandlers({ db: opts.stateDb, emitEvent, log: ctx.log });
+  const worktreeHandlers = createWorktreeHandlers({ repoIndex: ctx.repoIndex, cache: ctx.cache, log: ctx.log }, opts.worktree);
+  const gateHandlers = createGateHandlers(opts.gatesStore, opts.eventsBus, broadcast, { push: opts.gatePush, log: ctx.log });
+  const herdHandlers = createHerdHandlers({
+    store: opts.herdStore,
+    gateStore: opts.gatesStore,
+    gate: gateHandlers,
+    chat: chatHandlers,
+    agent: agentHandlers,
+    worktree: worktreeHandlers,
+    runWorktree: (runId) => findRun(runId)?.fields.find((f) => f.key === "worktree")?.value ?? null,
+    presenceHandleForSession: (session) => presenceForSession(session, opts.stateDb)?.handle ?? null,
+    herdr: herdrRequest,
+    herdrRunnerFor: (socket) => defaultHerdrRunner(socket ? { ...process.env, HERDR_SOCKET_PATH: socket } : process.env),
+    lifecycle: opts.herdLifecycle,
+    hidden: opts.herdHidden,
+    jobsRoot: opts.herdJobsRoot,
+    log: ctx.log,
+  });
   const handlers: TypedHandlers & HandlerMap = {
     ...createCacheHandlers({ cache: ctx.cache, refreshCache: ctx.refreshCache }),
     ...createHooksHandlers({
@@ -111,7 +143,7 @@ export function buildRoutedHandlers(opts: {
       refreshStatusRef: ctx.refreshStatusRef, log: ctx.log, setLogLevel: ctx.setLogLevel, getLogLevel: ctx.getLogLevel,
     }),
     ...createMRHandlers({ repoIndex: ctx.repoIndex, cache: ctx.cache, log: ctx.log }, broadcast),
-    ...createWorktreeHandlers({ repoIndex: ctx.repoIndex, cache: ctx.cache, log: ctx.log }, opts.worktree),
+    ...worktreeHandlers,
     ...createDiscussionHandlers({ repoIndex: ctx.repoIndex, cache: ctx.cache }, broadcast),
     ...createSystemProcessHandlers(systemProcessScanner, { portCacheRef: ctx.portCacheRef, cache: ctx.cache }),
     ...createSdmHandlers({ log: ctx.log }),
@@ -119,7 +151,8 @@ export function buildRoutedHandlers(opts: {
     ...createSecretsHandlers({ log: ctx.log }),
     ...createProjectMRsHandlers({ repoIndex: ctx.repoIndex, log: ctx.log }, broadcast),
     ...createEventsHandlers(opts.eventsBus, broadcast),
-    ...createGateHandlers(opts.gatesStore, opts.eventsBus, broadcast, { push: opts.gatePush, log: ctx.log }),
+    ...gateHandlers,
+    ...herdHandlers,
     ...chatHandlers,
     ...agentHandlers,
     ...paneHandlers,

@@ -36,6 +36,8 @@
 import { join } from "path";
 import { createRealAgeKeySeam, renderSopsYamlFor } from "../home/age-key.ts";
 import { teamsDir } from "../rt-paths.ts";
+import { createRealProbes, type Probes } from "../setup/probes.ts";
+import { assertNotJoined } from "../team/team-local.ts";
 import {
   createRealSecretsExecSeam,
   decryptAtLocation,
@@ -208,7 +210,18 @@ export async function listTeamSecretNames(slug: string, domain: string, seams: S
   return payload === null ? [] : Object.keys(payload);
 }
 
-export async function writeTeamSecret(slug: string, domain: string, key: string, value: string, seams: SecretsSeams): Promise<void> {
+export async function writeTeamSecret(
+  slug: string,
+  domain: string,
+  key: string,
+  value: string,
+  seams: SecretsSeams,
+  // Defaulted rather than folded into SecretsSeams: every real caller wants
+  // the real machine's own record, and only a test needs to see a different
+  // one.
+  probes: Pick<Probes, "readFile" | "home"> = createRealProbes(),
+): Promise<void> {
+  assertNotJoined(probes, slug);
   validateKey(key);
   const recipients = readTeamRecipients(slug, seams);
   if (recipients.length === 0) throw new NoTeamRecipientsError(slug);
@@ -240,8 +253,18 @@ function listTeamDomainFiles(slug: string, seams: SecretsSeams): string[] {
  * data key exactly like a `sops -d` does, and rt never writes an age
  * `keys.txt`, so a call with no env at all fails on a real machine (sops
  * exits 128, "failed to load age identities").
+ *
+ * `assertNotJoined` runs here rather than in each caller: every path that
+ * reaches this function (member add/remove, `rt secrets rotate --team`)
+ * mutates every tracked domain file on disk, and a joined machine's clone
+ * is pull-only, so there is no caller for which that mutation is legitimate.
  */
-export async function reencryptTeamSecrets(slug: string, seams: SecretsSeams): Promise<string[]> {
+export async function reencryptTeamSecrets(
+  slug: string,
+  seams: SecretsSeams,
+  probes: Pick<Probes, "readFile" | "home"> = createRealProbes(),
+): Promise<string[]> {
+  assertNotJoined(probes, slug);
   const files = listTeamDomainFiles(slug, seams);
   if (files.length === 0) return [];
 

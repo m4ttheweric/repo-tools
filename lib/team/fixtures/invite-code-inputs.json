@@ -1,0 +1,16 @@
+[
+  { "why": "bare code, dashed as minted", "input": "01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC", "expect": "0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABC" },
+  { "why": "bare code, no dashes", "input": "0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABC", "expect": "0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABC" },
+  { "why": "surrounding whitespace and a trailing newline survive a chat paste", "input": "  01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC\n", "expect": "0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABC" },
+  { "why": "typo folding: O reads as 0, I and L read as 1", "input": "O123456789ABCDEFGHJKMNPQRSTVWXYZO123456789ABCDEFGHJKMNPQRSTVWXYZO123456789ABC", "expect": "0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABC" },
+  { "why": "the deep link the landing page copies", "input": "mattstack://join/01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC", "expect": "0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABC" },
+  { "why": "the link rt mints", "input": "https://mattstack.dev/join#01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC", "expect": "0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABC" },
+  { "why": "host-agnostic: a link minted under RT_JOIN_BASE_URL in the VM harness must round-trip", "input": "http://localhost:8788/join#0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABC", "expect": "0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABC" },
+  { "why": "a join page with no code in the fragment", "input": "https://mattstack.dev/join", "expect": null },
+  { "why": "a deep link with no code", "input": "mattstack://join/", "expect": null },
+  { "why": "a link to somewhere else entirely", "input": "https://mattstack.dev/", "expect": null },
+  { "why": "wrong deep-link host", "input": "mattstack://settings/team", "expect": null },
+  { "why": "truncated code", "input": "01234-56789-ABCDE", "expect": null },
+  { "why": "right length, characters outside the Crockford alphabet", "input": "U123456789ABCDEFGHJKMNPQRSTVWXYZU123456789ABCDEFGHJKMNPQRSTVWXYZU123456789ABC", "expect": null },
+  { "why": "empty", "input": "   ", "expect": null }
+]

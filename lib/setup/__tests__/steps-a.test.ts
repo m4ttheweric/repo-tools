@@ -12,9 +12,11 @@ import { closeStateDb, setKvValue } from "../../state/index.ts";
 import { serializeIdentity } from "../../settings/identity.ts";
 import { linkPath } from "../../deps/links.ts";
 import { DEV_MODE_TAG } from "../../dev-mode.ts";
+import { createRealProbes } from "../probes.ts";
 import type { ExecResult, Probes } from "../probes.ts";
 import type { SecretsExecResult, SecretsExecSeam, SecretsSeams } from "../../secrets/store.ts";
 import { readTeamSecret, teamSopsYamlPath } from "../../secrets/team-store.ts";
+import { teamLocalPath, writeTeamLocal } from "../../team/team-local.ts";
 import type { RelayClient } from "../../team/relay-client.ts";
 import type { ApplyContext, StepOutcome } from "../apply.ts";
 import { AUTH_FAILURE_PATTERN } from "../../team/publish.ts";
@@ -615,6 +617,25 @@ describe("secrets.write", () => {
     const outcome = await secretsWriteStep.run(ctx);
     expect(outcome.state).toBe("failed");
     expect((outcome as { detail: string }).detail).toContain("no recipients yet");
+  });
+
+  test("a staged team secret on a joined machine skips the step instead of failing Install", async () => {
+    // A slug this describe block never uses elsewhere, so the real-HOME record
+    // this test plants can't leak the "joined" state into any other test here.
+    const slug = "steps-a-joined-guard";
+    const probes = createRealProbes();
+    writeTeamLocal(probes, slug, { createdByRt: false, joinedByRt: true, rtMayManageMembership: false });
+
+    try {
+      const p = stagedProbes({ [`team-${slug}-board`]: { x: "y" } });
+      const { ctx } = makeCtx(p, { teamSecrets: () => fakeSecrets() });
+
+      const outcome = await secretsWriteStep.run(ctx);
+      expect(outcome.state).toBe("skipped");
+      expect((outcome as { detail: string }).detail).toContain("pull-only");
+    } finally {
+      probes.removeFile(teamLocalPath(probes.home, slug));
+    }
   });
 
   test("every staged value is registered with ctx.redact before the write is attempted", async () => {

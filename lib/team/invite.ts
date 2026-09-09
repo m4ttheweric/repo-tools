@@ -18,7 +18,7 @@ import type { Probes } from "../setup/probes.ts";
 import { forgeFromRemote, readTeamSnapshot, type SettingsReader } from "../setup/team-settings.ts";
 import { getSetting } from "../settings/resolve.ts";
 import { setSetting } from "../settings/write.ts";
-import { forgeLogin, grantRead, type ForgeAccess } from "./forge.ts";
+import { forgeLogin, grantRead, membershipSteps, type ForgeAccess } from "./forge.ts";
 import { storedForgeToken } from "./stored-forge-token.ts";
 import { readTeamLocal } from "./team-local.ts";
 import { encodeCode, generateId, generateKey, seal } from "./invite-crypto.ts";
@@ -30,12 +30,59 @@ export const INVITE_TTL_DAYS = 7;
 /** Forge usernames only (letters, digits, `.`, `_`, `-`; must start alphanumeric) — this handle also becomes a `board.members` entry and a mint-record key, so it is checked before anything downstream trusts it. */
 const HANDLE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,38}$/;
 
-export function pasteBlock(code: string, downloadUrl = "https://github.com/m4ttstack/rt/releases/latest"): string {
-  return `Install mattstack from ${downloadUrl}, then open mattstack://join/${code} or paste the code into Setup → Join a team.\n\nInvite code:\n${code}`;
+export const DEFAULT_JOIN_BASE_URL = "https://mattstack.dev/join";
+
+/**
+ * The fragment carries the invite code, so the page that reads it must not be
+ * replaceable in transit: plain http is accepted only on loopback, where the
+ * harness runs its fixture.
+ */
+function isSafeJoinBase(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === "https:") return true;
+  return parsed.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]", "::1"].includes(parsed.hostname);
+}
+
+/** Mirrors DEFAULT_INVITE_RELAY_URL/RT_INVITE_RELAY_URL in relay-client.ts: same class of value, read only by rt, and the VM harness needs to point it elsewhere without a team store. */
+export function joinLinkBase(env: Record<string, string | undefined>): string {
+  const override = env.RT_JOIN_BASE_URL;
+  if (!override) return DEFAULT_JOIN_BASE_URL;
+  if (!isSafeJoinBase(override)) {
+    throw new UserActionableError("invalid-join-base", `RT_JOIN_BASE_URL must be an https url, or http on loopback: got ${override}`);
+  }
+  return override;
+}
+
+/** The code lives in the fragment, so it never reaches the page's server. */
+export function joinLink(base: string, code: string): string {
+  return `${base}#${code}`;
+}
+
+export function pasteBlock(code: string, opts: { link: string; teamName: string; downloadUrl?: string }): string {
+  const downloadUrl = opts.downloadUrl ?? "https://github.com/m4ttstack/rt/releases/latest";
+  return [
+    `You have been invited to the ${opts.teamName} mattstack team.`,
+    "",
+    `  ${opts.link}`,
+    "",
+    "That page installs mattstack and hands the invite to the app.",
+    `Already have mattstack? Open mattstack://join/${code}, or paste this code`,
+    "into Setup -> Join a team:",
+    "",
+    code,
+    "",
+    `Download by hand: ${downloadUrl}`,
+  ].join("\n");
 }
 
 export interface InviteResult {
   code: string;
+  link: string;
   expiresAt: string;
   pasteBlock: string;
   forgeAccess: ForgeAccess;
@@ -110,6 +157,44 @@ function assertValidHandle(handle: string): void {
   }
 }
 
+/**
+ * rt administers membership only where it created the repo AND the operator
+ * granted the permission (MAT-387). Both, not either: the record is a file, so
+ * requiring only the permission would let a hand-edited flag act on a repo rt
+ * was merely pointed at.
+ */
+async function resolveForgeAccess(
+  p: Probes,
+  seams: MintInviteSeams,
+  slug: string,
+  remote: string,
+  handle: string,
+  token: string | null,
+): Promise<{ access: ForgeAccess; manualSteps: string[] }> {
+  const local = seams.readTeamLocal(p, slug);
+  if (local.createdByRt && local.rtMayManageMembership) {
+    return seams.grantRead(p, remote, handle, token);
+  }
+  if (local.createdByRt) {
+    return {
+      access: "skipped",
+      manualSteps: [
+        `Let mattstack grant it: run \`rt team manage-membership on --team ${slug}\`, then invite ${handle} again`,
+        ...membershipSteps(remote, handle),
+      ],
+    };
+  }
+  // The admin sentence is appended here, never returned by membershipSteps,
+  // so a remote that cannot be parsed still leaves the reader one true line.
+  return {
+    access: "skipped",
+    manualSteps: [
+      ...membershipSteps(remote, handle),
+      `Ask whoever administers ${remote} to give ${handle} read access. mattstack did not create this repo, so your admin decides.`,
+    ],
+  };
+}
+
 export async function mintInvite(p: Probes, relay: RelayClient, opts: MintInviteOpts, seams: MintInviteSeams = realMintInviteSeams()): Promise<InviteResult> {
   assertValidHandle(opts.handle);
 
@@ -164,13 +249,10 @@ export async function mintInvite(p: Probes, relay: RelayClient, opts: MintInvite
 
   // Repo membership is a precondition, not something rt provisions (MAT-387):
   // you are added to a repo by whoever administers it, before mattstack is in
-  // the picture. rt only reaches for the forge when the operator has explicitly
-  // asked it to manage membership on THIS team — a permission that defaults to
-  // off and is never derivable from the remote URL, which cannot distinguish a
-  // repo rt created from an employer's.
-  const { access: forgeAccess, manualSteps } = seams.readTeamLocal(p, opts.slug).rtMayManageMembership
-    ? await seams.grantRead(p, remote, opts.handle, token)
-    : { access: "skipped" as ForgeAccess, manualSteps: [`Ask whoever administers ${remote} to give ${opts.handle} read access — mattstack does not manage membership on this repo`] };
+  // the picture. rt only reaches for the forge where it created the repo AND
+  // the operator has explicitly granted membership management on THIS team;
+  // neither fact is derivable from the remote URL alone.
+  const { access: forgeAccess, manualSteps } = await resolveForgeAccess(p, seams, opts.slug, remote, opts.handle, token);
 
   addToRoster(seams, opts.slug, opts.handle);
 
@@ -184,5 +266,6 @@ export async function mintInvite(p: Probes, relay: RelayClient, opts: MintInvite
     }
   }
 
-  return { code, expiresAt, pasteBlock: pasteBlock(code), forgeAccess, manualSteps };
+  const link = joinLink(joinLinkBase(p.env), code);
+  return { code, link, expiresAt, pasteBlock: pasteBlock(code, { link, teamName: pointer.name }), forgeAccess, manualSteps };
 }

@@ -145,6 +145,7 @@ describe("teamJoin", () => {
       access: "ok",
       peering: "idle",
       message: "Joining Acme (owner matt)",
+      intent: "written",
     });
     // The stdout envelope never carries the raw code back, either.
     expect(deps.lines[0]).not.toContain(CODE);
@@ -161,7 +162,7 @@ describe("teamJoin", () => {
 
     await teamJoin(["--dry-run"], {}, deps);
 
-    expect(deps.lines[0]).toContain("you don't have access yet: ask matt to grant you access to Acme");
+    expect(deps.lines[0]).toContain("ask matt or your org admin");
     expect(deps.lines[0]).not.toContain("http");
   });
 
@@ -178,6 +179,44 @@ describe("teamJoin", () => {
     const body = JSON.parse(deps.lines[0]!);
     expect(body.error.code).toBe("invite-malformed");
     expect(probes.calls.exec).toHaveLength(0);
+  });
+
+  /** Drives defaultReadCode itself (no deps.readCode override) via a stdin JSON body, the way the CLI actually receives a pasted invite. */
+  function withStdinCode(code: string) {
+    return () => new Response(JSON.stringify({ code })).body!;
+  }
+
+  test("--dry-run --json: a pasted deep link reaches joinDryRun as the normalized bare code", async () => {
+    const probes = fakeProbes({ home: HOME, fetch: relayFetch(), exec: () => ({ code: 0, stdout: "", stderr: "" }) });
+    const deps = baseDeps({ probes, readCode: undefined });
+    const stdinSpy = spyOn(Bun.stdin, "stream").mockImplementation(withStdinCode(`mattstack://join/${CODE}`));
+
+    try {
+      await teamJoin(["--dry-run", "--json"], {}, deps);
+    } finally {
+      stdinSpy.mockRestore();
+    }
+
+    expect(probes.calls.fetch.some((url) => url.endsWith(`/v1/invites/${ID_HEX}`))).toBe(true);
+  });
+
+  test("--dry-run --json: an unrecognized string reaches joinDryRun untouched", async () => {
+    const deps = baseDeps({ readCode: undefined });
+    const stdinSpy = spyOn(Bun.stdin, "stream").mockImplementation(withStdinCode("nope"));
+
+    let code: number | undefined;
+    try {
+      code = await runExpectingProcessExit(() => teamJoin(["--dry-run", "--json"], {}, deps));
+    } finally {
+      stdinSpy.mockRestore();
+    }
+
+    // decodeCode's wrong-length error is unchanged whether or not
+    // extractInviteCode recognized the input.
+    expect(code).toBe(2);
+    const body = JSON.parse(deps.lines[0]!);
+    expect(body.error.code).toBe("invite-malformed");
+    expect(body.error.message).toBe("invite code is the wrong length");
   });
 
   test("redeem: clones, redeems, and prints the exact contract envelope on success", async () => {

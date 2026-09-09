@@ -794,6 +794,21 @@ describe("teamSyncRow", () => {
     expect(r?.detail).toContain("rebase");
   });
 
+  test("a pull-only clone in conflict is told to reset or ask the owner, never to run rt team publish (it would refuse)", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        { slug: "acme", lastPullAt: 900_000, lastPushError: null, conflicted: { at: 1, detail: "CONFLICT settings.team.jsonc" }, pullOnly: true } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("acme");
+    expect(r?.detail).not.toContain("rt team publish");
+    expect(r?.detail).toContain("reset it to origin or ask the team's owner");
+  });
+
   test("a standing fetch error is needs-you even when the last successful pull was recent", async () => {
     const r = await teamSyncRow(
       ["acme"],
@@ -885,6 +900,143 @@ describe("teamSyncRow", () => {
     );
     expect(r?.status).toBe("ready");
     expect(r?.detail).toContain("last pull skipped: dirty src/");
+  });
+
+  test("a pull-only clone that is up to date is ready, and says why it never pushes", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        { slug: "acme", lastPullAt: 900_000, lastPushError: null, lastPullError: null, conflicted: null, lastPullSkipped: null, pullOnly: true } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("ready");
+    expect(r?.detail).toContain("pull-only");
+  });
+
+  test("a pull-only clone is never judged on push failures (it has no push to fail)", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        {
+          slug: "acme",
+          lastPullAt: 900_000,
+          lastPushError: "some stale push error",
+          lastPullError: null,
+          conflicted: null,
+          pullOnly: true,
+          lastPullSkipped: null,
+        } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("ready");
+    expect(r?.detail).not.toContain("push failing");
+  });
+
+  test("a pull-only clone that is fetch-failing is needs-you, not silenced by the push-check skip", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        {
+          slug: "acme",
+          lastPullAt: 900_000,
+          lastPushError: null,
+          lastPullError: "remote: HTTP Basic: Access denied",
+          conflicted: null,
+          pullOnly: true,
+          lastPullSkipped: null,
+        } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("fetch failing");
+  });
+
+  // The engine sets BOTH fields on a failed fetch: the stderr becomes lastPullError and is
+  // returned as a skip, whose detail pullNow copies into lastPullSkipped. A fixture that sets
+  // only lastPullError cannot catch the pull-only branch swallowing the diagnosis.
+  test("a pull-only clone whose fetch failed reports the fetch error, not a refused fast-forward", async () => {
+    const denied = "remote: HTTP Basic: Access denied";
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        {
+          slug: "acme",
+          lastPullAt: 900_000,
+          lastPushError: null,
+          lastPullError: denied,
+          conflicted: null,
+          pullOnly: true,
+          lastPullSkipped: denied,
+        } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("fetch failing");
+    expect(r?.detail).not.toContain("cannot fast-forward");
+  });
+
+  test("a pull-only clone that has never pulled is needs-you, not silenced by the push-check skip", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        { slug: "acme", lastPullAt: 0, lastPushError: null, lastPullError: null, conflicted: null, pullOnly: true, lastPullSkipped: null } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("acme");
+  });
+
+  test("a pull-only clone whose last pull is stale is needs-you, not silenced by the push-check skip", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        {
+          slug: "acme",
+          lastPullAt: now() - 86_400_000,
+          lastPushError: null,
+          lastPullError: null,
+          conflicted: null,
+          pullOnly: true,
+          lastPullSkipped: null,
+        } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("last pull");
+  });
+
+  test("a pull-only clone that cannot fast-forward is needs-you, and is never reset", async () => {
+    const r = await teamSyncRow(
+      ["acme"],
+      async () => [
+        {
+          slug: "acme",
+          lastPullAt: 900_000,
+          lastPushError: null,
+          lastPullError: null,
+          conflicted: null,
+          pullOnly: true,
+          lastPullSkipped: "local changes would be overwritten by merge",
+        } as never,
+      ],
+      now,
+      300,
+    );
+    expect(r?.status).toBe("needs-you");
+    expect(r?.detail).toContain("acme");
+    expect(r?.detail).toContain("fast-forward");
   });
 });
 

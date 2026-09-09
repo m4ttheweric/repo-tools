@@ -5,7 +5,7 @@ import type { Probes } from "../../setup/probes.ts";
 import type { SettingsReader } from "../../setup/team-settings.ts";
 import { decodeCode, open } from "../invite-crypto.ts";
 import { readInviteRecords } from "../invite-records.ts";
-import { INVITE_TTL_DAYS, mintInvite, pasteBlock, type MintInviteSeams } from "../invite.ts";
+import { INVITE_TTL_DAYS, joinLink, joinLinkBase, mintInvite, pasteBlock, type MintInviteSeams } from "../invite.ts";
 import type { RelayClient } from "../relay-client.ts";
 import type { setSetting } from "../../settings/write.ts";
 
@@ -108,7 +108,7 @@ function baseSeams(overrides: Partial<MintInviteSeams> = {}): { seams: MintInvit
     grantRead: async () => ({ access: "granted", manualSteps: [] }),
     // Default ON so the existing suite keeps exercising the grant path it was
     // written for; the tests below cover the default-off behaviour explicitly.
-    readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
+    readTeamLocal: () => ({ createdByRt: true, joinedByRt: false, rtMayManageMembership: true }),
     forgeLogin: async () => "octocat",
     forgeToken: async () => null,
     warn: (m) => warnings.push(m),
@@ -123,16 +123,39 @@ function probesWithRemote(remote: string, extraFiles: Record<string, string> = {
 
 const REMOTE = "git@github.com:acme/widgets.git";
 
+const CODE = "01234-56789-ABCDE-FGHJK-MNPQR-STVWX-YZ012-34567-89ABC-DEFGH-JKMNP-QRSTV-WXYZ0-12345-6789A-BC";
+const PLAIN = "0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABCDEFGHJKMNPQRSTVWXYZ0123456789ABC";
+
+test("joinLinkBase defaults to mattstack.dev and honours RT_JOIN_BASE_URL", () => {
+  expect(joinLinkBase({})).toBe("https://mattstack.dev/join");
+  expect(joinLinkBase({ RT_JOIN_BASE_URL: "http://localhost:8788/join" })).toBe("http://localhost:8788/join");
+});
+
+test("the code rides in the fragment and nowhere else", () => {
+  const link = joinLink("https://mattstack.dev/join", CODE);
+  expect(link).toBe(`https://mattstack.dev/join#${CODE}`);
+  expect(new URL(link).search).toBe("");
+});
+
+test("the fragment satisfies the landing page's own validator", () => {
+  const fragment = new URL(joinLink("https://mattstack.dev/join", CODE)).hash.slice(1);
+  const normalized = fragment.replace(/[\s-]/g, "").toUpperCase();
+  expect(normalized).toHaveLength(77);
+  expect(normalized).toBe(PLAIN);
+  expect(/^[0-9A-HJKMNP-TV-Z]+$/.test(normalized)).toBe(true);
+});
+
 describe("pasteBlock", () => {
-  test("contains the join deep link and the raw code", () => {
-    const block = pasteBlock("ABCDE-FGHIJ");
-    expect(block).toContain("mattstack://join/ABCDE-FGHIJ");
-    expect(block).toContain("Invite code:\nABCDE-FGHIJ");
-    expect(block).toContain("https://github.com/m4ttstack/rt/releases/latest");
+  test("leads with the link and keeps the deep link and the bare code", () => {
+    const block = pasteBlock(CODE, { link: `https://mattstack.dev/join#${CODE}`, teamName: "Acme" });
+    expect(block).toContain(`https://mattstack.dev/join#${CODE}`);
+    expect(block).toContain(`mattstack://join/${CODE}`);
+    expect(block).toContain(CODE);
+    expect(block).toContain("Acme");
   });
 
   test("honors a custom download URL", () => {
-    const block = pasteBlock("CODE", "https://example.test/download");
+    const block = pasteBlock("CODE", { link: "https://mattstack.dev/join#CODE", teamName: "Acme", downloadUrl: "https://example.test/download" });
     expect(block).toContain("https://example.test/download");
   });
 });
@@ -290,6 +313,7 @@ describe("mintInvite", () => {
     });
 
     expect(result.pasteBlock).toContain("mattstack://join/");
+    expect(result.link).toBe(`https://mattstack.dev/join#${result.code}`);
   });
 
   test("falls back to the slug as the pointer name when board.title is unset", async () => {
@@ -432,10 +456,10 @@ describe("mintInvite", () => {
 // ─── membership permission (MAT-387) ─────────────────────────────────────────
 
 describe("mintInvite: forge membership is not rt's to grant", () => {
-  test("default (permission absent): never calls the forge, and says who to ask", async () => {
+  test("permission absent on a repo rt created: never calls the forge, and points at the opt-in verb", async () => {
     const grantCalls: string[] = [];
     const { seams } = baseSeams({
-      readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: false }),
+      readTeamLocal: () => ({ createdByRt: true, joinedByRt: false, rtMayManageMembership: false }),
       grantRead: async (_p, _remote, handle) => {
         grantCalls.push(handle);
         return { access: "granted", manualSteps: [] };
@@ -447,7 +471,7 @@ describe("mintInvite: forge membership is not rt's to grant", () => {
 
     expect(grantCalls).toEqual([]);
     expect(result.forgeAccess).toBe("skipped");
-    expect(result.manualSteps.join(" ")).toContain("Ask whoever administers");
+    expect(result.manualSteps.join(" ")).toContain("rt team manage-membership on --team acme");
     expect(result.manualSteps.join(" ")).toContain("alice");
   });
 
@@ -456,7 +480,7 @@ describe("mintInvite: forge membership is not rt's to grant", () => {
   test("createdByRt without the permission still does not touch the forge", async () => {
     const grantCalls: string[] = [];
     const { seams } = baseSeams({
-      readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: false }),
+      readTeamLocal: () => ({ createdByRt: true, joinedByRt: false, rtMayManageMembership: false }),
       grantRead: async () => {
         grantCalls.push("called");
         return { access: "granted", manualSteps: [] };
@@ -470,7 +494,7 @@ describe("mintInvite: forge membership is not rt's to grant", () => {
   test("permission granted: the forge call happens, as before", async () => {
     const grantCalls: string[] = [];
     const { seams } = baseSeams({
-      readTeamLocal: () => ({ createdByRt: true, rtMayManageMembership: true }),
+      readTeamLocal: () => ({ createdByRt: true, joinedByRt: false, rtMayManageMembership: true }),
       grantRead: async (_p, _remote, handle) => {
         grantCalls.push(handle);
         return { access: "granted", manualSteps: [] };
@@ -485,10 +509,62 @@ describe("mintInvite: forge membership is not rt's to grant", () => {
   // The invite must still be usable — declining to administer someone's repo
   // is not a failure to mint.
   test("the invite is still minted and returned when rt cannot grant", async () => {
-    const { seams } = baseSeams({ readTeamLocal: () => ({ createdByRt: false, rtMayManageMembership: false }) });
+    const { seams } = baseSeams({ readTeamLocal: () => ({ createdByRt: false, joinedByRt: false, rtMayManageMembership: false }) });
     const relay = fakeRelayClient();
     const result = await mintInvite(probesWithRemote(REMOTE), relay.client, { slug: SLUG, handle: "alice", now: NOW }, seams);
     expect(relay.createCalls.length).toBe(1);
     expect(result.code.length).toBeGreaterThan(0);
+  });
+
+  test("createdByRt without the permission points at the opt-in verb, and still never calls the forge", async () => {
+    let called = false;
+    const { seams } = baseSeams({
+      readTeamLocal: () => ({ createdByRt: true, joinedByRt: false, rtMayManageMembership: false }),
+      grantRead: async () => { called = true; return { access: "granted" as const, manualSteps: [] }; },
+    });
+    const relay = fakeRelayClient();
+    const result = await mintInvite(probesWithRemote(REMOTE), relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
+
+    expect(called).toBe(false);
+    expect(result.forgeAccess).toBe("skipped");
+    expect(result.manualSteps[0]).toContain("rt team manage-membership on --team acme");
+    expect(result.manualSteps).toContain("Open https://github.com/acme/widgets/settings/access");
+  });
+
+  test("the permission alone does not grant on a repo rt did not create", async () => {
+    let called = false;
+    const { seams } = baseSeams({
+      readTeamLocal: () => ({ createdByRt: false, joinedByRt: false, rtMayManageMembership: true }),
+      grantRead: async () => { called = true; return { access: "granted" as const, manualSteps: [] }; },
+    });
+    const relay = fakeRelayClient();
+    const result = await mintInvite(probesWithRemote(REMOTE), relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
+
+    expect(called).toBe(false);
+    expect(result.forgeAccess).toBe("skipped");
+  });
+
+  test("an unparseable remote still gets the admin sentence, never an empty steps list", async () => {
+    const { seams } = baseSeams({ readTeamLocal: () => ({ createdByRt: false, joinedByRt: false, rtMayManageMembership: false }) });
+    const relay = fakeRelayClient();
+    const result = await mintInvite(probesWithRemote("weird://host/thing"), relay.client, { slug: SLUG, handle: "zaphod", now: NOW }, seams);
+
+    expect(result.manualSteps.length).toBeGreaterThan(0);
+    expect(result.manualSteps.at(-1)).toContain("Ask whoever administers");
+  });
+});
+
+describe("joinLinkBase refuses a base the code could be intercepted on", () => {
+  test("plain http on a public host is refused, since the page reading the fragment could be replaced in transit", () => {
+    expect(() => joinLinkBase({ RT_JOIN_BASE_URL: "http://mattstack.example/join" })).toThrow(/https/);
+  });
+
+  test("http on loopback is allowed, which is where the harness serves its fixture", () => {
+    expect(joinLinkBase({ RT_JOIN_BASE_URL: "http://localhost:8788/join" })).toBe("http://localhost:8788/join");
+    expect(joinLinkBase({ RT_JOIN_BASE_URL: "http://127.0.0.1:8788/join" })).toBe("http://127.0.0.1:8788/join");
+  });
+
+  test("a value that is not a url at all is refused rather than pasted into a link", () => {
+    expect(() => joinLinkBase({ RT_JOIN_BASE_URL: "mattstack.example/join" })).toThrow(/https/);
   });
 });
