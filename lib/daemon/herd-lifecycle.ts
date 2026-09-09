@@ -218,8 +218,17 @@ export function createHerdLifecycle(opts: {
   async function sweepClaims(): Promise<void> {
     const { bgSocket, bgClaims } = opts;
     if (!bgSocket || !bgClaims) return;
+    // Captured once, before the snapshot RPC -- same reasoning as the pid
+    // loop below, extended to the round trip: a claim registered while
+    // session.snapshot is in flight (a concurrent agent:start --bg, or a
+    // peer's own ensure/reconnect sweep) is invisible to that snapshot's
+    // view of live panes, so judging it against `live` would read "not in
+    // the snapshot" as "gone" and release a claim on a pane that is still
+    // being spawned. Re-listing after the await was exactly this bug; a
+    // claim that shows up mid-flight simply waits for the next sweep.
+    const candidates = bgClaims.list();
     const released: string[] = [];
-    for (const claim of bgClaims.list()) {
+    for (const claim of candidates) {
       if (claim.pane || !claim.owner.startsWith("runner:")) continue;
       const pid = Number(claim.owner.slice("runner:".length));
       if (!Number.isFinite(pid)) continue;
@@ -234,7 +243,7 @@ export function createHerdLifecycle(opts: {
       log.warn({ sockPath: bgSocket, error: snap.message }, "herd lifecycle: bg claim sweep could not snapshot the bg server; pane claims not swept this round");
     } else {
       const live = new Set(snap.result.snapshot.panes.map((p) => p.pane_id));
-      for (const claim of bgClaims.list()) {
+      for (const claim of candidates) {
         if (!claim.pane) continue;
         const ref = parsePaneRef(claim.pane);
         if (ref.server !== "bg" || live.has(ref.paneId)) continue;

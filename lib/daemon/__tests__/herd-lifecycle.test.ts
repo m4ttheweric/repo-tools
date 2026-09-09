@@ -59,6 +59,13 @@ function fx(over: {
       return true;
     },
     list: () => claimRows.map((c) => ({ ...c })),
+    // Real BgClaimsStore.claim, for tests that register a claim mid-sweep
+    // (the TOCTOU regression test): idempotent upsert by owner.
+    claim: (owner: string, pane?: string) => {
+      const idx = claimRows.findIndex((c) => c.owner === owner);
+      const row = { owner, pane: pane ?? null, createdAt: claimRows.length };
+      if (idx >= 0) claimRows[idx] = row; else claimRows.push(row);
+    },
   };
   const herdrCalls: Array<{ method: string; sockPath?: string }> = [];
   const herdr = (async (method: string, params: unknown, opts2?: { sockPath?: string }) => {
@@ -311,5 +318,30 @@ describe("herd-lifecycle", () => {
     const { lc, herdrCalls } = fx();
     await lc.sweepClaims();
     expect(herdrCalls).toEqual([]);
+  });
+
+  // TOCTOU: a claim registered while session.snapshot is still in flight (a
+  // concurrent agent:start --bg, or a peer's own ensure/reconnect sweep) is
+  // invisible to that snapshot's view of live panes. Candidates must be
+  // captured before the RPC, not re-listed after it resolves -- the latter
+  // would read "not in this snapshot" as "gone" and release a claim on a
+  // pane that is still being spawned.
+  test("sweepClaims captures pane-claim candidates before the snapshot RPC: a claim registered mid-flight survives this round", async () => {
+    let resolveSnapshot: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { resolveSnapshot = resolve; });
+    const { lc, bgClaims } = fx({
+      bgSocket: "/bg.sock",
+      herdr: async () => {
+        // Registered DURING the round trip, before the snapshot resolves --
+        // the same instant a real concurrent bg.ensure()/agent:start would.
+        bgClaims.claim("agent:midflight", "bg:w1:pMidflight");
+        await gate;
+        return { ok: true, result: { snapshot: { panes: [] } } };
+      },
+    });
+    const sweepPromise = lc.sweepClaims();
+    resolveSnapshot();
+    await sweepPromise;
+    expect(bgClaims.list().map((c) => c.owner)).toEqual(["agent:midflight"]);
   });
 });
