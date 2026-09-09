@@ -66,6 +66,40 @@ describe("hidden herd session", () => {
     expect(spawned).toHaveLength(1);
   });
 
+  // A crash right after a successful bind must not read as "still within
+  // this spawn's cooldown": the stamp clears on the success path, so a
+  // socket that vanishes afterward gets a fresh spawn attempt, not the
+  // misleading "has not bound yet" refusal.
+  test("a successful ensure resets the spawn stamp so a socket that later disappears relaunches", async () => {
+    const spawned: string[][] = [];
+    let up = false; let spawnCount = 0;
+    const s = createHiddenSession({
+      log, home: "/h", logDir: "/h/logs", readyTimeoutMs: 200,
+      available: async () => up,
+      spawn: (argv) => { spawned.push(argv); spawnCount += 1; if (spawnCount === 1) up = true; },
+    });
+    expect(await s.ensure()).toBe("/h/.config/herdr/sessions/herd/herdr.sock");
+    expect(spawned).toHaveLength(1);
+    up = false;
+    await expect(s.ensure()).rejects.toThrow(/did not come up/);
+    expect(spawned).toHaveLength(2);
+  });
+
+  test("stop resets the spawn stamp so a subsequent ensure is not blocked by the cooldown", async () => {
+    const spawned: string[][] = [];
+    const s = createHiddenSession({
+      log, home: "/h", logDir: "/h/logs", readyTimeoutMs: 50,
+      available: async () => false,
+      spawn: (argv) => { spawned.push(argv); },
+      run: async () => ({ exitCode: 0, stdout: "" }),
+    });
+    await expect(s.ensure()).rejects.toThrow(/did not come up/);
+    expect(spawned).toHaveLength(1);
+    await s.stop();
+    await expect(s.ensure()).rejects.toThrow(/did not come up/);
+    expect(spawned).toHaveLength(2);
+  });
+
   test("stop runs `herdr session stop herd` without HERDR_SOCKET_PATH", async () => {
     const runs: Array<{ argv: string[]; env: Record<string, string> }> = [];
     const s = createHiddenSession({ log, home: "/h", run: async (argv, env) => { runs.push({ argv, env }); return { exitCode: 0, stdout: "" }; } });

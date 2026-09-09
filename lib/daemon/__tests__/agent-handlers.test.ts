@@ -130,6 +130,22 @@ test("agent:start headless refuses a missing prompt", async () => {
   expect(res.error).toMatch(/prompt/);
 });
 
+// buildClaudeArgv has no pane shell line for headless to interpolate env
+// into, so a caller-supplied env would be silently dropped rather than
+// applied; refuse instead of spawning without it.
+test("agent:start headless with env is refused and spawns nothing", async () => {
+  let spawnCalled = false;
+  const h = fresh({ spawn: () => { spawnCalled = true; return { exited: Promise.resolve(0), stdout: async () => "{}" }; } });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", surface: "headless", prompt: "go", env: { HERD_ID: "demo-1" } });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(res.error).toBe("env is only supported for the herdr surface");
+  expect(spawnCalled).toBe(false);
+  const list = await h["agent:list"]({});
+  if (!list.ok) throw new Error("unreachable");
+  expect(list.data.agents).toHaveLength(0);
+});
+
 // R033: an unchecked surface value falls through to the headless spawn path
 // with headless=false, spawning an interactive claude with stdin ignored
 // and recording surface "bogus" — never a caller-visible error.

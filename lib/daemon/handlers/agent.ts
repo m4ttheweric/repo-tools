@@ -171,6 +171,12 @@ export function createAgentHandlers(opts: {
       if (payload.env !== undefined && !Object.keys(payload.env).every((k) => ENV_KEY_RE.test(k))) {
         return { ok: false, error: "invalid env key" };
       }
+      // Headless spawns argv directly (no pane shell line for buildPaneCommand
+      // to interpolate env into), so a silently dropped env would run without
+      // the variables the caller thinks it passed.
+      if (payload.env !== undefined && surface === "headless") {
+        return { ok: false, error: "env is only supported for the herdr surface" };
+      }
       if (payload.handle !== undefined && !isValidChatName(payload.handle)) {
         return { ok: false, error: "invalid handle" };
       }

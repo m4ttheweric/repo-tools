@@ -217,7 +217,7 @@ const herdSubcommands: Record<string, CommandNode> = {
     omitBehavior: { exempt: "agent-facing; the gate id arrives in the worker's nudge" },
     args: [
       { name: "Gate", type: "text", placeholder: "gt-1a2b3c4d", hint: "Gate id from the nudge" },
-      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the gate row as JSON" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the recorded answer data as JSON" },
     ],
   },
   report: {
@@ -236,7 +236,7 @@ const herdSubcommands: Record<string, CommandNode> = {
     fn: "gates",
     omitBehavior: "list",
     args: [
-      { name: "Herd", flag: "--herd", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd id (default: HERD_ID)" },
+      { name: "Herd", flag: "--herd", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd id (default: HERD_ID, else the single active herd)" },
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the gate rows as JSON" },
     ],
   },
@@ -246,7 +246,7 @@ const herdSubcommands: Record<string, CommandNode> = {
     fn: "status",
     omitBehavior: "list",
     args: [
-      { name: "Herd", flag: "--herd", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd id (default: HERD_ID)" },
+      { name: "Herd", flag: "--herd", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd id (default: HERD_ID, else the single active herd)" },
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the status as JSON" },
     ],
   },

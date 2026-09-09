@@ -73,9 +73,13 @@ export function createHerdHandlers(deps: HerdDeps) {
 
   async function paneStatuses(socket: string | null): Promise<Map<string, string>> {
     const out = new Map<string, string>();
-    const snap = await deps.herdr<{ snapshot: { panes?: Array<{ pane_id: string; agent_status?: string }> } }>("session.snapshot", {}, socket ? { sockPath: socket } : {});
+    const snap = await deps.herdr<{ snapshot?: { panes?: Array<{ pane_id: string; agent_status?: string }> } }>("session.snapshot", {}, socket ? { sockPath: socket } : {});
     if (!snap.ok) return out;
-    for (const p of snap.result.snapshot.panes ?? []) if (p.agent_status) out.set(p.pane_id, p.agent_status);
+    // An ok reply's shape is still herdr's to get wrong: a malformed body
+    // here must degrade to an empty map, never throw through herd:status.
+    const panes = snap.result?.snapshot?.panes;
+    if (!Array.isArray(panes)) return out;
+    for (const p of panes) if (p?.agent_status) out.set(p.pane_id, p.agent_status);
     return out;
   }
 
@@ -409,7 +413,10 @@ export function createHerdHandlers(deps: HerdDeps) {
       let termId: string | undefined;
       try {
         const parsed = JSON.parse(got.stdout)?.result;
-        termId = parsed?.pane?.terminal_id ?? parsed?.terminal_id;
+        const raw = parsed?.pane?.terminal_id ?? parsed?.terminal_id;
+        // termId rides into a shell command unquoted (the `attach` line below),
+        // so it must be shell-inert on top of being a string.
+        if (typeof raw === "string" && /^[A-Za-z0-9_.:-]+$/.test(raw)) termId = raw;
       } catch { /* handled below */ }
       if (!termId) return { ok: false, error: "hidden pane reported no terminal id" };
       const visible = deps.herdrRunnerFor(null);
@@ -454,10 +461,9 @@ export function createHerdHandlers(deps: HerdDeps) {
       if (p?.closePanes === true) {
         for (const job of jobs) {
           if (job.pane && job.status !== "closed") {
-            await closePane(herd.herdrSocket, job.pane, { herd: herdId, job: job.name });
+            if (await closePane(herd.herdrSocket, job.pane, { herd: herdId, job: job.name })) closed.push(job.name);
           }
           store.setJobStatus(herdId, job.name, "closed");
-          closed.push(job.name);
         }
         try {
           const list = await runner(["workspace", "list"]);

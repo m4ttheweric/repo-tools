@@ -218,6 +218,19 @@ describe("herd:resume / status / close", () => {
     expect(res.data.subscription).toEqual({ id: sub.id, dead: false, lastDelivery: null });
   });
 
+  // A malformed-but-ok session.snapshot reply (missing snapshot, or panes
+  // not an array) must degrade to an empty pane map, never throw through
+  // herd:status.
+  test("status treats a malformed session.snapshot reply as no panes instead of throwing", async () => {
+    const { h, store, herd } = await started({
+      herdr: (async (method: string) => (method === "session.snapshot" ? { ok: true, result: {} } : { ok: false, code: "invalid_request", message: method })) as unknown as HerdDeps["herdr"],
+    });
+    store.upsertJob({ herd, name: "job-a", worktree: "/w", handle: "job-a", status: "active", pane: "w9:p1" });
+    const res = await h["herd:status"]({ herd });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data.jobs[0]).toMatchObject({ name: "job-a", paneStatus: null });
+  });
+
   test("status reports a dead subscription rather than hiding it as missing", async () => {
     const { h, gateStore, herd } = await started();
     const sub = gateStore.subscriptions({ live: true })[0]!;
@@ -600,6 +613,27 @@ describe("hidden verbs", () => {
     expect(res.error).toMatch(/not hidden/);
   });
 
+  // termId rides unquoted into the `terminal attach` shell line, so a
+  // non-string (or shell-unsafe) terminal_id must fall through to the
+  // existing "no terminal id" error rather than being trusted.
+  test("attend rejects a non-string terminal_id", async () => {
+    const hx = harness({
+      herdrRunnerFor: (socket) => async (args) => {
+        hx.herdrCalls.push([socket ?? "default", ...args]);
+        if (args[0] === "pane" && args[1] === "get") return { stdout: JSON.stringify({ result: { pane: { terminal_id: 7 } } }), exitCode: 0 };
+        return { stdout: "{}", exitCode: 0 };
+      },
+    });
+    const s = await hx.h["herd:start"]({ ...START, hidden: true });
+    if (!s.ok) throw new Error(s.error);
+    hx.store.upsertJob({ herd: s.data.herd, name: "job-a", worktree: "/w", handle: "job-a", status: "active", pane: "wh:p1" });
+    const res = await hx.h["herd:attend"]({ herd: s.data.herd, job: "job-a", callerWorkspace: "wv" });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("unreachable");
+    expect(res.error).toMatch(/no terminal id/);
+    expect(hx.herdrCalls.some((c) => c[1] === "tab" && c[2] === "create")).toBe(false);
+  });
+
   test("attend fails cleanly when tab create exits zero with output that is not JSON", async () => {
     const hx = harness({
       herdrRunnerFor: (socket) => async (args) => {
@@ -692,5 +726,36 @@ describe("herd:wrap-up", () => {
     if (!res.ok) throw new Error(res.error);
     expect(res.data.refused).toEqual([{ tree: "job-c", reason: "no rt-provisioned tree for this job" }]);
     expect(worktreeCalls.filter((c) => c.verb === "dispose")).toEqual([]);
+  });
+
+  // Two crashed, pane-less jobs: closePane never runs for either, so the CLI's
+  // pane count must read zero, not two, even though both rows still flip to
+  // "closed".
+  test("pane-less jobs are marked closed but never counted as closed panes", async () => {
+    const hx = harness();
+    const s = await hx.h["herd:start"](START);
+    if (!s.ok) throw new Error(s.error);
+    const herd = s.data.herd;
+    hx.store.upsertJob({ herd, name: "job-a", worktree: "/w/job-a", handle: "job-a", status: "done", pane: null });
+    hx.store.upsertJob({ herd, name: "job-b", worktree: "/w/job-b", handle: "job-b", status: "done", pane: null });
+    const res = await hx.h["herd:wrap-up"]({ herd, closePanes: true });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data.closed).toEqual([]);
+    expect(hx.store.jobs(herd).every((j) => j.status === "closed")).toBe(true);
+    expect(hx.herdrCalls.some((c) => c[0] === "pane" && c[1] === "close")).toBe(false);
+  });
+
+  // A pane close that fails (closePane returns false) must not be counted
+  // either: `closed` names only panes that actually closed.
+  test("a job whose pane close fails is marked closed but not counted", async () => {
+    const hx = harness({ herdrRunnerFor: () => async (args) => (args[0] === "pane" && args[1] === "close" ? { stdout: "", exitCode: 1 } : { stdout: "{}", exitCode: 0 }) });
+    const s = await hx.h["herd:start"](START);
+    if (!s.ok) throw new Error(s.error);
+    const herd = s.data.herd;
+    hx.store.upsertJob({ herd, name: "job-a", worktree: "/w/job-a", handle: "job-a", status: "done", pane: "w9:p1" });
+    const res = await hx.h["herd:wrap-up"]({ herd, closePanes: true });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data.closed).toEqual([]);
+    expect(hx.store.getJob(herd, "job-a")!.status).toBe("closed");
   });
 });

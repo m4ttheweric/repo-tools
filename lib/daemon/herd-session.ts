@@ -71,6 +71,9 @@ export function createHiddenSession(opts: {
     const deadline = Date.now() + readyTimeoutMs;
     while (Date.now() < deadline) {
       if (await available(sock)) {
+        // A bound socket clears the stamp: a later crash must not read as
+        // "still within this spawn's cooldown" and refuse to relaunch.
+        lastSpawnAt = 0;
         opts.log.info({ sock }, "hidden herd session started");
         return sock;
       }
@@ -98,6 +101,7 @@ export function createHiddenSession(opts: {
     async stop(): Promise<void> {
       const r = await run([resolveHerdrBin(), "session", "stop", HIDDEN_SESSION], envWithoutSocket({}));
       if (r.exitCode !== 0) throw new Error(`herdr session stop failed: ${r.stdout.slice(0, 200)}`);
+      lastSpawnAt = 0;
     },
   };
 }

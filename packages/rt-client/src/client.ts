@@ -568,11 +568,12 @@ export function herdAnswer(
   return rtCommand<Commands["herd:answer"]["data"]>("herd:answer", { gate: a.gate }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
+/** A disposable job's report also closes its pane, one herdr CLI call under the runner's own 15s budget. */
 export function herdReport(
   a: Commands["herd:report"]["payload"],
   o: RtClientOptions = {},
 ): Promise<RtResponse<Commands["herd:report"]["data"]>> {
-  return rtCommand<Commands["herd:report"]["data"]>("herd:report", { herd: a.herd, job: a.job, body: a.body }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+  return rtCommand<Commands["herd:report"]["data"]>("herd:report", { herd: a.herd, job: a.job, body: a.body }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }
 
 export function herdGates(
@@ -605,18 +606,20 @@ export function herdResume(
   return rtCommand<Commands["herd:resume"]["data"]>("herd:resume", { herd: a.herd, session: a.session }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
+/** Closes a herdr pane, one CLI call under the runner's own 15s budget. */
 export function herdClose(
   a: Commands["herd:close"]["payload"],
   o: RtClientOptions = {},
 ): Promise<RtResponse<Commands["herd:close"]["data"]>> {
-  return rtCommand<Commands["herd:close"]["data"]>("herd:close", { herd: a.herd, job: a.job }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+  return rtCommand<Commands["herd:close"]["data"]>("herd:close", { herd: a.herd, job: a.job }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }
 
+/** Three sequential herdr CLI calls (pane get, tab create, pane run), each under the runner's own 15s budget. */
 export function herdAttend(
   a: Commands["herd:attend"]["payload"],
   o: RtClientOptions = {},
 ): Promise<RtResponse<Commands["herd:attend"]["data"]>> {
-  return rtCommand<Commands["herd:attend"]["data"]>("herd:attend", { herd: a.herd, job: a.job, callerWorkspace: a.callerWorkspace }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+  return rtCommand<Commands["herd:attend"]["data"]>("herd:attend", { herd: a.herd, job: a.job, callerWorkspace: a.callerWorkspace }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 60_000 });
 }
 
 /** Closes panes, disposes worktrees and archives the room in one pass; the
@@ -630,9 +633,10 @@ export function herdWrapUp(
   return rtCommand<Commands["herd:wrap-up"]["data"]>("herd:wrap-up", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 120_000 });
 }
 
+/** Runs `herdr session stop`, one CLI call under the runner's own 15s budget. */
 export function herdStopHidden(
   _a: Commands["herd:stop-hidden"]["payload"],
   o: RtClientOptions = {},
 ): Promise<RtResponse<Commands["herd:stop-hidden"]["data"]>> {
-  return rtCommand<Commands["herd:stop-hidden"]["data"]>("herd:stop-hidden", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+  return rtCommand<Commands["herd:stop-hidden"]["data"]>("herd:stop-hidden", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }
