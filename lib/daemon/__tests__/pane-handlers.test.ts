@@ -8,6 +8,8 @@ import type { InboxBinding } from "../../claude-registry.ts";
 import { createChatHandlers } from "../handlers/chat.ts";
 import { createPaneHandlers } from "../handlers/pane.ts";
 import type { TrayClient, TrayReply } from "../../daemon-client.ts";
+import { bgSocketPath, type BgService } from "../bg-service.ts";
+import type { HerdrRunner } from "../../agent-herdr.ts";
 
 /** A resolvable, alive binding for each named session id -- buddyStatus now reads offline for anything not covered here, so a test whose point is a live/idle join must supply one. */
 function fakeRegistryDeps(bindings: Record<string, InboxBinding["status"]>): RegistryDeps {
@@ -436,4 +438,131 @@ test("pane:focus falls back to a status message when a non-2xx reply has no body
   const pane = createPaneHandlers({ db, repoIndex: () => ({}), tray });
   const res = await pane["pane:focus"]({ paneId: "w1:p1" });
   expect(res).toEqual({ ok: false, error: "tray focus failed (500)" });
+});
+
+// ─── pane refs: bg-socket resolution (Task 7 sweep) ────────────────────────
+
+function fakeBg(over: Partial<BgService> = {}): BgService {
+  return {
+    socketPath: () => "/tmp/never-touched.sock",
+    up: async () => false,
+    ensure: async () => ({ socket: "/tmp/never-touched.sock", started: true }),
+    stop: async () => {},
+    reprobe: async () => ({ ok: true, drift: [] }),
+    lastParity: () => null,
+    ...over,
+  };
+}
+
+test("pane:list appends bg-server panes as bg: refs, only when the bg server is up", async () => {
+  const { sock: visibleSock, stop: stopVisible } = fakeHerdr((method) =>
+    method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method));
+  stops.push(stopVisible);
+  const bgSnapshot = {
+    type: "session_snapshot",
+    snapshot: {
+      version: "0.8.0", protocol: 19, tabs: [], layouts: [], agents: [],
+      workspaces: [{ workspace_id: "wb", label: "bg" }],
+      panes: [{ pane_id: "wb:p1", terminal_id: "tb1", workspace_id: "wb", tab_id: "wb:t1", focused: false, agent: "claude", agent_status: "idle", cwd: "/tmp/bg-job", terminal_title_stripped: "job-a", revision: 1 }],
+    },
+  };
+  const { sock: bgSock, stop: stopBg } = fakeHerdr((method) =>
+    method === "session.snapshot" ? bgSnapshot : new HerdrFakeError("invalid_request", method));
+  stops.push(stopBg);
+  const db = freshDb();
+  // Routes a call to whichever fake herdr server matches the sockPath the
+  // handler asked for; an unset sockPath (the visible default) falls back
+  // to the visible socket, exactly like the real herdrSocketPath() default.
+  const herdr: typeof herdrRequest = (method, params, o) => herdrRequest(method, params, { ...o, sockPath: o?.sockPath ?? visibleSock });
+  const bg = fakeBg({ socketPath: () => bgSock, up: async () => true });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), herdr, exec: CSWAP_EXEC, bg });
+  const res = await pane["pane:list"]({});
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.panes.map((p) => p.paneId).sort()).toEqual(["bg:wb:p1", "w1:p1", "w1:p2"]);
+  const bgRow = res.data.panes.find((p) => p.paneId === "bg:wb:p1")!;
+  expect(bgRow).toMatchObject({ workspace: "bg", title: "job-a", cwd: "/tmp/bg-job", agentStatus: "idle" });
+});
+
+test("pane:list skips the bg section (never ensures) when the bg server is down", async () => {
+  const { sock: visibleSock, stop } = fakeHerdr((method) =>
+    method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method));
+  stops.push(stop);
+  const db = freshDb();
+  const herdr: typeof herdrRequest = (method, params, o) => herdrRequest(method, params, { ...o, sockPath: o?.sockPath ?? visibleSock });
+  let upCalls = 0, ensureCalls = 0;
+  const bg = fakeBg({
+    up: async () => { upCalls++; return false; },
+    ensure: async () => { ensureCalls++; return { socket: "/tmp/never-touched.sock", started: true }; },
+  });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), herdr, exec: CSWAP_EXEC, bg });
+  const res = await pane["pane:list"]({});
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.panes.map((p) => p.paneId).sort()).toEqual(["w1:p1", "w1:p2"]);
+  expect(upCalls).toBe(1);
+  expect(ensureCalls).toBe(0);
+});
+
+test("pane:list omits the bg section entirely when no bg dependency is wired (existing behavior)", async () => {
+  const { chat, pane } = harness((method) => (method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method)));
+  void chat;
+  const res = await pane["pane:list"]({});
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data.panes.map((p) => p.paneId)).toEqual(["w1:p1", "w1:p2"]);
+});
+
+test("pane:peek resolves a bg: ref to the bare id, addressed at the bg socket", async () => {
+  const { sock: bgSock, seen, stop } = fakeHerdr((method) =>
+    method === "pane.read"
+      ? { type: "pane_read", read: { pane_id: "w5:p1", workspace_id: "w5", tab_id: "w5:t1", source: "visible", format: "text", text: "hello\n", revision: 0, truncated: false } }
+      : new HerdrFakeError("invalid_request", method));
+  stops.push(stop);
+  const db = freshDb();
+  const herdr: typeof herdrRequest = (method, params, o) => herdrRequest(method, params, { ...o, sockPath: o?.sockPath === bgSocketPath() ? bgSock : o?.sockPath });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), herdr });
+  const res = await pane["pane:peek"]({ paneId: "bg:w5:p1" });
+  if (!res.ok) throw new Error(res.error);
+  expect(res.data).toEqual({ paneId: "bg:w5:p1", lines: ["hello"] });
+  expect(seen[0]!.params.pane_id).toBe("w5:p1");
+});
+
+test("pane:send resolves a bg: ref, reaches the bg socket, and echoes the bg: ref back in the reply", async () => {
+  const claude = (status: string) => ({ type: "agent_info", agent: { pane_id: "w5:p1", agent: "claude", agent_status: status } });
+  const { sock: bgSock, stop } = fakeHerdr((method) =>
+    method === "agent.get" ? claude("idle")
+    : method === "agent.prompt" ? { type: "agent_prompted", agent: claude("working").agent }
+    : new HerdrFakeError("invalid_request", method));
+  stops.push(stop);
+  const db = freshDb();
+  const herdr: typeof herdrRequest = (method, params, o) => herdrRequest(method, params, { ...o, sockPath: o?.sockPath === bgSocketPath() ? bgSock : o?.sockPath });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), herdr });
+  const res = await pane["pane:send"]({ paneId: "bg:w5:p1", text: "hi" });
+  expect(res).toEqual({ ok: true, data: { paneId: "bg:w5:p1", delivered: "accepted" } });
+});
+
+test("pane:focus with a bg: ref runs attendPane against the bg socket and returns attendTab, no tray call", async () => {
+  const db = freshDb();
+  const calls: Array<{ socket: string | null; args: string[] }> = [];
+  const herdrRunnerFor = (socket: string | null): HerdrRunner => async (args: string[]) => {
+    calls.push({ socket, args });
+    if (args[0] === "pane" && args[1] === "get") return { stdout: JSON.stringify({ result: { pane: { terminal_id: "term-9" } } }), exitCode: 0 };
+    if (args[0] === "tab" && args[1] === "create") return { stdout: JSON.stringify({ result: { root_pane: { pane_id: "wv:p9", tab_id: "wv:t9" } } }), exitCode: 0 };
+    return { stdout: "{}", exitCode: 0 };
+  };
+  let trayCalled = false;
+  const tray: TrayClient = (async () => { trayCalled = true; return { status: 0, json: null }; }) as TrayClient;
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), herdrRunnerFor, tray });
+  const res = await pane["pane:focus"]({ paneId: "bg:w5:p1", callerWorkspace: "wv" });
+  expect(res).toEqual({ ok: true, data: { paneId: "bg:w5:p1", focused: true, attendTab: "wv:t9" } });
+  expect(calls).toContainEqual({ socket: bgSocketPath(), args: ["pane", "get", "w5:p1"] });
+  expect(trayCalled).toBe(false);
+});
+
+test("pane:focus with a bg: ref and no callerWorkspace errors cleanly, without touching herdr", async () => {
+  const db = freshDb();
+  let called = false;
+  const herdrRunnerFor = (): HerdrRunner => async () => { called = true; return { stdout: "{}", exitCode: 0 }; };
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), herdrRunnerFor });
+  const res = await pane["pane:focus"]({ paneId: "bg:w5:p1" });
+  expect(res).toEqual({ ok: false, error: "focus for a background pane must run from a herdr pane; HERDR_WORKSPACE_ID is unset" });
+  expect(called).toBe(false);
 });

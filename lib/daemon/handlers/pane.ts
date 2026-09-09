@@ -5,10 +5,15 @@
 import type { Database } from "bun:sqlite";
 import { basename } from "path";
 import type { AgentStatus, BuddyStatus, ChatPane, Commands, PaneDirectory } from "../../../packages/rt-client/src/commands.ts";
+import { formatPaneRef, parsePaneRef } from "../../../packages/rt-client/src/index.ts";
 import { listCswapAccounts } from "../../cswap.ts";
 import { herdrRequest, waitTimeout, type HerdrResult } from "../../herdr/client.ts";
 import { trayRequest } from "../../daemon-client.ts";
 import { herdrError, injectIntoPane } from "../inject.ts";
+import { resolvePaneRef } from "../pane-ref-socket.ts";
+import { attendPane } from "../attend.ts";
+import { BG_SESSION, bgSocketPath, type BgService } from "../bg-service.ts";
+import type { HerdrRunner } from "../../agent-herdr.ts";
 import { shellQuote } from "../../herdr-launch.ts";
 import { repoLabel } from "../../repo-label.ts";
 import { getSetting } from "../../settings/resolve.ts";
@@ -17,6 +22,8 @@ import { listBuddies, listRooms, type PresenceRow, type RegistryDeps } from "../
 import { runCapture } from "../../subprocess.ts";
 import { loadRegistry } from "../../worktree/registry.ts";
 import type { CommandResult } from "./types.ts";
+
+const FOCUS_NO_WORKSPACE = "focus for a background pane must run from a herdr pane; HERDR_WORKSPACE_ID is unset";
 
 export interface HerdrPane {
   pane_id: string;
@@ -128,6 +135,10 @@ export function createPaneHandlers(opts: {
   registry?: (repoName: string) => Array<{ path: string; branch: string | null | undefined }>;
   /** The registry probe behind buddyStatus, fakeable the same way lib/daemon/handlers/chat.ts's registryDeps is. */
   registryDeps?: RegistryDeps;
+  /** The bg server pane:list appends when up, and pane:focus attends into for a `bg:` ref. Omitted in tests that never touch either. */
+  bg?: BgService;
+  /** attendPane's herdr-CLI runner factory, wired the same way herd:attend gets it (lib/daemon/command-router.ts). */
+  herdrRunnerFor?: (socket: string | null) => HerdrRunner;
 }):
   // Declared as direct `unknown`-payload members (not `Pick<TypedHandlers, ...>`)
   // rather than the narrower per-command payload types the catalog would
@@ -148,30 +159,57 @@ export function createPaneHandlers(opts: {
   const now = opts.now ?? Date.now;
   const registry = opts.registry ?? ((name: string) => loadRegistry(name));
   const registryDeps = opts.registryDeps;
+  const bg = opts.bg;
+  const herdrRunnerFor = opts.herdrRunnerFor;
 
-  async function snapshot(): Promise<HerdrResult<{ snapshot: HerdrSnapshot }>> {
-    return herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {});
+  async function snapshot(sockPath?: string): Promise<HerdrResult<{ snapshot: HerdrSnapshot }>> {
+    return herdr<{ snapshot: HerdrSnapshot }>("session.snapshot", {}, { sockPath });
   }
 
   return {
     "pane:list": async (_payload: unknown): Promise<CommandResult<"pane:list">> => {
       const snap = await snapshot();
       if (!snap.ok) return herdrError(snap);
+      const presence = presenceMaps(db, now(), registryDeps);
       const ctx: PaneRowContext = {
         db, repoIndex, exec, now,
         workspaces: new Map(snap.result.snapshot.workspaces.map((w) => [w.workspace_id, w.label])),
-        ...presenceMaps(db, now(), registryDeps),
+        ...presence,
       };
       const claude = snap.result.snapshot.panes.filter((p) => p.agent === "claude");
       const rows = await Promise.all(claude.map((p) => paneRow(p, ctx)));
-      return { ok: true, data: { panes: sortPanes(rows) } };
+
+      // Ensure-on-touch never applies here (spec "The bg service"): a
+      // read-shaped list only looks when the server is already up, never
+      // starts one just to find it empty.
+      const bgRows: ChatPane[] = [];
+      if (bg && (await bg.up())) {
+        const bgSnap = await snapshot(bg.socketPath());
+        if (bgSnap.ok) {
+          const bgCtx: PaneRowContext = {
+            db, repoIndex, exec, now,
+            workspaces: new Map(bgSnap.result.snapshot.workspaces.map((w) => [w.workspace_id, w.label])),
+            ...presence,
+          };
+          const bgClaude = bgSnap.result.snapshot.panes.filter((p) => p.agent === "claude");
+          for (const p of bgClaude) {
+            const row = await paneRow(p, bgCtx);
+            bgRows.push({ ...row, paneId: formatPaneRef(row.paneId, "bg") });
+          }
+        }
+        // A snapshot failure here (server went down between up() and the
+        // call) degrades to "no bg panes this round" rather than failing
+        // the whole list -- the visible section is still good news.
+      }
+      return { ok: true, data: { panes: sortPanes([...rows, ...bgRows]) } };
     },
 
     "pane:peek": async (rawPayload: unknown): Promise<CommandResult<"pane:peek">> => {
       const payload = rawPayload as Commands["pane:peek"]["payload"];
-      const params: Record<string, unknown> = { pane_id: payload.paneId, source: "visible" };
+      const { paneId, sockPath } = resolvePaneRef(payload.paneId);
+      const params: Record<string, unknown> = { pane_id: paneId, source: "visible" };
       if (payload.lines !== undefined) params.lines = payload.lines;
-      const res = await herdr<{ read: { text: string } }>("pane.read", params);
+      const res = await herdr<{ read: { text: string } }>("pane.read", params, { sockPath });
       if (!res.ok) return herdrError(res);
       const lines = res.result.read.text.split("\n");
       while (lines.length && lines[lines.length - 1]!.trim() === "") lines.pop();
@@ -299,15 +337,36 @@ export function createPaneHandlers(opts: {
 
     "pane:send": async (rawPayload: unknown): Promise<CommandResult<"pane:send">> => {
       const payload = rawPayload as Commands["pane:send"]["payload"];
-      return injectIntoPane({ paneId: payload.paneId, text: payload.text, callerPane: payload.callerPane, herdr });
+      const { paneId, sockPath } = resolvePaneRef(payload.paneId);
+      const res = await injectIntoPane({ paneId, text: payload.text, callerPane: payload.callerPane, herdr, sockPath });
+      if (!res.ok) return res;
+      // Echo the ref the caller passed in, not the bare id injectIntoPane
+      // resolved against: the round-trip rule -- whatever a caller sends
+      // addressably, every verb (including this one's own reply) prints
+      // addressably back.
+      return { ok: true, data: { ...res.data, paneId: payload.paneId } };
     },
 
     // The tray owns focusing: herdr's socket has no `pane focus`, and raising
     // the hosting terminal window is native macOS the daemon cannot do. The
     // daemon and tray always ship together, so this just routes the id over
     // tray.sock; a down tray is a clean error, never a degraded fallback.
+    //
+    // A `bg:` ref forks entirely: herdr has no focus, so there is no window
+    // to raise -- focus for a background pane IS the attend flow instead.
     "pane:focus": async (rawPayload: unknown): Promise<CommandResult<"pane:focus">> => {
       const payload = rawPayload as Commands["pane:focus"]["payload"];
+      const { server, paneId } = parsePaneRef(payload.paneId);
+      if (server === "bg") {
+        if (!payload.callerWorkspace) return { ok: false, error: FOCUS_NO_WORKSPACE };
+        if (!herdrRunnerFor) return { ok: false, error: "attend is not configured on this daemon" };
+        const res = await attendPane({
+          socket: bgSocketPath(), paneId, session: BG_SESSION, label: paneId,
+          callerWorkspace: payload.callerWorkspace, herdrRunnerFor,
+        });
+        if (!res.ok) return res;
+        return { ok: true, data: { paneId: payload.paneId, focused: true, attendTab: res.tab } };
+      }
       // The tray does four sequential herdr spawns (list + process-info +
       // workspace/tab focus) behind this call, so trayRequest's 2s default
       // would misreport a slow-but-working tray as down; sit under paneFocus's

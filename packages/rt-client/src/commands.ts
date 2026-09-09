@@ -244,7 +244,10 @@ export interface InviteResult { paneId: string; delivered: "accepted" | "queued"
 /** Duplicated shape on purpose: mirrors lib/daemon/inject.ts's InjectResult. */
 export type PaneDelivery = "accepted" | "queued" | "refused";
 export interface PaneSendResult { paneId: string; delivered: PaneDelivery; reason?: string }
-export interface PaneFocusResult { paneId: string; focused: boolean }
+/** `attendTab` is set only for a `bg:` ref: focus for a background pane IS
+    the attend flow (a visible tab running a terminal attach), and this is
+    that tab's id. */
+export interface PaneFocusResult { paneId: string; focused: boolean; attendTab?: string }
 
 // SKILLS-53: one judgment, computed once in rt, so the console and the tray
 // never derive two verdicts that can disagree.
@@ -569,7 +572,9 @@ export interface Commands {
     data: { pane: ChatPane; ready: boolean };
   };
   "pane:send": { payload: { paneId: string; text: string; callerPane?: string }; data: PaneSendResult };
-  "pane:focus": { payload: { paneId: string }; data: PaneFocusResult };
+  /** `callerWorkspace` (HERDR_WORKSPACE_ID) is required only for a `bg:`
+      ref, whose focus opens an attend tab in the caller's own workspace. */
+  "pane:focus": { payload: { paneId: string; callerWorkspace?: string }; data: PaneFocusResult };
 
   // ─── R013/R016 ────────────────────────────────────────────────
   "cache:read": { payload: { branches?: string[]; maxAgeMs?: number; repoIdentity?: string }; data: Record<string, BranchEnrichment> };

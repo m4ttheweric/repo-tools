@@ -63,6 +63,10 @@ const TRUST_BUDGET_MS = 15_000;
 // else settles.
 const SETTLE_UNTIL = ["idle", "blocked", "done"];
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
+/** A bare pane id headed into a gate's `pane` field: formatted per the herd's
+    hidden-ness so escape injection (gate-push.ts -> gate-escape.ts's
+    resolvePaneRef) round-trips to whichever server actually holds the pane. */
+const refPane = (bare: string | undefined, hidden: boolean): string | undefined => (bare ? formatPaneRef(bare, hidden ? "bg" : "visible") : undefined);
 
 /** `shepherd-2` is a collision suffix chat mints, not a name to ask for again. */
 const baseHandleOf = (handle: string): string => handle.replace(/-\d+$/, "");
@@ -366,11 +370,12 @@ export function createHerdHandlers(deps: HerdDeps) {
       const p = raw as Commands["herd:ask"]["payload"] | undefined;
       const herdId = str(p?.herd); const name = str(p?.job); const session = str(p?.session);
       if (!herdId || !name || !session) return { ok: false, error: "herd, job, and session are required (HERD_ID, HERD_JOB, CLAUDE_CODE_SESSION_ID)" };
+      const herd = store.get(herdId);
       const job = store.getJob(herdId, name);
       if (!job) return { ok: false, error: `unknown job "${name}" in herd "${herdId}"` };
       const opened = await deps.gate["gate:open"]({
         subject: herdSubject(herdId, name), kind: "question", questions: p!.questions,
-        meta: { herd: herdId, job: name }, agent: name, pane: str(p?.pane) ?? job.pane ?? undefined,
+        meta: { herd: herdId, job: name }, agent: name, pane: refPane(str(p?.pane) ?? job.pane ?? undefined, herd?.hidden ?? false),
         nudge: { session }, context: str(p?.context),
       });
       if (!opened.ok) return opened;
@@ -391,7 +396,7 @@ export function createHerdHandlers(deps: HerdDeps) {
         subject: herdSubject(herdId, name), kind: "milestone",
         questions: [{ id: "decision", label: summary, multi: false, options: [...MILESTONE_OPTIONS] }],
         meta: { herd: herdId, job: name, artifact, message: posted.data.id },
-        agent: name, pane: str(p?.pane) ?? job.pane ?? undefined, nudge: { session },
+        agent: name, pane: refPane(str(p?.pane) ?? job.pane ?? undefined, herd.hidden), nudge: { session },
       });
       if (!opened.ok) return opened;
       store.setJobStatus(herdId, name, "at-milestone", { lastGate: opened.data.id });
@@ -435,7 +440,10 @@ export function createHerdHandlers(deps: HerdDeps) {
         callerWorkspace, herdrRunnerFor: deps.herdrRunnerFor,
       });
       if (!res.ok) return res;
-      return { ok: true, data: { tab: res.tab, pane: res.pane } };
+      // Round-trip rule: attend only ever runs for a hidden herd (guarded
+      // above), so this is always a bg: ref -- formatted explicitly rather
+      // than assumed, so the field stays honest if that guard ever loosens.
+      return { ok: true, data: { tab: res.tab, pane: formatPaneRef(res.pane, herd.hidden ? "bg" : "visible") } };
     },
 
     "herd:stop-hidden": async (_payload: unknown): Promise<CommandResult<"herd:stop-hidden">> => {

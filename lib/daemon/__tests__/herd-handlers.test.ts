@@ -9,7 +9,9 @@ import { createGateHandlers } from "../handlers/gate.ts";
 import { createEventsBus } from "../events-bus.ts";
 import { createHerdHandlers, type HerdDeps } from "../handlers/herd.ts";
 import { createBgClaimsStore, type BgClaimsStore } from "../bg-claims-store.ts";
-import type { BgService } from "../bg-service.ts";
+import { bgSocketPath, type BgService } from "../bg-service.ts";
+import { createEscapeInjector } from "../gate-escape.ts";
+import type { herdrRequest } from "../../herdr/client.ts";
 
 const log = pino({ level: "silent" });
 let dirs: string[] = [];
@@ -341,6 +343,14 @@ describe("worker verbs", () => {
     return { ...hx, herd: s.data.herd, room: s.data.room };
   }
 
+  async function withHiddenJob() {
+    const hx = harness();
+    const s = await hx.h["herd:start"]({ ...START, hidden: true });
+    if (!s.ok) throw new Error(s.error);
+    hx.store.upsertJob({ herd: s.data.herd, name: "job-a", worktree: "/w/job-a", handle: "job-a", status: "active", pane: "wh:p1", agentSession: "sess-w1" });
+    return { ...hx, herd: s.data.herd, room: s.data.room };
+  }
+
   test("ask opens a question gate with subject, refs, nudge, meta; job goes at-gate", async () => {
     const { h, store, gateStore, herd } = await withJob();
     const res = await h["herd:ask"]({ herd, job: "job-a", session: "sess-w1", pane: "w9:p1", questions: Q, context: "why" });
@@ -348,6 +358,31 @@ describe("worker verbs", () => {
     const g = gateStore.get(res.data.gate)!;
     expect(g).toMatchObject({ subject: `herd:${herd}/job-a`, kind: "question", agent: "job-a", pane: "w9:p1", nudge: { session: "sess-w1" }, meta: { herd, job: "job-a" }, context: "why" });
     expect(store.getJob(herd, "job-a")).toMatchObject({ status: "at-gate", lastGate: res.data.gate });
+  });
+
+  test("ask on a hidden herd stores the pane as a bg: ref, and the escape injector resolves that ref to the bg socket", async () => {
+    const { h, gateStore, herd } = await withHiddenJob();
+    const res = await h["herd:ask"]({ herd, job: "job-a", session: "sess-w1", questions: Q });
+    if (!res.ok) throw new Error(res.error);
+    const g = gateStore.get(res.data.gate)!;
+    expect(g.pane).toBe("bg:wh:p1");
+
+    const seenSock: Array<string | undefined> = [];
+    const fakeHerdrRecording = (async (method: string, params: unknown, o?: { sockPath?: string }) => {
+      seenSock.push(o?.sockPath);
+      return { ok: true, result: {} };
+    }) as typeof herdrRequest;
+    const escapeInjector = createEscapeInjector(fakeHerdrRecording);
+    const injected = await escapeInjector(g.pane!);
+    expect(injected).toEqual({ ok: true });
+    expect(seenSock).toEqual([bgSocketPath()]);
+  });
+
+  test("ask on a visible herd stores the pane bare (unchanged)", async () => {
+    const { h, gateStore, herd } = await withJob();
+    const res = await h["herd:ask"]({ herd, job: "job-a", session: "sess-w1", questions: Q });
+    if (!res.ok) throw new Error(res.error);
+    expect(gateStore.get(res.data.gate)!.pane).toBe("w9:p1");
   });
 
   test("ask refuses an unknown job and invalid questions", async () => {
@@ -368,6 +403,13 @@ describe("worker verbs", () => {
     expect(g.questions).toEqual([{ id: "decision", label: "spec ready", multi: false, options: ["Approve", "Revise", "Spawn a reviewer"] }]);
     expect(g.meta).toMatchObject({ herd, job: "job-a", artifact: "/w/job-a/spec.md" });
     expect(store.getJob(herd, "job-a")!.status).toBe("at-milestone");
+  });
+
+  test("milestone on a hidden herd stores the pane as a bg: ref", async () => {
+    const { h, gateStore, herd } = await withHiddenJob();
+    const res = await h["herd:milestone"]({ herd, job: "job-a", session: "sess-w1", artifact: "/w/job-a/spec.md" });
+    if (!res.ok) throw new Error(res.error);
+    expect(gateStore.get(res.data.gate)!.pane).toBe("bg:wh:p1");
   });
 
   test("answer returns the recorded answer with notes, or null while open", async () => {
@@ -646,7 +688,7 @@ describe("hidden verbs", () => {
     hx.store.upsertJob({ herd: s.data.herd, name: "job-a", worktree: "/w", handle: "job-a", status: "active", pane: "wh:p1" });
     const res = await hx.h["herd:attend"]({ herd: s.data.herd, job: "job-a", callerWorkspace: "wv" });
     if (!res.ok) throw new Error(res.error);
-    expect(res.data).toEqual({ tab: "wv:t9", pane: "wh:p1" });
+    expect(res.data).toEqual({ tab: "wv:t9", pane: "bg:wh:p1" });
     expect(hx.herdrCalls).toContainEqual(["/tmp/hidden.sock", "pane", "get", "wh:p1"]);
     expect(hx.herdrCalls).toContainEqual(["default", "tab", "create", "--workspace", "wv", "--label", "attend: job-a", "--focus"]);
     const run = hx.herdrCalls.find((c) => c[1] === "pane" && c[2] === "run")!;

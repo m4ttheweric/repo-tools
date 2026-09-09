@@ -118,3 +118,32 @@ test("a missing socket is herdr unavailable (ok:false)", async () => {
   if (res.ok) throw new Error("unreachable");
   expect(res.error.startsWith("herdr unavailable")).toBe(true);
 });
+
+test("every herdr call carries the caller's sockPath through the full accept flow", async () => {
+  const seenSockPaths: Array<string | undefined> = [];
+  const fakeHerdrWithSock: typeof herdrRequest = async (method, params, o) => {
+    seenSockPaths.push(o?.sockPath);
+    if (method === "agent.get") return { ok: true, result: agent("idle") as never };
+    if (method === "agent.prompt") return { ok: true, result: agent("working") as never };
+    return { ok: false, code: "invalid_request", message: method };
+  };
+  const res = await injectIntoPane({ paneId: "w1:p2", text: "do the thing", herdr: fakeHerdrWithSock, sockPath: "/tmp/bg/herdr.sock" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p2", delivered: "accepted" } });
+  expect(seenSockPaths).toEqual(["/tmp/bg/herdr.sock", "/tmp/bg/herdr.sock"]);
+});
+
+test("the stall nudge and its recovery wait also carry sockPath", async () => {
+  const seenSockPaths: Array<string | undefined> = [];
+  const fakeHerdrWithSock: typeof herdrRequest = async (method, params, o) => {
+    seenSockPaths.push(o?.sockPath);
+    if (method === "agent.get") return { ok: true, result: agent("idle") as never };
+    if (method === "agent.prompt") return { ok: false, code: "timeout", message: "timed out waiting for agent status" };
+    if (method === "pane.send_keys") return { ok: true, result: {} as never };
+    if (method === "agent.wait") return { ok: false, code: "timeout", message: "timed out waiting for agent status" };
+    return { ok: false, code: "invalid_request", message: method };
+  };
+  const res = await injectIntoPane({ paneId: "w1:p2", text: "x", herdr: fakeHerdrWithSock, sockPath: "/tmp/bg/herdr.sock" });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p2", delivered: "queued" } });
+  expect(seenSockPaths.every((s) => s === "/tmp/bg/herdr.sock")).toBe(true);
+  expect(seenSockPaths).toHaveLength(4);
+});

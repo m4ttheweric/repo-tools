@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { paneAccounts, paneDirectories, paneList, panePeek, paneSend, paneSpawn } from "../pane.ts";
+import { paneAccounts, paneDirectories, paneFocus, paneList, panePeek, renderPaneFocus, paneSend, paneSpawn } from "../pane.ts";
 
 let home: string;
 let origHome: string | undefined;
@@ -173,4 +173,57 @@ test("pane send exits non-zero when the daemon fails", async () => {
   const r = await run(paneSend, ["w1:p2", "--text", "x"]);
   expect(r.code).toBe(1);
   expect(r.stderr).toContain("herdr unavailable");
+});
+
+// ─── pane focus (Task 7: bg refs / attend) ─────────────────────────────────
+
+test("renderPaneFocus prints focused/not-focused for a plain result", () => {
+  expect(renderPaneFocus({ paneId: "w1:p1", focused: true })).toBe("w1:p1 focused");
+  expect(renderPaneFocus({ paneId: "w1:p1", focused: false })).toBe("w1:p1 not focused");
+});
+
+test("renderPaneFocus prints the attend line when attendTab is set, regardless of focused", () => {
+  expect(renderPaneFocus({ paneId: "bg:w1:p1", focused: true, attendTab: "wv:t9" }))
+    .toBe("attached bg:w1:p1 in tab wv:t9; detach with ctrl+b q, then close the tab");
+});
+
+test("pane focus fills callerWorkspace from HERDR_WORKSPACE_ID and renders the attend line for a bg focus", async () => {
+  replies = { "pane:focus": { ok: true, data: { paneId: "bg:w1:p1", focused: true, attendTab: "wv:t9" } } };
+  const orig = process.env.HERDR_WORKSPACE_ID;
+  process.env.HERDR_WORKSPACE_ID = "wv";
+  try {
+    const r = await run(paneFocus, ["bg:w1:p1"]);
+    expect(seen[0]).toEqual({ cmd: "pane:focus", payload: { paneId: "bg:w1:p1", callerWorkspace: "wv" } });
+    expect(r.stdout).toBe("attached bg:w1:p1 in tab wv:t9; detach with ctrl+b q, then close the tab");
+    expect(r.code).toBe(0);
+  } finally {
+    if (orig === undefined) delete process.env.HERDR_WORKSPACE_ID;
+    else process.env.HERDR_WORKSPACE_ID = orig;
+  }
+});
+
+test("pane focus omits callerWorkspace when HERDR_WORKSPACE_ID is unset, and prints the plain focused line", async () => {
+  replies = { "pane:focus": { ok: true, data: { paneId: "w1:p1", focused: true } } };
+  const orig = process.env.HERDR_WORKSPACE_ID;
+  delete process.env.HERDR_WORKSPACE_ID;
+  try {
+    const r = await run(paneFocus, ["w1:p1"]);
+    expect(seen[0]).toEqual({ cmd: "pane:focus", payload: { paneId: "w1:p1" } });
+    expect(r.stdout).toBe("w1:p1 focused");
+  } finally {
+    if (orig !== undefined) process.env.HERDR_WORKSPACE_ID = orig;
+  }
+});
+
+test("pane focus --json passes attendTab through untouched", async () => {
+  replies = { "pane:focus": { ok: true, data: { paneId: "bg:w1:p1", focused: true, attendTab: "wv:t9" } } };
+  const r = await run(paneFocus, ["bg:w1:p1", "--json"]);
+  expect(JSON.parse(r.stdout)).toEqual({ ok: true, paneId: "bg:w1:p1", focused: true, attendTab: "wv:t9" });
+});
+
+test("pane focus exits non-zero when the daemon fails (e.g. no HERDR_WORKSPACE_ID for a bg ref)", async () => {
+  replies = { "pane:focus": { ok: false, error: "focus for a background pane must run from a herdr pane; HERDR_WORKSPACE_ID is unset" } };
+  const r = await run(paneFocus, ["bg:w1:p1"]);
+  expect(r.code).toBe(1);
+  expect(r.stderr).toContain("HERDR_WORKSPACE_ID is unset");
 });

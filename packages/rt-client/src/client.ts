@@ -441,7 +441,9 @@ export function paneFocus(
   a: Commands["pane:focus"]["payload"],
   o: RtClientOptions = {},
 ): Promise<RtResponse<Commands["pane:focus"]["data"]>> {
-  return rtCommand<Commands["pane:focus"]["data"]>("pane:focus", { paneId: a.paneId }, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
+  const payload: Record<string, unknown> = { paneId: a.paneId };
+  if (a.callerWorkspace !== undefined) payload.callerWorkspace = a.callerWorkspace;
+  return rtCommand<Commands["pane:focus"]["data"]>("pane:focus", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
 // ─── Gates (BOARD-20/21 gate facility) ─────────────────────────────────────

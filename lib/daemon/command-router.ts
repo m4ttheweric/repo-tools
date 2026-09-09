@@ -115,7 +115,10 @@ export function buildRoutedHandlers(opts: {
   const chatHandlers = createChatHandlers({
     db: opts.stateDb, emitEvent, repoIndex: ctx.repoIndex, log: ctx.log, deliveryChains: opts.chatDeliveryChains,
   });
-  const paneHandlers = createPaneHandlers({ db: opts.stateDb, repoIndex: ctx.repoIndex });
+  const paneHandlers = createPaneHandlers({
+    db: opts.stateDb, repoIndex: ctx.repoIndex, bg: opts.bgService,
+    herdrRunnerFor: (socket) => defaultHerdrRunner(socket ? { ...process.env, HERDR_SOCKET_PATH: socket } : process.env),
+  });
   const agentHandlers = createAgentHandlers({ db: opts.stateDb, emitEvent, log: ctx.log });
   const worktreeHandlers = createWorktreeHandlers({ repoIndex: ctx.repoIndex, cache: ctx.cache, log: ctx.log }, opts.worktree);
   const gateHandlers = createGateHandlers(opts.gatesStore, opts.eventsBus, broadcast, { push: opts.gatePush, log: ctx.log });
