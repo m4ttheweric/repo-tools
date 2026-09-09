@@ -7,6 +7,7 @@ import { AGENT_NAMES } from "../../chat-names.ts";
 import { openStateDb, signIn } from "../../state/index.ts";
 import { createAgentHandlers, type HeadlessChild } from "../handlers/agent.ts";
 import { createBgClaimsStore, type BgClaimsStore } from "../bg-claims-store.ts";
+import { bgSocketPath } from "../bg-service.ts";
 import type { HerdrRunner } from "../../agent-herdr.ts";
 import { repoLabel } from "../../repo-arg.ts";
 
@@ -384,6 +385,54 @@ test("agent:start with herdrSocket builds a runner on that socket", async () => 
   const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", herdrSocket: "/tmp/hidden.sock" });
   expect(res.ok).toBe(true);
   expect(seenSockets).toEqual(["/tmp/hidden.sock"]);
+});
+
+// herd:spawn launches hidden workers with herdrSocket = the bg socket and no
+// --bg flag (the herd's own claim covers them, not a per-agent one); the
+// stored ref must still say bg: or agent:resume's wasBg check misses it.
+test("agent:start with herdrSocket = bgSocketPath() and no bg flag stores a bg: ref and adds no claim", async () => {
+  const seenSockets: string[] = [];
+  const bgClaims = fakeBgClaims();
+  const h = fresh({
+    runnerFactory: (socket) => { seenSockets.push(socket); return okRunner([]); },
+    bgClaims,
+  });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", herdrSocket: bgSocketPath() });
+  if (!res.ok) throw new Error(res.error);
+  expect(seenSockets).toEqual([bgSocketPath()]);
+  expect(res.data.paneId).toBe("bg:w1:p1");
+  expect(bgClaims.claims).toEqual([]);
+});
+
+test("agent:resume of a herd-spawned (no --bg flag) bg record follows it to the bg server", async () => {
+  const seenSockets: string[] = [];
+  let creates = 0;
+  const runnerFactory = (socket: string): HerdrRunner => {
+    seenSockets.push(socket);
+    return async (args) => {
+      if (args[0] === "workspace" && args[1] === "list") return { stdout: JSON.stringify({ result: { workspaces: [] } }), exitCode: 0 };
+      if (args[0] === "workspace" && args[1] === "create") {
+        creates++;
+        const paneId = creates === 1 ? "w1:p1" : "w1:p2";
+        return { stdout: JSON.stringify({ result: { root_pane: { pane_id: paneId, tab_id: `t${creates}`, workspace_id: "w1" } } }), exitCode: 0 };
+      }
+      return { stdout: "{}", exitCode: 0 };
+    };
+  };
+  const bg = fakeBg({ socket: bgSocketPath() });
+  const bgClaims = fakeBgClaims();
+  const lifecycle = fakeLifecycle();
+  const h = fresh({ runnerFactory, bg, bgClaims, lifecycle });
+
+  const started = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", herdrSocket: bgSocketPath() });
+  if (!started.ok) throw new Error(started.error);
+  expect(started.data.paneId).toBe("bg:w1:p1");
+  expect(bgClaims.claims).toEqual([]);
+
+  const resumed = await h["agent:resume"]({ id: started.data.id });
+  if (!resumed.ok) throw new Error(resumed.error);
+  expect(seenSockets[1]).toBe(bgSocketPath());
+  expect(resumed.data.paneId).toBe("bg:w1:p2");
 });
 
 test("agent:start with handle uses it as --name and reserves no pool handle", async () => {

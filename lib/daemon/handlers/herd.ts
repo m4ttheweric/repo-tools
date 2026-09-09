@@ -37,7 +37,7 @@ export interface HerdDeps {
   presenceHandleForSession: (session: string) => string | null;
   herdr: typeof herdrRequest;
   herdrRunnerFor: (socket: string | null) => HerdrRunner;
-  lifecycle: { connected(socket: string | null): boolean; watch(socket: string): void };
+  lifecycle: { connected(socket: string | null): boolean; watch(socket: string): void; sweepClaims(): Promise<void> };
   bg: BgService;
   claims: BgClaimsStore;
   /** How long a spawn waits for herdr to register the agent before giving up on

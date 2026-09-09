@@ -69,7 +69,7 @@ describe("R028: db is not a handler-map entry", () => {
       gatesStore: createGatesStore({ dbPath: ":memory:", log: pino({ level: "silent" }) }),
       gatePush: { onAnswered: async () => {}, onOpened: async () => {}, onClosed: async () => {}, retryDeadPanes: async () => ({ retried: 0, delivered: 0, gaveUp: 0 }) } satisfies GatePush,
       herdStore: createHerdStore({ dbPath: ":memory:", log: pino({ level: "silent" }) }),
-      herdLifecycle: { connected: () => false, watch: () => {} },
+      herdLifecycle: { connected: () => false, watch: () => {}, sweepClaims: async () => {} },
       herdJobsRoot: join(tmpdir(), "rt-herd-router-jobs"),
       bgService: {
         socketPath: () => "/tmp/bg.sock",

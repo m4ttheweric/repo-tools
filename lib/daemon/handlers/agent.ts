@@ -23,6 +23,7 @@ import { rtDir } from "../../rt-paths.ts";
 import { lazyChildLogger } from "../../daemon-logger.ts";
 import { formatPaneRef, parsePaneRef } from "../../../packages/rt-client/src/index.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
+import { bgSocketPath } from "../bg-service.ts";
 import type { BgService } from "../bg-service.ts";
 import type { BgClaimsStore } from "../bg-claims-store.ts";
 import type { CommandResult } from "./types.ts";
@@ -256,19 +257,29 @@ export function createAgentHandlers(opts: {
           bgSocket = ensured.socket;
           opts.lifecycle!.watch(ensured.socket);
         }
+        const effectiveSocket = bgSocket ?? payload.herdrSocket;
         const res = await launch(rec, { kind: "start", sessionId: rec.sessionId }, prompt, tabLabel, workspaceLabel, {
           ...(payload.env !== undefined && { env: payload.env }),
-          ...((bgSocket ?? payload.herdrSocket) !== undefined && { herdrSocket: bgSocket ?? payload.herdrSocket }),
+          ...(effectiveSocket !== undefined && { herdrSocket: effectiveSocket }),
         });
         if (!res.ok) {
           deleteAgent(rec.id, db);
           return res;
         }
-        if (payload.bg && rec.paneId) {
+        // A herd-spawned hidden worker rides the bg socket via herdrSocket,
+        // never payload.bg (its claim is the herd's own, not this record's);
+        // the ref must still store bg: or agent:resume's wasBg check misses
+        // it and relaunches on the visible server. `payload.bg` stays the
+        // primary signal (production and every faked-socket test agree on
+        // it); the socket-equality check only widens it to the flagless
+        // herd:spawn path, where the effective socket really is bgSocketPath().
+        if ((payload.bg || effectiveSocket === bgSocketPath()) && rec.paneId) {
           // The pane column and AgentRecord.paneId both store the ref, never
           // the bare pane id: releaseByPane is later called with this same
           // string, and renderRecord/agent:get print it back verbatim.
           rec.paneId = formatPaneRef(rec.paneId, "bg");
+        }
+        if (payload.bg && rec.paneId) {
           opts.bgClaims!.claim(agentOwner(rec.id), rec.paneId);
         }
         if (surface === "herdr" && rec.paneId && rec.tabId && rec.workspaceId) {

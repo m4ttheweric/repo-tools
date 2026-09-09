@@ -672,7 +672,7 @@ export interface Commands {
   "worktree:freshen": { payload: { repoName?: string; tree?: string }; data: WorktreeFreshenData };
   "worktree:adopt": { payload: { repoName: string; claim?: boolean }; data: WorktreeAdoptData };
 
-  // ─── Background server (daemon-owned headless herdr session) ────────────
+  // ─── Background server (daemon-owned background herdr session) ──────────
   "bg:ensure": { payload: { claim?: string }; data: { socket: string; started: boolean; parity: { ok: boolean; drift: string[] } | null } };
   "bg:status": { payload: Record<string, never>; data: { up: boolean; socket: string; claims: Array<{ owner: string; pane: string | null; createdAt: number }> } };
   /** Rejects (`ok:false`) naming every live claim owner while any claim is held. */

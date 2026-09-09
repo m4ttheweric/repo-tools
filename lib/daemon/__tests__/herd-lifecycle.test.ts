@@ -14,7 +14,14 @@ let dirs: string[] = [];
 beforeEach(() => { dirs = []; });
 afterEach(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
 
-function fx(over: { postThrows?: boolean; bgSocket?: string } = {}) {
+function fx(over: {
+  postThrows?: boolean;
+  bgSocket?: string;
+  /** Seeds sweepClaims' backing rows; releaseByPane/release still mutate this list for real, so sweep tests can assert against `bgClaims.list()` afterward. */
+  claims?: Array<{ owner: string; pane: string | null }>;
+  /** herd-lifecycle's `herdr` dep (session.snapshot for the sweep); default answers an empty bg snapshot. */
+  herdr?: (method: string, params: unknown, opts2?: { sockPath?: string }) => Promise<any>;
+} = {}) {
   const dir = mkdtempSync(join(tmpdir(), "rt-herd-lc-"));
   dirs.push(dir);
   const store = createHerdStore({ dbPath: join(dir, "herds.db"), log });
@@ -34,16 +41,40 @@ function fx(over: { postThrows?: boolean; bgSocket?: string } = {}) {
   const subs: Array<{ sockPath: string; subscriptions: Array<Record<string, unknown>>; onState?: (c: boolean) => void; stopped: boolean }> = [];
   const subscribe = ((o: any) => { const s = { sockPath: o.sockPath, subscriptions: o.subscriptions, onState: o.onState, stopped: false }; subs.push(s); o.onState?.(true); return { stop() { s.stopped = true; }, connected: () => !s.stopped }; }) as any;
   const bgReleases: string[] = [];
-  const bgClaims = { releaseByPane: (pane: string) => { bgReleases.push(pane); return []; } };
+  const claimRows: Array<{ owner: string; pane: string | null; createdAt: number }> = (over.claims ?? []).map((c, i) => ({ owner: c.owner, pane: c.pane, createdAt: i }));
+  const bgClaims = {
+    // releaseByPane keeps recording its raw argument into bgReleases (the pre-existing
+    // event-path tests assert on that, unconditionally of whether a claim row exists);
+    // it also removes any real seeded rows so sweep tests can read `list()` afterward.
+    releaseByPane: (pane: string) => {
+      const owners = claimRows.filter((c) => c.pane === pane).map((c) => c.owner);
+      for (const o of owners) { const idx = claimRows.findIndex((c) => c.owner === o); if (idx >= 0) claimRows.splice(idx, 1); }
+      bgReleases.push(pane);
+      return owners;
+    },
+    release: (owner: string) => {
+      const idx = claimRows.findIndex((c) => c.owner === owner);
+      if (idx < 0) return false;
+      claimRows.splice(idx, 1);
+      return true;
+    },
+    list: () => claimRows.map((c) => ({ ...c })),
+  };
+  const herdrCalls: Array<{ method: string; sockPath?: string }> = [];
+  const herdr = (async (method: string, params: unknown, opts2?: { sockPath?: string }) => {
+    herdrCalls.push({ method, sockPath: opts2?.sockPath });
+    if (over.herdr) return over.herdr(method, params, opts2);
+    return { ok: true, result: { snapshot: { panes: [] } } };
+  }) as any;
   const lc = createHerdLifecycle({
     store, gate, chat, bus, gateStore, defaultSocket: "/default.sock",
     ...(over.bgSocket !== undefined && { bgSocket: over.bgSocket, bgClaims }),
-    subscribe, setTimer, log: lcLog,
+    subscribe, herdr, setTimer, log: lcLog,
   });
   const herd = store.create({ id: "demo-1", repo: "r", room: "herd-demo-1", workspace: "herd: demo-1", shepherdSession: "s", shepherdHandle: "shepherd", herdrSocket: null, hidden: false });
   const wildcard = () => subs.filter((s) => !s.subscriptions.some((e) => "pane_id" in e));
   const paneSubs = () => subs.filter((s) => !s.stopped && s.subscriptions.some((e) => "pane_id" in e));
-  return { store, gateStore, gate, bus, posts, warns, timers, subs, lc, herd, wildcard, paneSubs, bgReleases };
+  return { store, gateStore, gate, bus, posts, warns, timers, subs, lc, herd, wildcard, paneSubs, bgReleases, bgClaims, herdrCalls };
 }
 
 describe("herd-lifecycle", () => {
@@ -228,5 +259,57 @@ describe("herd-lifecycle", () => {
     expect(bgReleases).toEqual(["bg:w1:p1"]);
     expect(store.getJob("hid-1", "job-a")!.status).toBe("crashed");
     expect(posts[0].body).toContain("job-a exited");
+  });
+
+  test("start also watches the configured bg socket, not just default and herd rows", () => {
+    const { lc, wildcard } = fx({ bgSocket: "/bg.sock" });
+    lc.start();
+    expect(wildcard().map((s) => s.sockPath).sort()).toEqual(["/bg.sock", "/default.sock"]);
+  });
+
+  test("sweepClaims releases a bg claim whose pane is missing from the snapshot and keeps one whose pane is present", async () => {
+    const { lc, bgClaims, herdrCalls } = fx({
+      bgSocket: "/bg.sock",
+      claims: [
+        { owner: "agent:gone", pane: "bg:w1:pGone" },
+        { owner: "agent:here", pane: "bg:w1:pHere" },
+      ],
+      herdr: async () => ({ ok: true, result: { snapshot: { panes: [{ pane_id: "w1:pHere" }] } } }),
+    });
+    await lc.sweepClaims();
+    expect(bgClaims.list().map((c) => c.owner)).toEqual(["agent:here"]);
+    expect(herdrCalls).toEqual([{ method: "session.snapshot", sockPath: "/bg.sock" }]);
+  });
+
+  test("sweepClaims releases a runner claim whose pid is dead and keeps one whose pid is alive", async () => {
+    const { lc, bgClaims } = fx({
+      bgSocket: "/bg.sock",
+      claims: [
+        { owner: "runner:999999", pane: null },
+        { owner: `runner:${process.pid}`, pane: null },
+      ],
+    });
+    await lc.sweepClaims();
+    expect(bgClaims.list().map((c) => c.owner)).toEqual([`runner:${process.pid}`]);
+  });
+
+  test("sweepClaims skips the pane sweep (but still checks runner pids) when the snapshot call fails", async () => {
+    const { lc, bgClaims, warns } = fx({
+      bgSocket: "/bg.sock",
+      claims: [
+        { owner: "agent:unknown", pane: "bg:w1:pUnknown" },
+        { owner: "runner:999999", pane: null },
+      ],
+      herdr: async () => ({ ok: false, code: "unreachable", message: "herdr unavailable" }),
+    });
+    await lc.sweepClaims();
+    expect(bgClaims.list().map((c) => c.owner)).toEqual(["agent:unknown"]);
+    expect(warns.some((w) => w.includes("could not snapshot"))).toBe(true);
+  });
+
+  test("sweepClaims is inert without a configured bg socket", async () => {
+    const { lc, herdrCalls } = fx();
+    await lc.sweepClaims();
+    expect(herdrCalls).toEqual([]);
   });
 });

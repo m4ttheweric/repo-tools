@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { herdrRequest } from "../../herdr/client.ts";
 import { fakeHerdr, HerdrFakeError, type FakeHerdrHandler } from "../../herdr/__tests__/fake-herdr.ts";
 import { injectIntoPane } from "../inject.ts";
+import { bgSocketPath } from "../bg-service.ts";
 
 const stops: Array<() => void> = [];
 afterEach(() => { for (const s of stops) s(); stops.length = 0; });
@@ -98,6 +99,23 @@ test("agent.wait failing unreachable after the nudge is herdr unavailable, not q
 test("the caller's own pane is refused before any herdr call", async () => {
   const { herdr, seen } = on(() => new HerdrFakeError("invalid_request", "unreachable in this test"));
   const res = await injectIntoPane({ paneId: "w1:p1", text: "x", callerPane: "w1:p1", herdr });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "that is this pane" } });
+  expect(seen).toHaveLength(0);
+});
+
+// Finding 3: the self-refusal compares in ref space, not bare ids -- paneId
+// here is always the bare id the caller's own ref already resolved against
+// (same visible/bg servers can coincidentally share a bare id).
+test("a visible-pane caller is not refused sending to a bg pane sharing its bare id", async () => {
+  const { herdr, seen } = on((method) => (method === "agent.get" ? agent("blocked") : new HerdrFakeError("invalid_request", method)));
+  const res = await injectIntoPane({ paneId: "w1:p1", text: "x", callerPane: "w1:p1", sockPath: bgSocketPath(), herdr });
+  expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "at a prompt" } });
+  expect(seen).toHaveLength(1);
+});
+
+test("a bg-pane caller sending to its own bg ref is refused before any herdr call", async () => {
+  const { herdr, seen } = on(() => new HerdrFakeError("invalid_request", "unreachable in this test"));
+  const res = await injectIntoPane({ paneId: "w1:p1", text: "x", callerPane: "bg:w1:p1", sockPath: bgSocketPath(), herdr });
   expect(res).toEqual({ ok: true, data: { paneId: "w1:p1", delivered: "refused", reason: "that is this pane" } });
   expect(seen).toHaveLength(0);
 });

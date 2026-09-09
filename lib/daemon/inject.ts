@@ -1,4 +1,6 @@
 import { herdrRequest, waitTimeout, HERDR_UNAVAILABLE } from "../herdr/client.ts";
+import { formatPaneRef } from "../../packages/rt-client/src/index.ts";
+import { bgSocketPath } from "./bg-service.ts";
 
 const DEFAULT_WAIT_MS = 5_000;
 
@@ -33,7 +35,13 @@ export async function injectIntoPane(opts: InjectOptions): Promise<{ ok: true; d
   const waitMs = opts.promptWaitMs ?? DEFAULT_WAIT_MS;
   const ok = (delivered: InjectDelivery, reason?: string) =>
     ({ ok: true as const, data: reason ? { paneId, delivered, reason } : { paneId, delivered } });
-  if (callerPane && callerPane === paneId) return ok("refused", "that is this pane");
+  // callerPane arrives as a ref (bare or bg:-prefixed, per selfPaneRef); paneId
+  // here is always the bare id the caller's ref already resolved against
+  // (see the docstring above), so the comparison must re-address paneId into
+  // the same ref space -- a bg:w1:p1 caller vs. a bare w1:p1 target would
+  // never match even when they are the exact same pane.
+  const targetRef = formatPaneRef(paneId, sockPath === bgSocketPath() ? "bg" : "visible");
+  if (callerPane && callerPane === targetRef) return ok("refused", "that is this pane");
 
   const probe = await herdr<{ agent: { agent: string; agent_status: string } }>("agent.get", { target: paneId }, { sockPath });
   if (!probe.ok) {

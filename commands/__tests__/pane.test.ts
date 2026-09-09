@@ -117,6 +117,21 @@ test("pane send forwards the text and HERDR_PANE_ID as callerPane", async () => 
   }
 });
 
+test("pane send from inside a bg pane sends callerPane as a bg: ref", async () => {
+  replies = { "pane:send": { ok: true, data: { paneId: "w1:p2", delivered: "accepted" } } };
+  const origPane = process.env.HERDR_PANE_ID;
+  const origSession = process.env.HERDR_SESSION;
+  process.env.HERDR_PANE_ID = "w1:p1";
+  process.env.HERDR_SESSION = "bg";
+  try {
+    await run(paneSend, ["w1:p2", "--text", "standup in 5"]);
+    expect(seen[0]).toEqual({ cmd: "pane:send", payload: { paneId: "w1:p2", text: "standup in 5", callerPane: "bg:w1:p1" } });
+  } finally {
+    if (origPane === undefined) delete process.env.HERDR_PANE_ID; else process.env.HERDR_PANE_ID = origPane;
+    if (origSession === undefined) delete process.env.HERDR_SESSION; else process.env.HERDR_SESSION = origSession;
+  }
+});
+
 test("pane send prints the outcome and does not exit non-zero on refused", async () => {
   replies = { "pane:send": { ok: true, data: { paneId: "w1:p2", delivered: "refused", reason: "at a prompt" } } };
   const r = await run(paneSend, ["w1:p2", "--text", "x"]);

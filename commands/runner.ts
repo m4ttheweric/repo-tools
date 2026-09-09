@@ -1,6 +1,6 @@
 /**
  * rt runner: a board of services, run in a detached tmux session by
- * default or in headless herdr panes under --herdr. The command is the
+ * default or in background herdr panes under --herdr. The command is the
  * gate and the wiring; the loop lives in lib/runner/runner.ts and the two
  * backends in lib/runner/engine.ts (herdr) and lib/runner/tmux-engine.ts.
  */
@@ -147,17 +147,25 @@ async function gateAndRun(ctx: CommandContext, args: string[], seed?: SeedEntry[
   let runner: Runner;
   let releaseBgSocket: (() => Promise<void>) | undefined;
   if (useHerdr) {
-    let sock: string;
+    // buildRunnerDeps/new Runner live inside this same try, not after it: a
+    // throw from either after acquireBgSocket succeeds would otherwise skip
+    // releaseBgSocket entirely and leak the claim -- nothing past this block
+    // ever runs release() for a herdr-path failure.
     try {
       const acquired = await acquireBgSocket("runner:" + process.pid);
-      sock = acquired.sock;
       releaseBgSocket = acquired.release;
-    } catch {
-      process.stderr.write("the rt daemon is required for --herdr mode; start it and retry\n");
+      await reconcileRunnerWorkspaces(acquired.sock);
+      runner = new Runner(buildRunnerDeps(cleanArgs, ctx, acquired.sock, seed));
+    } catch (err) {
+      await releaseBgSocket?.();
+      const message = err instanceof Error ? err.message : String(err);
+      if (isDaemonUnreachable(message)) {
+        process.stderr.write("the rt daemon is required for --herdr mode; start it and retry\n");
+      } else {
+        process.stderr.write(`  rt runner: ${message}\n`);
+      }
       return exit(1);
     }
-    await reconcileRunnerWorkspaces(sock);
-    runner = new Runner(buildRunnerDeps(cleanArgs, ctx, sock, seed));
   } else {
     if (!tmuxAvailable()) {
       process.stderr.write("rt runner needs tmux on PATH (or pass --herdr to use herdr panes)\n");
@@ -168,7 +176,7 @@ async function gateAndRun(ctx: CommandContext, args: string[], seed?: SeedEntry[
   }
 
   // The board dies with this process: a signal tears the workspace down
-  // before exit so no headless pane outlives its board. SIGHUP (a closed
+  // before exit so no background pane outlives its board. SIGHUP (a closed
   // terminal window) gets the same best-effort teardown; a launch this
   // catches never leaves a workspace for the next reconcile to find.
   const onSignal = () => {

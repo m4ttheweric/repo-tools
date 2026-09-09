@@ -890,6 +890,7 @@ export function buildUnits(ctx: BootContext): DaemonUnit[] {
           herdLifecycle: {
             connected: (socket) => herdLifecycle?.connected(socket) ?? false,
             watch: (socket) => herdLifecycle?.watch(socket),
+            sweepClaims: () => herdLifecycle?.sweepClaims() ?? Promise.resolve(),
           },
           herdJobsRoot: join(RT_DIR, "herds"),
           bgService,

@@ -483,6 +483,51 @@ test("pane:list appends bg-server panes as bg: refs, only when the bg server is 
   expect(bgRow).toMatchObject({ workspace: "bg", title: "job-a", cwd: "/tmp/bg-job", agentStatus: "idle" });
 });
 
+// Finding 3(c): presence.pane is bound in ref space, so the byPane fallback
+// join must key on the ref, not the bare id -- otherwise a bg pane and a
+// visible pane that happen to share a bare id would collide (or the bg
+// presence would silently miss).
+test("pane:list joins presence bound from a bg pane to the bg row, never the visible pane sharing its bare id", async () => {
+  const visibleSnapshot = {
+    type: "session_snapshot",
+    snapshot: {
+      version: "0.8.0", protocol: 19, tabs: [], layouts: [], agents: [],
+      workspaces: [{ workspace_id: "w1", label: "acme" }],
+      panes: [{ pane_id: "wb:p1", terminal_id: "t1", workspace_id: "w1", tab_id: "w1:t1", focused: false, agent: "claude", agent_status: "idle", cwd: "/tmp/acme", terminal_title_stripped: "visible-collision", revision: 1 }],
+    },
+  };
+  const { sock: visibleSock, stop: stopVisible } = fakeHerdr((method) =>
+    method === "session.snapshot" ? visibleSnapshot : new HerdrFakeError("invalid_request", method));
+  stops.push(stopVisible);
+  const bgSnapshot = {
+    type: "session_snapshot",
+    snapshot: {
+      version: "0.8.0", protocol: 19, tabs: [], layouts: [], agents: [],
+      workspaces: [{ workspace_id: "wb", label: "bg" }],
+      panes: [{ pane_id: "wb:p1", terminal_id: "tb1", workspace_id: "wb", tab_id: "wb:t1", focused: false, agent: "claude", agent_status: "idle", cwd: "/tmp/bg-job", terminal_title_stripped: "job-a", revision: 1 }],
+    },
+  };
+  const { sock: bgSock, stop: stopBg } = fakeHerdr((method) =>
+    method === "session.snapshot" ? bgSnapshot : new HerdrFakeError("invalid_request", method));
+  stops.push(stopBg);
+  const db = freshDb();
+  const herdr: typeof herdrRequest = (method, params, o) => herdrRequest(method, params, { ...o, sockPath: o?.sockPath ?? visibleSock });
+  const bg = fakeBg({ socketPath: () => bgSock, up: async () => true });
+  const registryDeps = fakeRegistryDeps({ "sess-bg": "idle" });
+  const chat = createChatHandlers({ db, emitEvent: () => 0 });
+  const pane = createPaneHandlers({ db, repoIndex: () => ({}), herdr, exec: CSWAP_EXEC, bg, registryDeps });
+
+  const signed = await chat["chat:sign-in"]({ sessionId: "sess-bg", baseHandle: "worker", cwd: "/tmp/bg-job", pane: "bg:wb:p1" });
+  if (!signed.ok) throw new Error(signed.error);
+
+  const res = await pane["pane:list"]({});
+  if (!res.ok) throw new Error(res.error);
+  const bgRow = res.data.panes.find((p) => p.paneId === "bg:wb:p1")!;
+  const visibleRow = res.data.panes.find((p) => p.paneId === "wb:p1")!;
+  expect(bgRow.presence?.handle).toBe("worker");
+  expect(visibleRow.presence).toBeUndefined();
+});
+
 test("pane:list skips the bg section (never ensures) when the bg server is down", async () => {
   const { sock: visibleSock, stop } = fakeHerdr((method) =>
     method === "session.snapshot" ? SNAPSHOT : new HerdrFakeError("invalid_request", method));

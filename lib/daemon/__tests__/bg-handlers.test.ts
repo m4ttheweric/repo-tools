@@ -39,33 +39,40 @@ function fakeService(opts: { up?: boolean; started?: boolean; parity?: ParityRep
   return { service, stopCalls };
 }
 
-function fakeLifecycle(): { lifecycle: { watch(socket: string): void }; watched: string[] } {
+function fakeLifecycle(): { lifecycle: { watch(socket: string): void; sweepClaims(): Promise<void> }; watched: string[]; sweptCount: () => number } {
   const watched: string[] = [];
-  return { lifecycle: { watch: (socket: string) => { watched.push(socket); } }, watched };
+  let swept = 0;
+  const lifecycle = {
+    watch: (socket: string) => { watched.push(socket); },
+    sweepClaims: async () => { swept += 1; },
+  };
+  return { lifecycle, watched, sweptCount: () => swept };
 }
 
 describe("bg handlers", () => {
   test("bg:ensure ensures, watches the socket, and registers the claim when given", async () => {
     const claims = claimsStore();
     const { service } = fakeService({ started: true, parity: { ok: true, drift: [] } });
-    const { lifecycle, watched } = fakeLifecycle();
+    const { lifecycle, watched, sweptCount } = fakeLifecycle();
     const bg = createBgHandlers({ service, claims, lifecycle });
 
     const res = await bg["bg:ensure"]({ claim: "gitq" });
     expect(res).toEqual({ ok: true, data: { socket: SOCKET, started: true, parity: { ok: true, drift: [] } } });
     expect(watched).toEqual([SOCKET]);
+    expect(sweptCount()).toBe(1);
     expect(claims.list()).toEqual([{ owner: "gitq", pane: null, createdAt: expect.any(Number) }]);
   });
 
   test("bg:ensure with no claim just ensures, registering nothing", async () => {
     const claims = claimsStore();
     const { service } = fakeService();
-    const { lifecycle, watched } = fakeLifecycle();
+    const { lifecycle, watched, sweptCount } = fakeLifecycle();
     const bg = createBgHandlers({ service, claims, lifecycle });
 
     const res = await bg["bg:ensure"]({});
     expect(res.ok).toBe(true);
     expect(watched).toEqual([SOCKET]);
+    expect(sweptCount()).toBe(1);
     expect(claims.list()).toEqual([]);
   });
 

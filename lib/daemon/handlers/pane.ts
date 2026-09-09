@@ -92,9 +92,16 @@ export function presenceMaps(db: Database, now: number, deps?: RegistryDeps): Pi
   return { bySession, byPane };
 }
 
-export async function paneRow(pane: HerdrPane, ctx: PaneRowContext): Promise<ChatPane> {
+/**
+ * `presenceRef` defaults to the bare id (a visible-server lookup) but a bg
+ * row must pass its `bg:`-formatted ref: presence.pane is bound in ref space
+ * (round-trip rule, spec "Addressing"), so a bare-id lookup against a bg
+ * pane's row in `ctx.byPane` would always miss even though it is the same
+ * pane.
+ */
+export async function paneRow(pane: HerdrPane, ctx: PaneRowContext, presenceRef: string = pane.pane_id): Promise<ChatPane> {
   const sessionId = pane.agent_session?.kind === "id" ? pane.agent_session.value : undefined;
-  const presence = (sessionId ? ctx.bySession.get(sessionId) : undefined) ?? ctx.byPane.get(pane.pane_id);
+  const presence = (sessionId ? ctx.bySession.get(sessionId) : undefined) ?? ctx.byPane.get(presenceRef);
   const cwd = pane.foreground_cwd ?? pane.cwd;
   let repo = presence?.repo;
   let branch = presence?.branch;
@@ -193,7 +200,7 @@ export function createPaneHandlers(opts: {
           };
           const bgClaude = bgSnap.result.snapshot.panes.filter((p) => p.agent === "claude");
           for (const p of bgClaude) {
-            const row = await paneRow(p, bgCtx);
+            const row = await paneRow(p, bgCtx, formatPaneRef(p.pane_id, "bg"));
             bgRows.push({ ...row, paneId: formatPaneRef(row.paneId, "bg") });
           }
         }

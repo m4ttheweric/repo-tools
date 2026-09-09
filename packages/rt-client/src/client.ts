@@ -643,7 +643,7 @@ export function herdStopHidden(
   return rtCommand<Commands["herd:stop-hidden"]["data"]>("herd:stop-hidden", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }
 
-// ─── Background server (daemon-owned headless herdr session) ──────────────
+// ─── Background server (daemon-owned background herdr session) ────────────
 
 /** May spawn `herdr server` and wait for it to bind; budget matches bg-service's own 10s readyTimeoutMs plus margin. */
 export function bgEnsure(

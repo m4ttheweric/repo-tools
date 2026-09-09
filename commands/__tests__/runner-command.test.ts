@@ -1,4 +1,4 @@
-import { test, expect, afterEach } from "bun:test";
+import { test, expect, afterEach, spyOn } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -152,6 +152,51 @@ test("acquireBgSocket surfaces a bgEnsure failure by rejecting", async () => {
     bgRelease: async () => ({ ok: true, data: { released: true } }),
   };
   await expect(acquireBgSocket("runner:123", fakeDeps)).rejects.toThrow("rt daemon unreachable");
+});
+
+test("acquireBgSocket's release surfaces a non-daemon-down bgRelease failure to stderr, and swallows a daemon-down one", async () => {
+  const errs: string[] = [];
+  const real = process.stderr.write;
+  process.stderr.write = ((c: string | Uint8Array) => { errs.push(String(c)); return true; }) as typeof process.stderr.write;
+  try {
+    const { release: releaseOther } = await acquireBgSocket("runner:1", {
+      bgEnsure: async () => ({ ok: true, data: { socket: "/fake/bg.sock", started: false, parity: null } }),
+      bgRelease: async () => ({ ok: false, error: "bg server has live claims: herd:x" }),
+    });
+    await releaseOther();
+    expect(errs.join("")).toContain("bg server has live claims");
+
+    errs.length = 0;
+    const { release: releaseDown } = await acquireBgSocket("runner:2", {
+      bgEnsure: async () => ({ ok: true, data: { socket: "/fake/bg.sock", started: false, parity: null } }),
+      bgRelease: async () => ({ ok: false, error: "rt daemon unreachable at /nowhere/rt.sock: connect ECONNREFUSED" }),
+    });
+    await releaseDown();
+    expect(errs).toEqual([]);
+  } finally {
+    process.stderr.write = real;
+  }
+});
+
+test("the --herdr gate propagates a non-daemon-down bg:ensure failure message verbatim, not the generic daemon advice", async () => {
+  gate.setInteractive(() => true);
+  const exits: number[] = [];
+  spawnTest.setExit((code) => { exits.push(code); throw new Error(`exit ${code}`); });
+  const errs: string[] = [];
+  const real = process.stderr.write;
+  process.stderr.write = ((c: string | Uint8Array) => { errs.push(String(c)); return true; }) as typeof process.stderr.write;
+  const rtClient = await import("../../packages/rt-client/src/index.ts");
+  const spawnMessage = "bg server was spawned 3s ago and has not bound yet; see /tmp/bg.log";
+  const bgEnsureSpy = spyOn(rtClient, "bgEnsure").mockImplementation(async () => ({ ok: false, error: spawnMessage }));
+  try {
+    await expect(runnerCommand(["--herdr"], {} as never)).rejects.toThrow("exit 1");
+  } finally {
+    process.stderr.write = real;
+    bgEnsureSpy.mockRestore();
+  }
+  expect(errs.join("")).toContain(spawnMessage);
+  expect(errs.join("")).not.toContain("the rt daemon is required for --herdr mode");
+  expect(exits).toEqual([1]);
 });
 
 test("runSeededBoard exits 1 with one line when tmux is off PATH (its default backend)", async () => {

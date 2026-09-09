@@ -14,7 +14,7 @@
 
 - No em dashes or en dashes anywhere (code, comments, commit messages, docs). Use `--` or rephrase.
 - This repo is PUBLIC: neutral fixture names only; `sh scripts/repo-purity.sh` must pass before every commit.
-- Never push; never publish rt-client; never restart the dev daemon. The hard cutover (merge, daemon restart, `packages/rt-client` publish at 0.18.0 with the bump announced to peer sessions, `herdr session stop herd` for the legacy hidden server) is the operator's, listed in Task 10.
+- Never push; never publish rt-client; never restart the dev daemon. The hard cutover (merge, daemon restart, `packages/rt-client` publish at 0.19.0 (the branch's final version) with the bump announced to peer sessions, `herdr session stop herd` for the legacy hidden server) is the operator's, listed in Task 10.
 - `packages/rt-client`: bump version `0.17.0` -> `0.18.0` in the same commit as the first source change there; run `bun run build` in `packages/rt-client` after every change to it (`test/dist-freshness.test.ts` enforces; treat its failure as an instruction).
 - No new CLI command modules (no `lib/module-registry.ts` changes needed); no eager imports added to `lib/command-tree.ts` or command modules (`lib/__tests__/no-eager-tui.test.ts` and `scripts/bench-startup.ts` gate this).
 - Claims persist in their own SQLite file (`~/.mattstack/rt/bg-claims.db`), opened with the `lib/daemon/herd-store.ts` idiom. Never `state.db`; `SCHEMA_VERSION` is not touched anywhere in this plan.
@@ -390,7 +390,7 @@ export async function acquireBgSocket(claim: string, deps = { bgEnsure, bgReleas
 - [ ] **Step 2: Round-trip invariant already unit-covered (T2); spot-check display surfaces** -- grep-assert in the e2e that `rt herd status --json` and `rt agent show --json` outputs for hidden/bg records carry `bg:`-prefixed pane fields.
 - [ ] **Step 3: Full gates** -- `bun run test:all`, `bun run picker:check`, `sh scripts/repo-purity.sh`, `bun scripts/bench-startup.ts` (no package script exists; the release workflow runs this file directly).
 - [ ] **Step 4: Commit** -- `git commit -m "e2e: background server lifecycle, refs, focus as attend, claim gated stop"`
-- [ ] **Step 5: Cutover checklist (operator's, NOT run by the implementer)** -- merge to main; restart the dev daemon; `herdr session stop herd` (legacy hidden server); publish `@mattstack/rt-client` 0.18.0 from main (announce the bump to peer sessions first); consumers `bun install` per the file:-copy rule.
+- [ ] **Step 5: Cutover checklist (operator's, NOT run by the implementer)** -- merge to main; restart the dev daemon; `herdr session stop herd` (legacy hidden server); publish `@mattstack/rt-client` 0.19.0 (the branch's final version) from main (announce the bump to peer sessions first); consumers `bun install` per the file:-copy rule.
 
 ---
 

@@ -103,7 +103,7 @@ export function harness(over: Partial<HerdDeps> = {}) {
         return { stdout: "{}", exitCode: 0 };
       };
     },
-    lifecycle: { connected: () => true, watch: () => {} },
+    lifecycle: { connected: () => true, watch: () => {}, sweepClaims: async () => {} },
     bg, claims,
     jobsRoot: join(dir, "herds"),
     log,
@@ -163,7 +163,7 @@ describe("herd:start", () => {
 
   test("--hidden ensures the hidden server, records its socket, and asks lifecycle to watch it", async () => {
     const watched: string[] = [];
-    const { h, store } = harness({ lifecycle: { connected: () => true, watch: (s) => { watched.push(s); } } });
+    const { h, store } = harness({ lifecycle: { connected: () => true, watch: (s) => { watched.push(s); }, sweepClaims: async () => {} } });
     const res = await h["herd:start"]({ ...START, hidden: true });
     if (!res.ok) throw new Error(res.error);
     expect(store.get(res.data.herd)).toMatchObject({ hidden: true, herdrSocket: "/tmp/hidden.sock" });

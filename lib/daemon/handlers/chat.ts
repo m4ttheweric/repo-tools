@@ -159,8 +159,11 @@ function nextBadgeSeq(): number {
  * its caller regardless of that -- a badge that never lands must not break
  * message delivery.
  */
-async function reportUnreadBadge(herdr: typeof herdrRequest, paneId: string | undefined, count: number): Promise<void> {
-  if (!paneId) return;
+async function reportUnreadBadge(herdr: typeof herdrRequest, pane: string | undefined, count: number): Promise<void> {
+  if (!pane) return;
+  // presence.pane is bound in ref space (a bg row round-trips as `bg:...`);
+  // herdr itself only ever knows the bare id, and only on its own socket.
+  const { paneId, sockPath } = resolvePaneRef(pane);
   try {
     await herdr("pane.report_metadata", {
       pane_id: paneId,
@@ -173,7 +176,7 @@ async function reportUnreadBadge(herdr: typeof herdrRequest, paneId: string | un
       tokens: { chat_unread: String(count) },
       ttl_ms: 600_000,
       seq: nextBadgeSeq(),
-    });
+    }, { sockPath });
   } catch {
     /* best-effort */
   }

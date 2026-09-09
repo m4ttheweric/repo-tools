@@ -1,5 +1,5 @@
 /**
- * bg:* daemon handlers: the wire verbs for the daemon-owned headless herdr
+ * bg:* daemon handlers: the wire verbs for the daemon-owned background herdr
  * server (see docs/superpowers/specs/2026-09-09-background-server-design.md
  * "The bg service"). lib/daemon/bg-service.ts owns the process lifecycle;
  * lib/daemon/bg-claims-store.ts owns who is holding it up; this module just
@@ -14,7 +14,7 @@ export function createBgHandlers(deps: {
   service: BgService;
   claims: BgClaimsStore;
   /** herd-lifecycle.ts's watch is idempotent by socket, so an already-watched bg socket is a no-op here. */
-  lifecycle: { watch(socket: string): void };
+  lifecycle: { watch(socket: string): void; sweepClaims(): Promise<void> };
 }):
   & { "bg:ensure": (payload: unknown) => Promise<CommandResult<"bg:ensure">> }
   & { "bg:status": (payload: unknown) => Promise<CommandResult<"bg:status">> }
@@ -27,6 +27,11 @@ export function createBgHandlers(deps: {
       const payload = rawPayload as Commands["bg:ensure"]["payload"];
       const { socket, started } = await service.ensure();
       lifecycle.watch(socket);
+      // Reconciles claims against reality on every touch, not just a fresh
+      // connect: an already-watched, already-connected bg socket never fires
+      // onState(true) again, so a claim orphaned since the last sweep would
+      // otherwise sit stale until the next reconnect.
+      await lifecycle.sweepClaims();
       if (payload.claim) claims.claim(payload.claim);
       return { ok: true, data: { socket, started, parity: service.lastParity() } };
     },

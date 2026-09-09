@@ -13,6 +13,7 @@
  */
 import type { ChatPane, RtResponse } from "../packages/rt-client/src/index.ts";
 import { paneAccounts as paneAccountsRt, paneDirectories as paneDirectoriesRt, paneFocus as paneFocusRt, paneList as paneListRt, panePeek as panePeekRt, paneSend as paneSendRt, paneSpawn as paneSpawnRt } from "../packages/rt-client/src/index.ts";
+import { selfPaneRef } from "../lib/self-pane.ts";
 
 const FLAGS_WITH_VALUES = new Set(["--lines", "--cwd", "--account", "--model", "--effort", "--prompt", "--workspace", "--q", "--sock", "--text"]);
 
@@ -96,7 +97,7 @@ export async function paneSend(args: string[]): Promise<void> {
   const rawText = flagValue(args, "--text");
   if (!paneId || rawText === undefined) fail("usage: rt pane send <pane> --text <text>  (--text - reads stdin)");
   const text = rawText === "-" ? await new Response(Bun.stdin.stream()).text() : rawText;
-  const callerPane = process.env.HERDR_PANE_ID;
+  const callerPane = selfPaneRef();
   const data = unwrap(await paneSendRt({ paneId, text, ...(callerPane ? { callerPane } : {}) }, opts(args)), "pane send");
   if (args.includes("--json")) return void console.log(JSON.stringify({ ok: true, ...data }));
   console.log(`${data.paneId} ${data.delivered}${data.reason ? ` (${data.reason})` : ""}`);
