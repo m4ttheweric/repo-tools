@@ -43,6 +43,7 @@ import { basename } from "path";
 
 import { loadRepoIndex } from "../lib/repo-index.ts";
 import { repoLabel } from "../lib/repo-arg.ts";
+import { verbHelpRequested } from "../lib/cli-verb-help.ts";
 import { findGitRoot, repoAliasForPath, resolveMainWorktreePath } from "../lib/repo-for-cwd.ts";
 import { slugifyChatName as slugify } from "../lib/chat-room-name.ts";
 import { roomForIdentity } from "../lib/chat-room.ts";
@@ -1223,6 +1224,11 @@ async function runBack(args: string[]): Promise<void> {
 const USAGE =
   "usage: rt chat <join|leave|archive|post|read|ack|claim|release|rooms|who|mark|prune|sign-in|sign-out|away|back|buddies|dm|invite> ...";
 
+/** Stdout usage printer, shared by the --help guard below (fail() covers the error path). */
+function usage(): void {
+  console.log(USAGE);
+}
+
 const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   ack: runAck,
   claim: runClaim,
@@ -1286,6 +1292,10 @@ export async function chat(args: string[]): Promise<void> {
     } else {
       fail(USAGE);
     }
+  }
+  if (verbHelpRequested(rest)) {
+    usage();
+    return;
   }
   const handler = VERBS[verb];
   if (!handler) fail(`unknown verb "${verb}" — ${USAGE}`);

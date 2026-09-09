@@ -16,6 +16,7 @@
  */
 
 import { readFileSync, realpathSync } from "fs";
+import { verbHelpRequested } from "../lib/cli-verb-help.ts";
 import { isDaemonRunning } from "../lib/daemon-client.ts";
 import { currentRepoIdentity, repoLabel, resolveRepoArg } from "../lib/repo-arg.ts";
 import {
@@ -212,6 +213,11 @@ async function runList(args: string[]): Promise<void> {
 
 const USAGE = "usage: rt agent <start|resume|show|list> ...";
 
+/** Stdout usage printer, shared by the --help guard below (fail() covers the error path). */
+function usage(): void {
+  console.log(USAGE);
+}
+
 const VERBS: Record<string, (args: string[]) => Promise<void>> = {
   start: runStart, resume: runResume, show: runShow, list: runList,
 };
@@ -243,6 +249,10 @@ export async function agent(args: string[]): Promise<void> {
     } else {
       fail(USAGE);
     }
+  }
+  if (verbHelpRequested(rest)) {
+    usage();
+    return;
   }
   const handler = VERBS[verb];
   if (!handler) fail(`unknown verb "${verb}": ${USAGE}`);

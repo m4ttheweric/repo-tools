@@ -1,9 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { dispatch, type CommandNode } from "../command-tree.ts";
 import { toCommandNode } from "../plugins.ts";
+import { verbHelpRequested } from "../cli-verb-help.ts";
 
 const noop = async () => {};
 
@@ -166,4 +167,26 @@ describe("passThroughHelp", () => {
     const node = toCommandNode("p", "/tmp/p", { description: "x", module: "./m.ts" });
     expect(node.passThroughHelp).toBeUndefined();
   });
+});
+
+describe("verbHelpRequested", () => {
+  test("true for --help/-h as first remaining token", () => {
+    expect(verbHelpRequested(["--help"])).toBe(true);
+    expect(verbHelpRequested(["-h", "x"])).toBe(true);
+  });
+  test("false otherwise, including value-position --help", () => {
+    expect(verbHelpRequested([])).toBe(false);
+    expect(verbHelpRequested(["--text", "--help"])).toBe(false);
+  });
+});
+
+describe("self-dispatching leaves guard --help (RT-114)", () => {
+  // Self-dispatching leaf = tree leaf whose module routes its own verbs.
+  // Structural enforcement, same idiom as no-ui-in-cli.test.ts: the module
+  // source must consult verbHelpRequested.
+  for (const mod of ["commands/agent.ts", "commands/chat.ts"]) {
+    test(`${mod} consults verbHelpRequested`, () => {
+      expect(readFileSync(mod, "utf8")).toContain("verbHelpRequested(");
+    });
+  }
 });
