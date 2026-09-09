@@ -108,13 +108,14 @@ function isValidNudge(v: unknown): v is { session: string } {
 /** A wrapper relaunch opens a fresh gate that supersedes its own prior one
     from the SAME pane; delivering the closed-doorbell there would Escape
     the pane's brand-new form, an avoidable self-interrupt (recoverable via
-    the queued doorbell, but not worth causing). Compares origin.paneId
-    first, falling back to nudge.session when either paneId is absent; with
-    nothing comparable on either axis, the two gates are treated as
-    different panes and the push proceeds. */
+    the queued doorbell, but not worth causing). Compares the effective
+    injectable pane (origin.paneId, else the top-level pane -- the same
+    resolution gate-push injects with) first, falling back to nudge.session
+    when either side has no pane; with nothing comparable on either axis,
+    the two gates are treated as different panes and the push proceeds. */
 function sameOpenerPane(a: GateRow, b: GateRow): boolean {
-  const paneA = a.origin?.paneId;
-  const paneB = b.origin?.paneId;
+  const paneA = a.origin?.paneId || a.pane;
+  const paneB = b.origin?.paneId || b.pane;
   if (paneA && paneB) return paneA === paneB;
   const sessionA = a.nudge?.session;
   const sessionB = b.nudge?.session;
@@ -237,6 +238,18 @@ export function createGateHandlers(
       if (payload?.origin !== undefined) {
         const originError = invalidOrigin(payload.origin);
         if (originError) return { ok: false as const, error: originError };
+        // A form-presentation gate answered from another surface is
+        // completed by doorbell-then-Escape; without a nudge session and an
+        // injectable pane it opens as a gate no surface can ever unblock
+        // (SKILLS-60), so refuse it here instead of blocking a pane forever.
+        if (payload.origin.presentation === "form") {
+          if (!payload.origin.paneId && !payload.pane) {
+            return { ok: false as const, error: 'presentation "form" requires an injectable pane: set origin.paneId or the top-level pane' };
+          }
+          if (payload.nudge === undefined) {
+            return { ok: false as const, error: 'presentation "form" requires a nudge session: the doorbell the Escape follows has no target without it' };
+          }
+        }
       }
 
       const { row, supersededId } = store.open({
