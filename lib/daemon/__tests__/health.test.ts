@@ -72,7 +72,7 @@ test("failed repos in the last cycle flip degraded", () => {
 });
 
 test("enrich errors with no failed repo report the enrich count, not a zero repo count", () => {
-  // The live shape: assured-dev's project sync succeeds, but GitLab times out
+  // The live shape: a big project's sync succeeds, but GitLab times out
   // the per-MR fields, so onError fires without any repo being marked failed.
   // Reporting failedRepos here rendered "refresh: 0 repos failing" in the tray.
   const i = base();
