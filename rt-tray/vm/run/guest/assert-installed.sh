@@ -198,6 +198,11 @@ if [ "$HEADLESS" = 0 ]; then
     curl -fsS --max-time 10 "https://$served" >/dev/null 2>&1 \
       && ok "$served now answers with a trusted certificate" \
       || bad "$served still fails against the system trust store after trusting"
+  elif [ "$UNTRUSTED" = 1 ]; then
+    # Skipping silently would report zero failures for a run that never
+    # exercised the trust verb, the row clearing, or the post-trust https
+    # check, which is the whole of what --expect-untrusted claims to assert.
+    bad "no tray socket at $SOCK: the trust remedy could not be exercised"
   fi
 
   # Evidence for the proxy assertions above, whether they passed or failed:
