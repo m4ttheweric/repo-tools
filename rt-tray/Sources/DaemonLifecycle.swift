@@ -19,7 +19,10 @@ import MattstackCore
 /// `com.mattstack.daemon.dev`). Both the plist basename and every launchctl
 /// invocation derive from Info.plist's MSDaemonLabel (BundleFlavor), so a
 /// dev bundle can never register or kickstart the prod job.
-class DaemonLifecycle {
+/// `@unchecked Sendable` for the same reason `ServicesRegistrar` is: the
+/// mutable state here is `services`, wired once by AppDelegate during startup
+/// and never reassigned, and every op that reads it is serialized by `gate`.
+class DaemonLifecycle: @unchecked Sendable {
 
     /// This flavor's launchd label — Info.plist MSDaemonLabel, falling back
     /// to `BundleFlavor.defaultDaemonLabel` when the key is absent.
@@ -42,43 +45,73 @@ class DaemonLifecycle {
     var status: SMAppService.Status { service.status }
     private var plistName: String { "\(label).plist" }
 
+    /// One lifecycle op at a time, and one register+kickstart per herd of
+    /// concurrent starts. Every public entry point below goes through it; the
+    /// `…Ungated` bodies are what the gate runs, and are also what the restart
+    /// fallback re-enters (going back through the gate from inside a held op
+    /// would deadlock).
+    private let gate = DaemonLifecycleGate()
+
     // MARK: - Start
 
-    func startDaemon() async {
+    func startDaemon(origin: String) async {
+        _ = await gate.run(.start) { await self.startDaemonUngated(origin: origin) }
+    }
+
+    @discardableResult
+    private func startDaemonUngated(origin: String) async -> Bool {
         guard let services else {
-            TrayLog.error("startDaemon with no services registrar wired", ["label": label])
-            return
+            TrayLog.error("startDaemon with no services registrar wired", ["label": label, "origin": origin])
+            return false
         }
         let results = await services.register(plists: [plistName])
         var anyFailed = false
         for r in results where !r.ok {
             anyFailed = true
-            TrayLog.error("daemon register failed", ["label": label, "status": r.status, "err": r.error ?? ""])
+            TrayLog.error("daemon register failed", ["label": label, "status": r.status, "err": r.error ?? "", "origin": origin])
         }
         // A genuine registration failure (missing BundleProgram, SMAppService
         // rejecting the plist) means there is nothing valid launchd knows
         // about to kickstart -- forcing one here is exactly the respawn-loop
         // the registrar's own BundleProgram guard exists to avoid.
-        if anyFailed { return }
+        if anyFailed { return false }
         // register() is a no-op when the agent is already registered, so a job
         // that previously exited 0 (shutdown, an external SIGTERM) stays
         // registered but dead and KeepAlive never relaunches it (S028).
         // Kickstart forces launchd to actually invoke the job either way.
         if await services.restart(label: label) {
-            TrayLog.info("daemon kickstarted on start", ["label": label])
-        } else {
-            TrayLog.warn("kickstart on start failed", ["label": label])
+            TrayLog.info("daemon kickstarted on start", ["label": label, "origin": origin])
+            return true
         }
+        TrayLog.warn("kickstart on start failed", ["label": label, "origin": origin])
+        return false
     }
 
     // MARK: - Stop
 
-    func stopDaemon() {
+    func stopDaemon(origin: String) async {
+        _ = await gate.run(.stop) { self.stopDaemonUngated(origin: origin) }
+    }
+
+    /// The teardown stop for flavor handover: waits for any in-flight
+    /// lifecycle op, unregisters, and latches the gate shut so a start or
+    /// restart already parked behind it (the client herd discovering the
+    /// daemon down) can no longer re-register the agent this app just gave
+    /// up — that would leave both flavors registered, fighting over
+    /// rt.pid/rt.sock.
+    func stopDaemonForTeardown(origin: String) async {
+        _ = await gate.retire { self.stopDaemonUngated(origin: origin) }
+    }
+
+    @discardableResult
+    private func stopDaemonUngated(origin: String) -> Bool {
         do {
             try service.unregister()
-            TrayLog.info("daemon unregistered from launchd", ["label": label])
+            TrayLog.info("daemon unregistered from launchd", ["label": label, "origin": origin])
+            return true
         } catch {
-            TrayLog.error("SMAppService.unregister() failed", ["err": String(describing: error)])
+            TrayLog.error("SMAppService.unregister() failed", ["err": String(describing: error), "origin": origin])
+            return false
         }
     }
 
@@ -87,20 +120,28 @@ class DaemonLifecycle {
     /// launchctl kickstart -k restarts the running job in place — preserves
     /// the registration and lets KeepAlive cover any gap. Falls back to
     /// unregister/register if kickstart isn't available.
-    func restartDaemon() async {
+    func restartDaemon(origin: String) async {
+        _ = await gate.run(.restart) { await self.restartDaemonUngated(origin: origin) }
+    }
+
+    @discardableResult
+    private func restartDaemonUngated(origin: String) async -> Bool {
         guard let services else {
-            TrayLog.error("restartDaemon with no services registrar wired", ["label": label])
-            return
+            TrayLog.error("restartDaemon with no services registrar wired", ["label": label, "origin": origin])
+            return false
         }
         if await services.restart(label: label) {
-            TrayLog.info("daemon kickstarted", ["label": label])
-            return
+            TrayLog.info("daemon kickstarted", ["label": label, "origin": origin])
+            return true
         }
 
-        // Fallback: full unregister + register cycle
-        TrayLog.warn("kickstart failed; falling back to re-register")
+        // Fallback: full unregister + register cycle. The gate is what keeps
+        // this window closed to concurrent starts: a start landing between the
+        // unregister and the register below found no service to kickstart, and
+        // left the job unregistered (2026-09-09).
+        TrayLog.warn("kickstart failed; falling back to re-register", ["label": label, "origin": origin])
         try? await service.unregister()
-        await startDaemon()
+        return await startDaemonUngated(origin: origin)
     }
 
 }

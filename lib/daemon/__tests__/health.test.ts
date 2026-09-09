@@ -71,6 +71,30 @@ test("failed repos in the last cycle flip degraded", () => {
   expect(computeHealth(i).level).toBe("degraded");
 });
 
+test("enrich errors with no failed repo report the enrich count, not a zero repo count", () => {
+  // The live shape: a big project's sync succeeds, but GitLab times out
+  // the per-MR fields, so onError fires without any repo being marked failed.
+  // Reporting failedRepos here rendered "refresh: 0 repos failing" in the tray.
+  const i = base();
+  i.refresh = { lastSuccessAt: i.now - 60_000, failedRepos: 0, enrichErrors: 16 };
+
+  const h = computeHealth(i);
+
+  expect(h.level).toBe("degraded");
+  expect(h.reasons).toContain("refresh: 16 enrich errors");
+  expect(h.reasons.some((r) => r.includes("0 repos"))).toBe(false);
+});
+
+test("failed repos and enrich errors are reported as separate reasons", () => {
+  const i = base();
+  i.refresh = { lastSuccessAt: i.now - 60_000, failedRepos: 1, enrichErrors: 2 };
+
+  const h = computeHealth(i);
+
+  expect(h.reasons).toContain("refresh: 1 repo failing");
+  expect(h.reasons).toContain("refresh: 2 enrich errors");
+});
+
 test("logger degraded flips unhealthy and names logging", () => {
   const i = base();
   i.loggerDegraded = true;

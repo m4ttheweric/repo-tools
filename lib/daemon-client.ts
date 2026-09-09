@@ -97,6 +97,10 @@ export async function trayQuery(
     const response = await fetch(`http://localhost${endpoint}`, {
       unix: TRAY_SOCK_PATH,
       method,
+      // Same tag every other rt socket client sends. The tray reads it to log
+      // who asked for a daemon start/stop/restart, which is what tells a gear
+      // menu click apart from a CLI POST in tray.log.
+      headers: { "X-RT-Client": `rt-cli/${process.pid}` },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     } as any);
 

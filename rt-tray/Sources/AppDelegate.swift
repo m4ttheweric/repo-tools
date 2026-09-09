@@ -213,15 +213,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             showFlavorMismatchAlert(intended: intended, myFlavor: myFlavor,
                                     intendedBundle: bundle, resumeStartup: true)
         case .silent:
-            retireSelf(intended: intended, myFlavor: myFlavor)
+            Task { @MainActor in await retireSelf(intended: intended, myFlavor: myFlavor) }
         }
     }
 
     @MainActor
-    private func retireSelf(intended: String, myFlavor: String) {
-        daemonLifecycle.stopDaemon()
+    private func retireSelf(intended: String, myFlavor: String) async {
+        await daemonLifecycle.stopDaemonForTeardown(origin: DaemonOrigin.flavorRetire)
         do {
-            try SMAppService.mainApp.unregister()
+            try await SMAppService.mainApp.unregister()
         } catch {
             // Unregistering an already-unregistered login item throws; the
             // status logged below is the ground truth.
@@ -625,7 +625,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         Task { @MainActor in
             setHealth(.starting)
 
-            await daemonLifecycle.restartDaemon()
+            await daemonLifecycle.restartDaemon(origin: DaemonOrigin.menu)
 
             // Poll until it comes back (up to 8s)
             for _ in 0..<16 {
@@ -644,7 +644,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             // Unregister from launchd — the agent has KeepAlive=true, so an
             // HTTP shutdown alone would be undone by a launchd restart.
             // Unregistering makes launchd SIGTERM the daemon and keep it down.
-            daemonLifecycle.stopDaemon()
+            await daemonLifecycle.stopDaemon(origin: DaemonOrigin.menu)
             try? await Task.sleep(nanoseconds: 500_000_000)
             setHealth(.down)
         }

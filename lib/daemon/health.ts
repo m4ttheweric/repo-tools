@@ -87,8 +87,17 @@ export function computeHealth(i: HealthInputs): HealthSnapshot {
   // --- degraded ---
   const degradedRepos = Object.values(i.freshness).filter((f) => f.state === "degraded").length;
   if (degradedRepos > 0) degraded.push(`refresh: ${degradedRepos} watcher${degradedRepos !== 1 ? "s" : ""} degraded`);
-  if (i.refresh.failedRepos > 0 || i.refresh.enrichErrors > 0) {
-    degraded.push(`refresh: ${i.refresh.failedRepos} repos failing (auth?)`);
+  // Two independent counters, so two reasons: a repo whose project sync threw
+  // and a per-MR enrich failure fail in different places, and folding them
+  // into one line printed the repo count for an enrich-only cycle ("0 repos
+  // failing"). Neither carries a cause guess — the daemon log has the real
+  // error, and "(auth?)" here sent an operator hunting a token for what was a
+  // GitLab-side GraphQL timeout.
+  if (i.refresh.failedRepos > 0) {
+    degraded.push(`refresh: ${i.refresh.failedRepos} repo${i.refresh.failedRepos !== 1 ? "s" : ""} failing`);
+  }
+  if (i.refresh.enrichErrors > 0) {
+    degraded.push(`refresh: ${i.refresh.enrichErrors} enrich error${i.refresh.enrichErrors !== 1 ? "s" : ""}`);
   }
   const refreshAge = i.now - i.refresh.lastSuccessAt;
   if (i.refresh.lastSuccessAt > 0 && refreshAge > T.refreshStaleMultiplier * i.refreshIntervalMs) {
