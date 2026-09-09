@@ -77,9 +77,15 @@ Facts a create run depends on:
 - Prefer `--no-graphics`: the Tart window otherwise takes keyboard focus on
   the host mid-run (a stray keystroke lands in the token field), and every
   failure already logs the windows and AXIdentifiers on screen.
-- The privileged proxy helper (`mattstack-proxy-install`) has not shipped, so
-  the Install pipeline's `proxy.install` step reports `skipped` with that
-  reason; apps serve on ports until it lands.
+- The privileged proxy helper (`mattstack-proxy-install`) ships in the
+  bundle: `proxy.install` installs portless as a root LaunchDaemon on 443
+  instead of skipping, and `assert-installed.sh` checks `tool.proxy: ready`,
+  the LaunchDaemon plist, a running daemon, and a `.mattstack` route
+  answering over https. `--decline-trust` drives a second scenario: macOS's
+  certificate-trust dialog is declined, the proxy still serves, `tool.proxy`
+  reports the untrusted-certificate `needs-you` row, and a
+  `/privileged/proxy-trust` call through the tray clears it
+  (`--expect-untrusted` on `assert-installed.sh` asserts all of that).
 
 `run/xcuitest.sh` (layer (b) via XCUITest instead of AppleScript) is in the
 tree and runnable today; it self-gates at runtime rather than depending on
