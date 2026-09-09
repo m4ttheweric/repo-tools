@@ -47,17 +47,20 @@ promoted and generalized.
   `~/.config/herdr/sessions/bg/herdr.sock`, session name `bg`.
 - `up()`, `stop()`, and a **client registry** (claims).
 - **Claims:** every consumer that creates panes registers one --
-  `herd:<id>`, `runner:<board>`, `agent:<handoffId>` -- and releases it when
+  `herd:<id>`, `runner:<pid>`, `agent:<record id>` -- and releases it when
   its panes close. `stop` refuses while claims are live and lists them by
   name. No force flag exists.
 - Claims persist in their own store file beside the herd registry: never
   `state.db`, no `SCHEMA_VERSION` entanglement, refusal semantics survive
   daemon restarts.
-- **Ensure-on-touch:** every daemon path handling a `bg:` ref calls
-  `ensure()` first when the operation is write-shaped (spawn, send, inject,
-  attend). Read-shaped operations (`list`, `peek`, `status`) check `up()`
-  and answer empty / "not running" without starting a server just to say
-  nothing.
+- **Ensure-on-touch:** `ensure()` runs before every operation that CREATES
+  a pane on the bg server (herd hidden start, `rt agent start --bg`, the
+  runner's acquire). Operations addressing an EXISTING `bg:` pane (peek,
+  send, inject, escape, focus/attend, list, status) never ensure: a pane on
+  a downed server no longer exists, so starting a fresh empty server cannot
+  help -- they answer "not running" / pane-not-found cleanly instead. The
+  caller still never checks server state itself; the abstraction owns both
+  behaviors.
 - Lifecycle event forwarding (the wildcard `events.subscribe` per known
   server) keys off this service; herd stops being special.
 - `rt herd stop --hidden` becomes an alias for the service stop; its
@@ -138,9 +141,10 @@ silent when it is not.
   socket field; herd surfaces display `bg:` refs per the round-trip rule.
   Otherwise behavior-invisible.
 - **Runner `--herdr`:** the engine gets the bg socket from the daemon
-  (ensure + claim `runner:<board>`). Honesty note from the census: the
-  runner has ZERO daemon dependency today -- it reads ambient
-  `HERDR_SOCKET_PATH` and errors if unset -- so this RPC (via the
+  (ensure + claim `runner:<pid>`). Honesty note from the census: the
+  runner has ZERO daemon dependency today -- it resolves the ambient
+  `HERDR_SOCKET_PATH` (or the default socket) and errors only when herdr is
+  not answering there -- so this RPC (via the
   rt-client wrappers every other command already uses) is wholly new
   wiring, not a re-point. Die-with-board is preserved: teardown closes its
   own workspace as today, then releases the claim. The tmux default is
@@ -157,8 +161,9 @@ silent when it is not.
 
 `rt agent start --help` launches a real agent (no required positional, so
 nothing forces the usage path). Fix on this branch, early: `--help` on any
-leaf prints usage and exits 0, side-effect free, plus a regression test
-that dispatching `--help` on every leaf never runs a handler.
+leaf prints usage and exits 0, side-effect free, plus tests: the tree's
+existing leaf-guard coverage for ordinary leaves, and a structural check
+that every self-dispatching leaf module consults the new guard.
 
 ## Testing
 

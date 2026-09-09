@@ -67,7 +67,7 @@ Read before starting: the spec; `lib/daemon/herd-session.ts`, `lib/daemon/handle
 - Test: `lib/__tests__/command-tree-help.test.ts`
 
 **Interfaces:**
-- Produces: `verbHelpRequested(rest: string[]): boolean` -- true iff `rest[0]` is `--help` or `-h`. Self-dispatching leaf contract: after peeling its verb token, the module calls this and prints its own usage + returns 0 before any side effect.
+- Produces: `verbHelpRequested(rest: string[]): boolean` -- true iff `rest[0]` is `--help` or `-h`. Self-dispatching leaf contract: after peeling its verb token, the module calls this and prints its own usage and returns before any side effect.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -116,7 +116,7 @@ export function verbHelpRequested(rest: string[]): boolean {
 }
 ```
 
-In `commands/agent.ts` `agent()` right after the verb is peeled and before any verb function runs: `if (verbHelpRequested(rest)) { usage(); return 0; }` (use the module's existing usage printer; if only an error-path usage string exists, extract it into a `usage()` that prints to stdout and reuse it in both places). Same guard in `commands/chat.ts`'s verb dispatch.
+In `commands/agent.ts` `agent()` right after the verb is peeled and before any verb function runs: `if (verbHelpRequested(rest)) { usage(); return; }` (use the module's existing usage printer; if only an error-path usage string exists, extract it into a `usage()` that prints to stdout and reuse it in both places). Same guard in `commands/chat.ts`'s verb dispatch.
 
 - [ ] **Step 4: Verify green + manual probe** -- tests pass; `bun run cli.ts agent start --help` prints usage, exits 0, and `rt agent list` shows no new record.
 
@@ -198,7 +198,7 @@ export function bgSocketPath(home?: string): string; // ~/.config/herdr/sessions
 export interface BgService {
   socketPath(): string;
   up(): Promise<boolean>;
-  ensure(): Promise<string>;           // returns socket; starts if down; env-seeded; runs parity probe on fresh start
+  ensure(): Promise<{ socket: string; started: boolean }>; // starts if down; env-seeded; parity probe on fresh start
   stop(): Promise<void>;               // no refusal here; refusal is the handler's (claims) job
   reprobe(): Promise<ParityReport>;    // lazy re-run for command-not-found-shaped spawn failures
   lastParity(): ParityReport | null;
@@ -268,7 +268,7 @@ export function createBgClaimsStore(opts: { dbPath: string; log: Logger }): BgCl
 plus `client.ts` wrappers `bgEnsure`, `bgStatus`, `bgStop`, `bgRelease` following the file's existing one-liner pattern.
 
 - [ ] **Step 1: Failing handler tests** -- with a fake `BgService` and real claims store on a tmp db: `bg:ensure` returns socket + registers the claim when given; `bg:ensure` with no claim just ensures; `bg:stop` rejects while `list()` is non-empty with an error message containing each owner; after `bg:release`, stop succeeds and calls `service.stop()`; `bg:status` reflects `up()` and claims. Follow `pane-handlers.test.ts` structure.
-- [ ] **Step 2: Implement handlers** -- `createBgHandlers(deps: { service: BgService; claims: BgClaimsStore; lifecycle: { watch(socket: string): void } })`. `bg:ensure` calls `service.ensure()`, then `deps.lifecycle.watch(socket)` (idempotent by socket, per `herd-lifecycle.ts`), then optional claim. No outcome logging (the router seam owns it).
+- [ ] **Step 2: Implement handlers** -- `createBgHandlers(deps: { service: BgService; claims: BgClaimsStore; lifecycle: { watch(socket: string): void } })`. `bg:ensure` calls `service.ensure()` (its `{ socket, started }` maps straight onto the reply), then `deps.lifecycle.watch(socket)` (idempotent by socket, per `herd-lifecycle.ts`), then optional claim. No outcome logging (the router seam owns it).
 - [ ] **Step 3: Wire** -- `lib/daemon.ts`: `bgClaims = createBgClaimsStore({ dbPath: join(RT_DIR, "bg-claims.db"), log })`; `bgService = createBgService({ log })`; pass both through `buildRoutedHandlers` -> `command-router.ts` -> `createBgHandlers` and (T6) `createHerdHandlers`. Keep `herdHidden` construction in place until T6 removes it.
 - [ ] **Step 4: rt-client** -- add shapes + wrappers; `cd packages/rt-client && bun run build`; root `bun test packages`.
 - [ ] **Step 5: Green, purity, commit** -- `git commit -m "daemon: bg ensure, status, stop, release verbs with claim gated stop"`
@@ -294,12 +294,16 @@ export function attendPane(opts: {
   paneId: string;                     // bare id on that server
   session: string;                    // herdr session name for HERDR_SESSION in the attach command
   label: string;                      // visible tab label
+  callerWorkspace: string;            // visible workspace the attend tab is created in
+                                      // (herd:attend already carries this payload field, sourced
+                                      // from HERDR_WORKSPACE_ID by the CLI; pane:focus grows the
+                                      // same field in Task 7)
   herdrRunnerFor: (socket: string | null) => HerdrRunner;
 }): Promise<{ ok: true; tab: string; pane: string } | { ok: false; error: string }>;
 ```
 
 - [ ] **Step 1: Extract attend** -- move the `herd:attend` body (terminal_id resolution via the hidden runner, visible-tab creation via `herdrRunnerFor(null)`, the `env -u HERDR_SOCKET_PATH HERDR_SESSION=<session> herdr terminal attach <termId> --takeover` command) into `attendPane`; `herd:attend` becomes a thin delegate passing `session: BG_SESSION`. Unit-test `attendPane` with a fake runner asserting the attach command shape and tab creation on the visible runner.
-- [ ] **Step 2: Re-point herd deps** -- `HerdDeps.hidden` becomes `bg: BgService` + `claims: BgClaimsStore`. `herd:start --hidden`: `socket = await deps.bg.ensure(); deps.claims.claim("herd:" + id)`. `herd:stop-hidden`: claim-based -- reject while `claims.list()` has ANY owner, naming them (herd or not); on empty, `deps.bg.stop()`. Wrap-up (and the crash/close paths that end a herd) release `herd:<id>`.
+- [ ] **Step 2: Re-point herd deps** -- `HerdDeps.hidden` becomes `bg: BgService` + `claims: BgClaimsStore`. `herd:start --hidden`: `const { socket } = await deps.bg.ensure(); deps.claims.claim("herd:" + id)`. `herd:stop-hidden`: claim-based -- reject while `claims.list()` has ANY owner, naming them (herd or not); on empty, `deps.bg.stop()`. Wrap-up (and the crash/close paths that end a herd) release `herd:<id>`.
 - [ ] **Step 3: Refs in display** -- everywhere herd surfaces print a pane (`herd:spawn` result, `herd:status` jobs, room lifecycle posts), format with `formatPaneRef(pane, herd.hidden ? "bg" : "visible")`. Job rows and the `herdrSocket` column stay as stored today.
 - [ ] **Step 4: Update tests, green** -- herd-handlers tests swap the fake hidden for a fake bg service + tmp claims db; add: start claims, wrap-up releases, stop-hidden refuses on a foreign claim (`runner:999`).
 - [ ] **Step 5: Purity + commit** -- `git commit -m "herd: hidden mode rides the bg service with claims; attend extracted"`
@@ -309,7 +313,7 @@ export function attendPane(opts: {
 ### Task 7: The socket sweep -- inject, escape, pane, chat
 
 **Files:**
-- Modify: `lib/daemon/inject.ts`, `lib/daemon/gate-escape.ts`, `lib/daemon/gate-push.ts` (injector construction site only), `lib/daemon/handlers/pane.ts`, `lib/daemon/handlers/chat.ts`, `lib/daemon/handlers/herd.ts` (gate origin refs)
+- Modify: `lib/daemon/inject.ts`, `lib/daemon/gate-escape.ts`, `lib/daemon/handlers/pane.ts`, `lib/daemon/handlers/chat.ts`, `lib/daemon/handlers/herd.ts` (gate origin refs)
 - Test: existing handler tests + new cases
 
 **Interfaces:**
@@ -328,8 +332,10 @@ export function resolvePaneRef(ref: string): { paneId: string; sockPath: string 
 ```
 
 - [ ] **Step 1: `inject.ts`** -- add `sockPath?: string` to `InjectOptions`; every internal `herdr(...)` call passes `{ sockPath: opts.sockPath }`. Callers (`pane:send`, `chat:invite`) resolve the incoming ref first. Test: fake herdr records opts; a `bg:`-ref send reaches it with the bg socket.
-- [ ] **Step 2: `gate-escape.ts`** -- `createEscapeInjector` resolves the ref it is handed: `const { paneId, sockPath } = resolvePaneRef(ref); herdr("pane.send_keys", { pane_id: paneId, keys: ["escape"] }, { sockPath })`. `gate-push.ts` keeps passing `row.origin.paneId` unchanged -- the ref now rides in that string (Step 5).
-- [ ] **Step 3: `pane.ts` handlers** -- `pane:peek`/`pane:send`: `resolvePaneRef(payload.paneId)`, thread `sockPath`. `pane:list`: visible snapshot as today; if `deps.bg.up()`, also snapshot the bg socket and append its panes with `paneId: formatPaneRef(id, "bg")` (and a `server: "bg"` field is NOT added -- the ref carries it). `pane:focus`: parse; visible -> tray path unchanged; bg -> `attendPane({ socket: bgSocketPath(), paneId, session: BG_SESSION, label: paneId, herdrRunnerFor })`, result `{ paneId, focused: true, attendTab: tab }` -- extend `PaneFocusResult` with `attendTab?: string` in rt-client (additive). Tests: peek/send/focus fakes assert socket choice; focus-bg asserts no tray call.
+- [ ] **Step 2: `gate-escape.ts`** -- `createEscapeInjector` resolves the ref it is handed: `const { paneId, sockPath } = resolvePaneRef(ref); herdr("pane.send_keys", { pane_id: paneId, keys: ["escape"] }, { sockPath })`. The injector is constructed at `lib/daemon.ts:571`; `gate-push.ts` needs no change -- it keeps passing `row.origin.paneId`, and the ref now rides in that string (Step 5).
+- [ ] **Step 3: `pane.ts` handlers** -- `pane:peek`/`pane:send`: `resolvePaneRef(payload.paneId)`, thread `sockPath`. `pane:list`: visible snapshot as today; if `deps.bg.up()`, also snapshot the bg socket and append its panes with `paneId: formatPaneRef(id, "bg")` (and a `server: "bg"` field is NOT added -- the ref carries it). `pane:focus`: parse; visible -> tray path unchanged; bg -> `attendPane({ socket: bgSocketPath(), paneId, session: BG_SESSION, label: paneId, callerWorkspace: payload.callerWorkspace, herdrRunnerFor })`, result `{ paneId, focused: true, attendTab: tab }` -- extend `PaneFocusResult` with `attendTab?: string` and the `pane:focus` payload with `callerWorkspace?: string` in rt-client (both additive). A bg focus with no `callerWorkspace` returns a clean error, same wording as `commands/herd.ts:333-336`'s attend gate ("focus for a background pane must run from a herdr pane; HERDR_WORKSPACE_ID is unset"). Tests: peek/send/focus fakes assert socket choice; focus-bg asserts no tray call and the workspace passthrough.
+
+- [ ] **Step 3b: `commands/pane.ts` focus CLI** -- fill `callerWorkspace` from `process.env.HERDR_WORKSPACE_ID` when set; non-JSON output for a bg focus renders the attend result, not `focused`: `attached bg:<pane> in tab <tab>; detach with ctrl+b q, then close the tab`. JSON passes `attendTab` through untouched. Test: unit on the renderer with a fake result.
 - [ ] **Step 4: `chat.ts` resolution** -- `findPaneSessionRetrying` gains `sockPath?`; the `--pane` sign-in/sign-out/invite paths resolve refs before polling. Test: bg-ref sign-in resolves against the bg snapshot fake.
 - [ ] **Step 5: Gate origins carry refs** -- in `herd:ask`/`herd:milestone` (handlers/herd.ts), when the herd is hidden, store the pane ref (`formatPaneRef(job.pane, "bg")`) in the gate's `--pane`/origin field so escape injection round-trips. Test: hidden herd ask -> gate row's pane field is `bg:`-prefixed; escape injector called with it hits the bg socket.
 - [ ] **Step 6: Green across handler suites, purity, commit** -- `git commit -m "daemon: pane refs resolve sockets across inject, escape, pane, chat, gate origins"`
@@ -346,8 +352,8 @@ export function resolvePaneRef(ref: string): { paneId: string; sockPath: string 
 - Consumes: `bg:ensure` plumbing (T5), claims store `releaseByPane` (T4).
 - Produces: `agent:start` with `bg: true` -> record's `paneId` stored/printed as `bg:`-ref; claim `agent:<record id>` with the pane; released on that pane's `pane.closed`/`pane.exited`.
 
-- [ ] **Step 1: Failing tests** -- agent-handlers: `bg: true` payload -> handler calls `bg.ensure()`, launches with `herdrSocket` = bg socket (existing `launch()` path -- assert via the fake runner factory), claims `agent:<id>` with the bare pane, and the stored `AgentRecord.paneId` is the `bg:` ref. Lifecycle: a bg-socket `pane.closed` event releases the claim (fake claims store records `releaseByPane`).
-- [ ] **Step 2: Implement** -- handler: `if (payload.bg) { const socket = await deps.bg.ensure(); ... herdrSocket: socket }`, claim after launch returns the pane, format ref into the record. When a bg launch fails with a command-not-found shape (`exit 127` or a spawn error naming the binary), call `deps.bg.reprobe()` and include its drift lines in the returned error (the spec's lazy reprobe; this is its one call site). `herd-lifecycle.ts`: in the `pane.closed`/`pane.exited` handling, when the event's socket is the bg socket, call `deps.bgClaims.releaseByPane(formatPaneRef(paneId, "bg"))` (thread `bgClaims` in via daemon wiring). CLI: `--bg` boolean in `parseStartArgs` + tree def args list + help hint; refused together with `--surface headless` (error: `--bg is a herdr-surface option`).
+- [ ] **Step 1: Failing tests** -- agent-handlers: `bg: true` payload -> handler calls `bg.ensure()`, launches with `herdrSocket` = bg socket (existing `launch()` path -- assert via the fake runner factory), claims `agent:<record id>` with pane = the `bg:` REF (`formatPaneRef(pane, "bg")` -- the claim's pane column always stores the ref, the same string `releaseByPane` is later called with; one convention on both sides), and the stored `AgentRecord.paneId` is the same `bg:` ref. Lifecycle: a bg-socket `pane.closed` event releases the claim (fake claims store records `releaseByPane` called with the `bg:` ref). Placement note: `handleEvent` in `herd-lifecycle.ts` returns early (~lines 141-142) when the pane is not a herd job, so the release hook must run BEFORE that early return -- an agent pane is not a herd job.
+- [ ] **Step 2: Implement** -- handler: `if (payload.bg) { const { socket } = await deps.bg.ensure(); ... herdrSocket: socket }`, claim after launch returns the pane, format ref into the record. When a bg launch fails with a command-not-found shape (`exit 127` or a spawn error naming the binary), call `deps.bg.reprobe()` and include its drift lines in the returned error (the spec's lazy reprobe; this is its one call site). `herd-lifecycle.ts`: in the `pane.closed`/`pane.exited` handling, when the event's socket is the bg socket, call `deps.bgClaims.releaseByPane(formatPaneRef(paneId, "bg"))` (thread `bgClaims` in via daemon wiring). CLI: `--bg` boolean in `parseStartArgs` + tree def args list + help hint; refused together with `--surface headless` (error: `--bg is a herdr-surface option`).
 - [ ] **Step 3: Green, rt-client rebuild, purity, commit** -- `git commit -m "agent: --bg launches on the background server with a pane scoped claim"`
 
 ---
@@ -382,7 +388,7 @@ export async function acquireBgSocket(claim: string, deps = { bgEnsure, bgReleas
 
 - [ ] **Step 1: e2e recipe** -- following `e2e/tests/herd.test.ts`'s fake-herdr recipe (unix-socket fake for snapshots/events + CLI shim journal): `bg:ensure` starts the fake server env-seeded (assert the journal's spawn env contains the probe PATH, not the daemon's); spawn an agent with `--bg`; `rt pane peek bg:<pane>` and `rt pane send bg:<pane>` hit the bg socket (journal); `rt pane focus bg:<pane>` produces an attach command containing `terminal attach` and `--takeover` (journal) and no tray call; `bg:stop` refused while the agent claim lives, naming it; release -> stop ok.
 - [ ] **Step 2: Round-trip invariant already unit-covered (T2); spot-check display surfaces** -- grep-assert in the e2e that `rt herd status --json` and `rt agent show --json` outputs for hidden/bg records carry `bg:`-prefixed pane fields.
-- [ ] **Step 3: Full gates** -- `bun run test:all`, `bun run picker:check`, `sh scripts/repo-purity.sh`, `bun run bench-startup` comparison if the script flags regressions.
+- [ ] **Step 3: Full gates** -- `bun run test:all`, `bun run picker:check`, `sh scripts/repo-purity.sh`, `bun scripts/bench-startup.ts` (no package script exists; the release workflow runs this file directly).
 - [ ] **Step 4: Commit** -- `git commit -m "e2e: background server lifecycle, refs, focus as attend, claim gated stop"`
 - [ ] **Step 5: Cutover checklist (operator's, NOT run by the implementer)** -- merge to main; restart the dev daemon; `herdr session stop herd` (legacy hidden server); publish `@mattstack/rt-client` 0.18.0 from main (announce the bump to peer sessions first); consumers `bun install` per the file:-copy rule.
 
@@ -394,7 +400,7 @@ export async function acquireBgSocket(claim: string, deps = { bgEnsure, bgReleas
 |---|---|
 | bg service (ensure/up/stop, nohup mechanics, lazy) | 3, 5 |
 | Claims + stop refusal naming owners | 4, 5, 6 |
-| Ensure-on-touch write-shaped vs read-shaped | 5 (ensure verbs), 7 (list/peek answer without ensure) |
+| Ensure-on-touch: creates ensure, existing-pane ops answer cleanly | 5-6-8-9 (creators ensure), 7 (peek/send/focus/list never ensure) |
 | Environment: seeding, parity probe, lazy reprobe, structural non-parity named | 3 |
 | Addressing: prefix, parser in rt-client, refs ride existing strings | 2, 7 |
 | Round-trip rule on every display surface | 6 (herd), 7 (pane list), 8 (agent), 10 (e2e spot-check) |
