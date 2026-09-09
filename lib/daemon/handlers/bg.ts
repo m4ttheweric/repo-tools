@@ -40,6 +40,7 @@ export function createBgHandlers(deps: {
       if (live.length > 0) {
         return { ok: false, error: `bg server has live claims: ${live.map((c) => c.owner).join(", ")}` };
       }
+      // A claim registered after this check but before stop() lands races the shutdown unchecked; accepted, since the next ensure respawns.
       await service.stop();
       return { ok: true, data: { stopped: true } };
     },

@@ -658,7 +658,7 @@ export function bgStatus(o: RtClientOptions = {}): Promise<RtResponse<Commands["
   return rtCommand<Commands["bg:status"]["data"]>("bg:status", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 10_000 });
 }
 
-/** Runs `herdr session stop`, one CLI call under the runner's own 15s budget; refuses while any claim is live. */
+/** Asks the daemon to stop the background server; refuses (ok:false) while any claim is live, naming the owners. */
 export function bgStop(o: RtClientOptions = {}): Promise<RtResponse<Commands["bg:stop"]["data"]>> {
   return rtCommand<Commands["bg:stop"]["data"]>("bg:stop", {}, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }
