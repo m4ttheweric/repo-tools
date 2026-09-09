@@ -164,7 +164,7 @@ const herdSubcommands: Record<string, CommandNode> = {
     fn: "start",
     omitBehavior: { exempt: "the herd name is free-form; nothing to enumerate" },
     args: [
-      { name: "Name", flag: "--name", type: "text", placeholder: "cv-1483", hint: "Herd name; seeds the room and workspace labels" },
+      { name: "Name", flag: "--name", type: "text", placeholder: "acme-1483", hint: "Herd name; seeds the room and workspace labels" },
       { name: "Repo", flag: "--repo", type: "text", placeholder: "~/Documents/GitHub/x", hint: "Repo the herd works (default: the current repo)" },
       { name: "Hidden", flag: "--hidden", type: "boolean", default: false, hint: "Run the workspace in a hidden herdr session" },
       { name: "Session", flag: "--session", type: "text", placeholder: "abc123", hint: "Shepherd session id (default: CLAUDE_CODE_SESSION_ID)" },
@@ -178,7 +178,7 @@ const herdSubcommands: Record<string, CommandNode> = {
     omitBehavior: { exempt: "agent-facing; the shepherd names the herd and job it is spawning" },
     args: [
       { name: "Herd", flag: "--herd", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd id (default: HERD_ID)" },
-      { name: "Job", flag: "--job", type: "text", placeholder: "cv-1483-facts", hint: "Job name; also the worktree and handle stem" },
+      { name: "Job", flag: "--job", type: "text", placeholder: "acme-1483-facts", hint: "Job name; also the worktree and handle stem" },
       { name: "Brief", flag: "--brief", type: "text", placeholder: "brief.md", hint: "File whose text becomes the job brief" },
       { name: "Dir", flag: "--dir", type: "text", placeholder: "~/Documents/GitHub/x", hint: "Existing directory to run in instead of a fresh worktree" },
       { name: "Model", flag: "--model", type: "text", placeholder: "opus", hint: "Override agent.model for this worker" },
@@ -277,7 +277,7 @@ const herdSubcommands: Record<string, CommandNode> = {
     fn: "close",
     omitBehavior: { exempt: "agent-facing; the shepherd names the job" },
     args: [
-      { name: "Job", type: "text", placeholder: "cv-1483-facts", hint: "Job name" },
+      { name: "Job", type: "text", placeholder: "acme-1483-facts", hint: "Job name" },
       { name: "Herd", flag: "--herd", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd id (default: HERD_ID)" },
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the close record as JSON" },
     ],
@@ -288,7 +288,7 @@ const herdSubcommands: Record<string, CommandNode> = {
     fn: "attend",
     omitBehavior: { exempt: "agent-facing; the shepherd names the job" },
     args: [
-      { name: "Job", type: "text", placeholder: "cv-1483-facts", hint: "Job name" },
+      { name: "Job", type: "text", placeholder: "acme-1483-facts", hint: "Job name" },
       { name: "Herd", flag: "--herd", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd id (default: HERD_ID)" },
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the tab and pane as JSON" },
     ],
@@ -301,7 +301,7 @@ const herdSubcommands: Record<string, CommandNode> = {
     args: [
       { name: "Herd id", type: "text", placeholder: "hd-1a2b3c4d", hint: "Herd to wind down" },
       { name: "Close panes", flag: "--close-panes", type: "boolean", default: false, hint: "Close every worker pane and the workspace" },
-      { name: "Dispose", flag: "--dispose", type: "text", placeholder: "cv-1483-facts", hint: "Dispose this job's worktree; repeat per job" },
+      { name: "Dispose", flag: "--dispose", type: "text", placeholder: "acme-1483-facts", hint: "Dispose this job's worktree; repeat per job" },
       { name: "Delete job dirs", flag: "--delete-job-dirs", type: "boolean", default: false, hint: "Delete the briefs and reports under the jobs root" },
       { name: "Archive room", flag: "--archive-room", type: "boolean", default: false, hint: "Archive the herd's chat room" },
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the wrap-up record as JSON" },

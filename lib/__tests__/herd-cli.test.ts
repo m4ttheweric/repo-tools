@@ -19,8 +19,8 @@ describe("rt herd payload builders", () => {
     const dir = require("os").tmpdir();
     const file = require("path").join(dir, `brief-${process.pid}.md`);
     require("fs").writeFileSync(file, "# brief");
-    const p = buildSpawnPayload(["--herd", "h", "--job", "cv-1", "--brief", file, "--model", "opus"]);
-    expect(p).toMatchObject({ herd: "h", job: "cv-1", brief: "# brief", model: "opus" });
+    const p = buildSpawnPayload(["--herd", "h", "--job", "job-a", "--brief", file, "--model", "opus"]);
+    expect(p).toMatchObject({ herd: "h", job: "job-a", brief: "# brief", model: "opus" });
   });
 
   test("buildWrapUpPayload collects repeated --dispose values and booleans", () => {
@@ -98,8 +98,8 @@ function statusData(over: Partial<HerdStatusData>): HerdStatusData {
 
 function job(over: Partial<HerdStatusData["jobs"][number]>): HerdStatusData["jobs"][number] {
   return {
-    herd: "hd-1", name: "cv-1", worktree: "/tmp/cv-1", branch: null, tree: null, pane: "w1:p1",
-    agentSession: null, agentId: null, handle: "cv-1", status: "active", disposable: false,
+    herd: "hd-1", name: "job-a", worktree: "/tmp/job-a", branch: null, tree: null, pane: "w1:p1",
+    agentSession: null, agentId: null, handle: "job-a", status: "active", disposable: false,
     lastGate: null, lastReport: null, createdAt: 0, updatedAt: 0,
     openGate: null, paneStatus: "idle", lastGateStatus: null, lastGateDelivery: null,
     ...over,
@@ -112,8 +112,8 @@ describe("renderStatus", () => {
   });
 
   test("an answered gate delivered to a dead pane tells the shepherd to DM the worker", () => {
-    const data = statusData({ jobs: [job({ lastGate: "gt-9", lastGateStatus: "answered", lastGateDelivery: "dead-pane", handle: "cv-1" })] });
-    expect(renderStatus(data)).toContain("answered, worker not woken: rt chat dm cv-1");
+    const data = statusData({ jobs: [job({ lastGate: "gt-9", lastGateStatus: "answered", lastGateDelivery: "dead-pane", handle: "job-a" })] });
+    expect(renderStatus(data)).toContain("answered, worker not woken: rt chat dm job-a");
   });
 
   test("a delivered gate carries no not-woken warning", () => {

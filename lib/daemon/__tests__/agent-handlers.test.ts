@@ -312,11 +312,11 @@ test("agent:start with herdrSocket builds a runner on that socket", async () => 
 test("agent:start with handle uses it as --name and reserves no pool handle", async () => {
   const calls: string[][] = [];
   const h = fresh({ runner: okRunner(calls) });
-  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", handle: "cv-1" });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", surface: "herdr", handle: "job-a" });
   if (!res.ok) throw new Error(res.error);
-  expect(res.data.handle).toBe("cv-1");
+  expect(res.data.handle).toBe("job-a");
   const paneRun = calls.find((c) => c[0] === "pane" && c[1] === "run");
-  expect(paneRun?.[3]).toContain("'--name' 'cv-1'");
+  expect(paneRun?.[3]).toContain("'--name' 'job-a'");
 });
 
 test("agent:list filters by repo", async () => {

@@ -60,16 +60,16 @@ describe("herd-lifecycle", () => {
 
   test("start opens a status stream per live job pane; agent_detected opens one; exit closes it; the 30s timer reconciles", async () => {
     const { store, lc, herd, paneSubs, timers } = fx();
-    store.upsertJob({ herd: herd.id, name: "cv-1", worktree: "/w", handle: "cv-1", status: "active", pane: "w1:p1" });
-    store.upsertJob({ herd: herd.id, name: "cv-2", worktree: "/w2", handle: "cv-2", status: "done", pane: "w1:p2" });
+    store.upsertJob({ herd: herd.id, name: "job-a", worktree: "/w", handle: "job-a", status: "active", pane: "w1:p1" });
+    store.upsertJob({ herd: herd.id, name: "job-b", worktree: "/w2", handle: "job-b", status: "done", pane: "w1:p2" });
     lc.start();
     expect(paneSubs().map((s) => s.subscriptions)).toEqual([[{ type: "pane.agent_status_changed", pane_id: "w1:p1" }]]);
-    store.upsertJob({ herd: herd.id, name: "cv-3", worktree: "/w3", handle: "cv-3", status: "spawning", pane: "w1:p3" });
+    store.upsertJob({ herd: herd.id, name: "job-c", worktree: "/w3", handle: "job-c", status: "spawning", pane: "w1:p3" });
     await lc.handleEvent(null, { type: "pane.agent_detected", pane_id: "w1:p3" });
     expect(paneSubs().map((s) => s.subscriptions[0]!.pane_id).sort()).toEqual(["w1:p1", "w1:p3"]);
     await lc.handleEvent(null, { type: "pane.exited", pane_id: "w1:p3" });
     expect(paneSubs().map((s) => s.subscriptions[0]!.pane_id)).toEqual(["w1:p1"]);
-    store.setJobStatus(herd.id, "cv-1", "closed");
+    store.setJobStatus(herd.id, "job-a", "closed");
     const reconcileTimer = timers.find((t) => t.ms === 30_000 && !t.cleared)!;
     reconcileTimer.fn();
     expect(paneSubs()).toEqual([]);
@@ -77,14 +77,14 @@ describe("herd-lifecycle", () => {
 
   test("agent_detected flips spawning to active", async () => {
     const { store, lc, herd } = fx();
-    store.upsertJob({ herd: herd.id, name: "cv-1", worktree: "/w", handle: "cv-1", status: "spawning", pane: "w1:p1" });
+    store.upsertJob({ herd: herd.id, name: "job-a", worktree: "/w", handle: "job-a", status: "spawning", pane: "w1:p1" });
     await lc.handleEvent(null, { type: "pane.agent_detected", pane_id: "w1:p1" });
-    expect(store.getJob(herd.id, "cv-1")!.status).toBe("active");
+    expect(store.getJob(herd.id, "job-a")!.status).toBe("active");
   });
 
   test("blocked posts only after the debounce, mentioning the shepherd; a clear before it cancels", async () => {
     const { store, lc, herd, posts, timers } = fx();
-    store.upsertJob({ herd: herd.id, name: "cv-1", worktree: "/w", handle: "cv-1", status: "active", pane: "w1:p1" });
+    store.upsertJob({ herd: herd.id, name: "job-a", worktree: "/w", handle: "job-a", status: "active", pane: "w1:p1" });
     await lc.handleEvent(null, { type: "pane.agent_status_changed", pane_id: "w1:p1", agent_status: "blocked" });
     expect(posts).toHaveLength(0);
     const debounce = () => timers.filter((t) => t.ms === 30_000);
@@ -96,12 +96,12 @@ describe("herd-lifecycle", () => {
     await Bun.sleep(0);
     expect(posts).toHaveLength(1);
     expect(posts[0]).toMatchObject({ room: "herd-demo-1", handle: "herdr", mentions: ["shepherd"] });
-    expect(posts[0].body).toContain("cv-1 blocked");
+    expect(posts[0].body).toContain("job-a blocked");
   });
 
   test("working and idle flips post nothing", async () => {
     const { store, lc, herd, posts } = fx();
-    store.upsertJob({ herd: herd.id, name: "cv-1", worktree: "/w", handle: "cv-1", status: "active", pane: "w1:p1" });
+    store.upsertJob({ herd: herd.id, name: "job-a", worktree: "/w", handle: "job-a", status: "active", pane: "w1:p1" });
     await lc.handleEvent(null, { type: "pane.agent_status_changed", pane_id: "w1:p1", agent_status: "working" });
     await lc.handleEvent(null, { type: "pane.agent_status_changed", pane_id: "w1:p1", agent_status: "idle" });
     expect(posts).toEqual([]);
@@ -109,74 +109,74 @@ describe("herd-lifecycle", () => {
 
   test("exited on an active job posts, marks crashed, and closes its open gate as abandoned", async () => {
     const { store, gateStore, lc, herd, posts } = fx();
-    store.upsertJob({ herd: herd.id, name: "cv-1", worktree: "/w", handle: "cv-1", status: "at-gate", pane: "w1:p1" });
-    const g = gateStore.open({ subject: "herd:demo-1/cv-1", kind: "question", questions: [{ id: "q", label: "?", multi: false, options: ["a"] }] }).row.id;
+    store.upsertJob({ herd: herd.id, name: "job-a", worktree: "/w", handle: "job-a", status: "at-gate", pane: "w1:p1" });
+    const g = gateStore.open({ subject: "herd:demo-1/job-a", kind: "question", questions: [{ id: "q", label: "?", multi: false, options: ["a"] }] }).row.id;
     await lc.handleEvent(null, { type: "pane.exited", pane_id: "w1:p1" });
-    expect(store.getJob(herd.id, "cv-1")!.status).toBe("crashed");
-    expect(posts[0].body).toContain("cv-1 exited");
+    expect(store.getJob(herd.id, "job-a")!.status).toBe("crashed");
+    expect(posts[0].body).toContain("job-a exited");
     expect(gateStore.get(g)).toMatchObject({ status: "closed", closedReason: "abandoned" });
   });
 
   test("exited then closed for one teardown posts once and keeps the crashed marker", async () => {
     const { store, lc, herd, posts } = fx();
-    store.upsertJob({ herd: herd.id, name: "cv-1", worktree: "/w", handle: "cv-1", status: "active", pane: "w1:p1" });
+    store.upsertJob({ herd: herd.id, name: "job-a", worktree: "/w", handle: "job-a", status: "active", pane: "w1:p1" });
     await lc.handleEvent(null, { type: "pane.exited", pane_id: "w1:p1" });
     await lc.handleEvent(null, { type: "pane.closed", pane_id: "w1:p1" });
     expect(posts).toHaveLength(1);
-    expect(store.getJob(herd.id, "cv-1")!.status).toBe("crashed");
+    expect(store.getJob(herd.id, "job-a")!.status).toBe("crashed");
   });
 
   test("a stale job row sharing the pane never shadows the live one", async () => {
     const { store, lc, herd } = fx();
-    store.upsertJob({ herd: herd.id, name: "cv-old", worktree: "/w", handle: "cv-old", status: "closed", pane: "w1:p9" });
-    store.upsertJob({ herd: herd.id, name: "cv-new", worktree: "/w2", handle: "cv-new", status: "spawning", pane: "w1:p9" });
+    store.upsertJob({ herd: herd.id, name: "job-old", worktree: "/w", handle: "job-old", status: "closed", pane: "w1:p9" });
+    store.upsertJob({ herd: herd.id, name: "job-new", worktree: "/w2", handle: "job-new", status: "spawning", pane: "w1:p9" });
     await lc.handleEvent(null, { type: "pane.agent_detected", pane_id: "w1:p9" });
-    expect(store.getJob(herd.id, "cv-new")!.status).toBe("active");
-    expect(store.getJob(herd.id, "cv-old")!.status).toBe("closed");
+    expect(store.getJob(herd.id, "job-new")!.status).toBe("active");
+    expect(store.getJob(herd.id, "job-old")!.status).toBe("closed");
   });
 
   test("a throwing chat:post is warned, not fatal, and the lifecycle keeps handling events", async () => {
     const { store, lc, herd, warns, timers } = fx({ postThrows: true });
-    store.upsertJob({ herd: herd.id, name: "cv-1", worktree: "/w", handle: "cv-1", status: "active", pane: "w1:p1" });
+    store.upsertJob({ herd: herd.id, name: "job-a", worktree: "/w", handle: "job-a", status: "active", pane: "w1:p1" });
     await lc.handleEvent(null, { type: "pane.agent_status_changed", pane_id: "w1:p1", agent_status: "blocked" });
     timers.find((t) => t.ms === 30_000)!.fn();
     await Bun.sleep(0);
     expect(warns).toHaveLength(1);
     expect(warns[0]).toContain("herd lifecycle: event handling failed");
-    store.upsertJob({ herd: herd.id, name: "cv-2", worktree: "/w2", handle: "cv-2", status: "spawning", pane: "w1:p2" });
+    store.upsertJob({ herd: herd.id, name: "job-b", worktree: "/w2", handle: "job-b", status: "spawning", pane: "w1:p2" });
     await lc.handleEvent(null, { type: "pane.agent_detected", pane_id: "w1:p2" });
-    expect(store.getJob(herd.id, "cv-2")!.status).toBe("active");
+    expect(store.getJob(herd.id, "job-b")!.status).toBe("active");
   });
 
   test("closed on a done or closed job is silent and marks closed", async () => {
     const { store, lc, herd, posts } = fx();
-    store.upsertJob({ herd: herd.id, name: "cv-1", worktree: "/w", handle: "cv-1", status: "done", pane: "w1:p1" });
+    store.upsertJob({ herd: herd.id, name: "job-a", worktree: "/w", handle: "job-a", status: "done", pane: "w1:p1" });
     await lc.handleEvent(null, { type: "pane.closed", pane_id: "w1:p1" });
     expect(posts).toEqual([]);
-    expect(store.getJob(herd.id, "cv-1")!.status).toBe("closed");
+    expect(store.getJob(herd.id, "job-a")!.status).toBe("closed");
   });
 
   test("an event for a pane on a different socket than the job's herd is ignored", async () => {
     const { store, lc, herd, posts } = fx();
-    store.upsertJob({ herd: herd.id, name: "cv-1", worktree: "/w", handle: "cv-1", status: "active", pane: "w1:p1" });
+    store.upsertJob({ herd: herd.id, name: "job-a", worktree: "/w", handle: "job-a", status: "active", pane: "w1:p1" });
     await lc.handleEvent("/hidden.sock", { type: "pane.exited", pane_id: "w1:p1" });
-    expect(store.getJob(herd.id, "cv-1")!.status).toBe("active");
+    expect(store.getJob(herd.id, "job-a")!.status).toBe("active");
     expect(posts).toEqual([]);
   });
 
   test("a gate answered on a herd subject returns the job to active; on a crashed job it stays crashed", async () => {
     const { store, gateStore, gate, lc, herd } = fx();
     lc.start();
-    store.upsertJob({ herd: herd.id, name: "cv-1", worktree: "/w", handle: "cv-1", status: "at-gate", pane: "w1:p1" });
-    const opened = await gate["gate:open"]({ subject: "herd:demo-1/cv-1", kind: "question", questions: [{ id: "q", label: "?", multi: false, options: ["a"] }] });
+    store.upsertJob({ herd: herd.id, name: "job-a", worktree: "/w", handle: "job-a", status: "at-gate", pane: "w1:p1" });
+    const opened = await gate["gate:open"]({ subject: "herd:demo-1/job-a", kind: "question", questions: [{ id: "q", label: "?", multi: false, options: ["a"] }] });
     if (!opened.ok) throw new Error(opened.error);
     await gate["gate:answer"]({ id: opened.data.id, answers: { q: "a" }, by: "shepherd" });
-    expect(store.getJob(herd.id, "cv-1")!.status).toBe("active");
-    store.setJobStatus(herd.id, "cv-1", "crashed");
-    const again = await gate["gate:open"]({ subject: "herd:demo-1/cv-1", kind: "question", questions: [{ id: "q", label: "?", multi: false, options: ["a"] }] });
+    expect(store.getJob(herd.id, "job-a")!.status).toBe("active");
+    store.setJobStatus(herd.id, "job-a", "crashed");
+    const again = await gate["gate:open"]({ subject: "herd:demo-1/job-a", kind: "question", questions: [{ id: "q", label: "?", multi: false, options: ["a"] }] });
     if (!again.ok) throw new Error(again.error);
     await gate["gate:close"]({ id: again.data.id, reason: "abandoned" });
-    expect(store.getJob(herd.id, "cv-1")!.status).toBe("crashed");
+    expect(store.getJob(herd.id, "job-a")!.status).toBe("crashed");
     void gateStore;
   });
 });

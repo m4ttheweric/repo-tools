@@ -110,9 +110,9 @@ describe("buildPaneCommand", () => {
     const cmd = buildPaneCommand("/w/x", {
       session: { kind: "start", sessionId: "11111111-1111-1111-1111-111111111111" },
       headless: false,
-      env: { HERD_ID: "demo-1", HERD_JOB: "cv-1", HERD_ROOM: "herd-demo-1" },
+      env: { HERD_ID: "demo-1", HERD_JOB: "job-a", HERD_ROOM: "herd-demo-1" },
     });
-    expect(cmd).toContain("cd '/w/x' && HERD_ID='demo-1' HERD_JOB='cv-1' HERD_ROOM='herd-demo-1' claude ");
+    expect(cmd).toContain("cd '/w/x' && HERD_ID='demo-1' HERD_JOB='job-a' HERD_ROOM='herd-demo-1' claude ");
   });
 
   test("buildPaneCommand with an account puts env before cswap", () => {

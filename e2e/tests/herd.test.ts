@@ -281,18 +281,18 @@ describe("rt herd (e2e)", () => {
     const brief = join(home, "brief.md");
     writeFileSync(brief, "# e2e brief");
     const spawned = await finished(runRt(
-      ["herd", "spawn", "--herd", herd.herd, "--job", "cv-1", "--brief", brief, "--dir", repo, "--json"],
+      ["herd", "spawn", "--herd", herd.herd, "--job", "job-a", "--brief", brief, "--dir", repo, "--json"],
       home,
     ));
     expect(spawned.exitCode).toBe(0);
-    expect(JSON.parse(spawned.stdout)).toMatchObject({ job: "cv-1", pane: "w1:p1" });
+    expect(JSON.parse(spawned.stdout)).toMatchObject({ job: "job-a", pane: "w1:p1" });
 
     // The spawned record minted its own session id; the nudge target is
     // whichever session runs `rt herd ask`, so the worker "is" sess-worker.
     const questions = JSON.stringify([{ id: "q", label: "Which?", multi: false, options: ["a", "b"] }]);
     const asked = await finished(runRt(["herd", "ask", "--questions", questions, "--json"], home, {
       HERD_ID: herd.herd,
-      HERD_JOB: "cv-1",
+      HERD_JOB: "job-a",
       CLAUDE_CODE_SESSION_ID: "sess-worker",
     }));
     expect(asked.exitCode).toBe(0);
@@ -316,7 +316,7 @@ describe("rt herd (e2e)", () => {
     const status = await finished(runRt(["herd", "status", "--herd", herd.herd, "--json"], home));
     expect(status.exitCode).toBe(0);
     const statusData = JSON.parse(status.stdout) as { jobs: Array<Record<string, unknown>> };
-    expect(statusData.jobs[0]).toMatchObject({ name: "cv-1", status: "active", pane: "w1:p1", paneStatus: "idle" });
+    expect(statusData.jobs[0]).toMatchObject({ name: "job-a", status: "active", pane: "w1:p1", paneStatus: "idle" });
 
     const listed = await finished(runRt(["herd", "list"], home));
     expect(listed.exitCode).toBe(0);
