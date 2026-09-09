@@ -127,8 +127,15 @@ push (`home-snapshot.ts:866`) to avoid diverging, not to react to content. That
 pull is inside `pushInFlight`, so a converge there would delay every push by the
 length of a plugin install, and any converge stall would wedge the push path on
 owner machines. `pullNow` therefore takes `{ converge?: boolean }`, defaulting to
-true, and `doPushInner` passes `converge: false`. Nothing is lost: the timer pull
-converges the same clone within one interval.
+true, and `doPushInner` passes `converge: false`.
+
+**Suppressing the hook there defers the converge; it must not lose it.** A
+suppressed pull that fast-forwards has already moved HEAD, so every later pull
+sees `behind === 0` and returns `up-to-date`, which fires nothing. Left alone,
+that version bump would never converge until some unrelated commit moved the
+clone again. So a suppressed pull that moved HEAD records the outcome, and the
+push drains it once `pushInFlight` clears, outside the push. The push is still
+never delayed by a plugin install, and the single-flight guard still holds.
 
 The converging callers are the interval timer, the boot pull `init()` already
 fires (so a clone that moved while the daemon was down converges at start), and
