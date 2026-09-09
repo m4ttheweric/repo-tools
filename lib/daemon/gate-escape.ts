@@ -1,7 +1,7 @@
 import { herdrRequest } from "../herdr/client.ts";
 import { resolvePaneRef } from "./pane-ref-socket.ts";
 
-export type EscapeInjector = (paneId: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+export type EscapeInjector = (ref: string) => Promise<{ ok: true } | { ok: false; error: string }>;
 
 /** Drives herdr's existing pane.send_keys verb; deliberately NOT
     injectIntoPane, which refuses blocked panes, and a pane holding a

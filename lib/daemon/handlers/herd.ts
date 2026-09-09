@@ -64,8 +64,11 @@ const TRUST_BUDGET_MS = 15_000;
 const SETTLE_UNTIL = ["idle", "blocked", "done"];
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
 /** A bare pane id headed into a gate's `pane` field: formatted per the herd's
-    hidden-ness so escape injection (gate-push.ts -> gate-escape.ts's
-    resolvePaneRef) round-trips to whichever server actually holds the pane. */
+    hidden-ness so the ref rides addressably wherever that field surfaces
+    (display, focus/resume) -- gate-push.ts's own contract for this field is
+    "a focus/resume ref, never a delivery target", so this is not an escape
+    round-trip; herd gates never carry origin.presentation === "form", the
+    only shape gate-push ever escape-injects into. */
 const refPane = (bare: string | undefined, hidden: boolean): string | undefined => (bare ? formatPaneRef(bare, hidden ? "bg" : "visible") : undefined);
 
 /** `shepherd-2` is a collision suffix chat mints, not a name to ask for again. */
