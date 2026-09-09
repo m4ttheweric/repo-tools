@@ -391,6 +391,15 @@ describe("worker verbs", () => {
     expect((await h["herd:ask"]({ herd, job: "job-a", session: "s", questions: [] })).ok).toBe(false);
   });
 
+  test("ask refuses an orphan job (herd_jobs row whose parent herd was deleted)", async () => {
+    const { h, store } = await withJob();
+    // No FK from herd_jobs to herds: seed a job row under a herd id that was
+    // never (or no longer) created, matching the deleted-parent case.
+    store.upsertJob({ herd: "orphan-herd", name: "job-a", worktree: "/w/job-a", handle: "job-a", status: "active", pane: "w9:p1", agentSession: "sess-w1" });
+    const res = await h["herd:ask"]({ herd: "orphan-herd", job: "job-a", session: "sess-w1", questions: Q });
+    expect(res.ok).toBe(false);
+  });
+
   test("milestone posts quietly to the room then opens a milestone gate with the fixed options", async () => {
     const { h, store, gateStore, chatCalls, herd, room } = await withJob();
     const res = await h["herd:milestone"]({ herd, job: "job-a", session: "sess-w1", pane: "w9:p1", artifact: "/w/job-a/spec.md", summary: "spec ready" });

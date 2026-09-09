@@ -47,6 +47,11 @@ describe("parseStartArgs", () => {
   test("--surface headless then --bg fails the same way regardless of flag order", () => {
     expect(() => parseStartArgs(["--surface", "headless", "--bg"])).toThrow(/--bg is a herdr-surface option/);
   });
+
+  test("--bg as an --extra-args VALUE is not detected as the flag", () => {
+    expect(parseStartArgs(["--extra-args", "--bg"]).bg).toBeUndefined();
+    expect(parseStartArgs(["--extra-args", "--bg"]).extraArgs).toBe("--bg");
+  });
 });
 
 describe("parseResumeArgs", () => {

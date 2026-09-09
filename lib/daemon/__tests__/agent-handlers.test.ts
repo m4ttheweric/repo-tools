@@ -31,7 +31,7 @@ interface FakeBg {
   reprobeCalls: number;
 }
 
-function fakeBg(over: { socket?: string; ensureError?: Error; drift?: string[] } = {}): FakeBg {
+function fakeBg(over: { socket?: string; ensureError?: Error; drift?: string[]; reprobeError?: Error } = {}): FakeBg {
   const self: FakeBg = {
     ensureCalls: 0,
     reprobeCalls: 0,
@@ -42,6 +42,7 @@ function fakeBg(over: { socket?: string; ensureError?: Error; drift?: string[] }
     },
     reprobe: async () => {
       self.reprobeCalls++;
+      if (over.reprobeError) throw over.reprobeError;
       const drift = over.drift ?? [];
       return { ok: drift.length === 0, drift };
     },
@@ -508,6 +509,20 @@ test("agent:start bg launch failure shaped as command-not-found reprobes and fol
   expect(res.error).toContain("bg env drift");
   expect(res.error).toContain("bun:");
   expect(bgClaims.claims).toEqual([]);
+});
+
+test("agent:start bg launch failure shaped as command-not-found survives a rejecting reprobe: original message returned, not thrown", async () => {
+  const bg = fakeBg({ socket: "/bg.sock", reprobeError: new Error("bg server unreachable") });
+  const bgClaims = fakeBgClaims();
+  const lifecycle = fakeLifecycle();
+  const throwing: HerdrRunner = async () => { throw new Error("herdr not found at /bg/.local/bin/herdr (install via `rt setup` / brew)"); };
+  const h = fresh({ runnerFactory: () => throwing, bg, bgClaims, lifecycle });
+  const res = await h["agent:start"]({ repo: REPO, cwd: "/tmp/x", prompt: "hi", bg: true });
+  expect(res.ok).toBe(false);
+  if (res.ok) throw new Error("unreachable");
+  expect(bg.reprobeCalls).toBe(1);
+  expect(res.error).toContain("herdr not found at");
+  expect(res.error).not.toContain("bg env drift");
 });
 
 test("agent:start bg launch failure NOT shaped as command-not-found never reprobes", async () => {

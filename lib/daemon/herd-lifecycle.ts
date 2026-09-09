@@ -238,11 +238,15 @@ export function createHerdLifecycle(opts: {
         if (bgClaims.release(claim.owner)) released.push(claim.owner);
       }
     }
-    const snap = await herdr<{ snapshot: { panes: Array<{ pane_id: string }> } }>("session.snapshot", {}, { sockPath: bgSocket });
-    if (!snap.ok) {
-      log.warn({ sockPath: bgSocket, error: snap.message }, "herd lifecycle: bg claim sweep could not snapshot the bg server; pane claims not swept this round");
+    const snap = await herdr<{ snapshot?: { panes?: Array<{ pane_id: string }> } }>("session.snapshot", {}, { sockPath: bgSocket });
+    const panes = snap.ok ? snap.result?.snapshot?.panes : undefined;
+    if (!snap.ok || !Array.isArray(panes)) {
+      // An ok reply's shape is still herdr's to get wrong (same rule as
+      // paneStatuses in handlers/herd.ts): degrade like !snap.ok, never
+      // substitute an empty live set -- that would release every pane claim.
+      log.warn({ sockPath: bgSocket, error: snap.ok ? "malformed snapshot body" : snap.message }, "herd lifecycle: bg claim sweep could not snapshot the bg server; pane claims not swept this round");
     } else {
-      const live = new Set(snap.result.snapshot.panes.map((p) => p.pane_id));
+      const live = new Set(panes.map((p) => p.pane_id));
       for (const claim of candidates) {
         if (!claim.pane) continue;
         const ref = parsePaneRef(claim.pane);

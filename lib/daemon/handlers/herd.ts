@@ -374,11 +374,11 @@ export function createHerdHandlers(deps: HerdDeps) {
       const herdId = str(p?.herd); const name = str(p?.job); const session = str(p?.session);
       if (!herdId || !name || !session) return { ok: false, error: "herd, job, and session are required (HERD_ID, HERD_JOB, CLAUDE_CODE_SESSION_ID)" };
       const herd = store.get(herdId);
-      const job = store.getJob(herdId, name);
-      if (!job) return { ok: false, error: `unknown job "${name}" in herd "${herdId}"` };
+      const job = herd ? store.getJob(herdId, name) : null;
+      if (!herd || !job) return { ok: false, error: `unknown job "${name}" in herd "${herdId}"` };
       const opened = await deps.gate["gate:open"]({
         subject: herdSubject(herdId, name), kind: "question", questions: p!.questions,
-        meta: { herd: herdId, job: name }, agent: name, pane: refPane(str(p?.pane) ?? job.pane ?? undefined, herd?.hidden ?? false),
+        meta: { herd: herdId, job: name }, agent: name, pane: refPane(str(p?.pane) ?? job.pane ?? undefined, herd.hidden),
         nudge: { session }, context: str(p?.context),
       });
       if (!opened.ok) return opened;

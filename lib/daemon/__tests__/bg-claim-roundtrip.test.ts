@@ -35,12 +35,12 @@ const bgSocketRunner: HerdrRunner = async (args) => {
 
 test("agent:start --bg claims via the real store, and a bg-socket pane.closed through the real lifecycle releases it -- one claim, then zero, no hardcoded refs on either side", async () => {
   const dir = mkdtempSync(join(tmpdir(), "rt-bg-claim-rt-"));
+  const stateDb = openStateDb(join(dir, "state.db"));
+  const bgClaims = createBgClaimsStore({ dbPath: join(dir, "bg-claims.db"), log });
+  const herdStore = createHerdStore({ dbPath: join(dir, "herds.db"), log });
+  const gatesStore = createGatesStore({ dbPath: join(dir, "gates.db"), log });
+  const bus = createEventsBus({ dbPath: join(dir, "events.db"), log });
   try {
-    const stateDb = openStateDb(join(dir, "state.db"));
-    const bgClaims = createBgClaimsStore({ dbPath: join(dir, "bg-claims.db"), log });
-    const herdStore = createHerdStore({ dbPath: join(dir, "herds.db"), log });
-    const gatesStore = createGatesStore({ dbPath: join(dir, "gates.db"), log });
-    const bus = createEventsBus({ dbPath: join(dir, "events.db"), log });
     const gate = createGateHandlers(gatesStore, bus, (type, data) => bus.fanOut(type, data), { log });
     const chat = { "chat:post": async () => ({ ok: true as const, data: { id: 1, recipients: [], others: 0 } }) };
     const lifecycle = createHerdLifecycle({
@@ -77,6 +77,11 @@ test("agent:start --bg claims via the real store, and a bg-socket pane.closed th
 
     expect(bgClaims.list()).toHaveLength(0);
   } finally {
+    bus.close();
+    gatesStore.close_();
+    herdStore.close_();
+    bgClaims.close_();
+    stateDb.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -314,6 +314,20 @@ describe("herd-lifecycle", () => {
     expect(warns.some((w) => w.includes("could not snapshot"))).toBe(true);
   });
 
+  test("sweepClaims skips the pane sweep (but still checks runner pids) when the snapshot body is malformed (ok but no panes array)", async () => {
+    const { lc, bgClaims, warns } = fx({
+      bgSocket: "/bg.sock",
+      claims: [
+        { owner: "agent:unknown", pane: "bg:w1:pUnknown" },
+        { owner: "runner:999999", pane: null },
+      ],
+      herdr: async () => ({ ok: true, result: {} }),
+    });
+    await lc.sweepClaims();
+    expect(bgClaims.list().map((c) => c.owner)).toEqual(["agent:unknown"]);
+    expect(warns.some((w) => w.includes("could not snapshot"))).toBe(true);
+  });
+
   test("sweepClaims is inert without a configured bg socket", async () => {
     const { lc, herdrCalls } = fx();
     await lc.sweepClaims();

@@ -41,6 +41,14 @@ function flagValue(args: string[], flag: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
+function hasFlag(args: string[], flag: string): boolean {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === flag) return true;
+    if (FLAGS_WITH_VALUES.has(args[i]!)) i++;
+  }
+  return false;
+}
+
 function positional(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
@@ -104,7 +112,7 @@ function parseStartArgs(args: string[]): StartArgs {
     const v = flagValue(args, flag);
     if (v !== undefined) out[key] = v;
   }
-  if (args.includes("--bg")) {
+  if (hasFlag(args, "--bg")) {
     if (surface === "headless") throw new Error("--bg is a herdr-surface option");
     out.bg = true;
   }

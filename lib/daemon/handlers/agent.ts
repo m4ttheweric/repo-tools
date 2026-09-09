@@ -290,8 +290,17 @@ export function createAgentHandlers(opts: {
         deleteAgent(rec.id, db);
         const message = err instanceof Error ? err.message : String(err);
         if (payload.bg && opts.bg && isCommandNotFoundShape(message)) {
-          const report = await opts.bg.reprobe();
-          const drift = report.drift.length > 0 ? `; bg env drift: ${report.drift.join("; ")}` : "";
+          // Advisory only: the failure this branch handles is exactly the
+          // case where the bg server may be unhealthy, so the reprobe itself
+          // can reject. A reprobe rejection must not replace the launch
+          // error the caller actually needs.
+          let drift = "";
+          try {
+            const report = await opts.bg.reprobe();
+            if (report.drift.length > 0) drift = `; bg env drift: ${report.drift.join("; ")}`;
+          } catch (probeErr) {
+            log.warn({ err: probeErr, id: rec.id }, "agent: bg reprobe failed after launch error");
+          }
           return { ok: false, error: `${message}${drift}` };
         }
         return { ok: false, error: message };

@@ -2,7 +2,8 @@ import { describe, test, expect } from "bun:test";
 import { join } from "path";
 import pino from "pino";
 import type { Logger } from "pino";
-import { createBgService, bgSocketPath } from "../bg-service.ts";
+import { createBgService, bgSocketPath, defaultProbePane } from "../bg-service.ts";
+import type { HerdrRunner } from "../../agent-herdr.ts";
 
 const log = pino({ level: "silent" });
 
@@ -239,6 +240,21 @@ describe("bg service", () => {
     expect(result).toEqual({ socket: "/h/.config/herdr/sessions/bg/herdr.sock", started: true });
     expect(s.lastParity()).toBeNull();
     expect(warns.some((a) => String(a[1] ?? "").includes("parity probe failed"))).toBe(true);
+  });
+
+  test("defaultProbePane closes the throwaway workspace even when the pane read rejects", async () => {
+    const calls: string[][] = [];
+    const runner: HerdrRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "workspace" && args[1] === "list") return { stdout: JSON.stringify({ result: { workspaces: [] } }), exitCode: 0 };
+      if (args[0] === "workspace" && args[1] === "create") {
+        return { stdout: JSON.stringify({ result: { root_pane: { pane_id: "w1:p1", tab_id: "w1:t1", workspace_id: "w1" } } }), exitCode: 0 };
+      }
+      if (args[0] === "pane" && args[1] === "read") throw new Error("pane read failed");
+      return { stdout: "{}", exitCode: 0 };
+    };
+    await expect(defaultProbePane(null, "echo hi", runner)).rejects.toThrow("pane read failed");
+    expect(calls.some((c) => c[0] === "workspace" && c[1] === "close" && c[2] === "w1")).toBe(true);
   });
 
   // defaultProbePane launches its throwaway pane into a shared "bg-probe"

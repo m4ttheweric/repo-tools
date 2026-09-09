@@ -71,19 +71,24 @@ const PROBE_SETTLE_MS = 800;
 
 /** Spawns a throwaway pane on the given socket (null = the visible server),
     runs cmd, and returns its output. No claude agent runs here, so there is
-    no agent.wait to poll; a short settle stands in for it. */
-async function defaultProbePane(socket: string | null, cmd: string): Promise<string> {
-  const runner: HerdrRunner = socket
+    no agent.wait to poll; a short settle stands in for it.
+    `runnerOverride` is test-only: production always derives the runner from
+    `socket`. */
+export async function defaultProbePane(socket: string | null, cmd: string, runnerOverride?: HerdrRunner): Promise<string> {
+  const runner: HerdrRunner = runnerOverride ?? (socket
     ? defaultHerdrRunner({ ...process.env, HERDR_SOCKET_PATH: socket })
-    : defaultHerdrRunner();
+    : defaultHerdrRunner());
   const out = await launchInWorkspace(
     { workspaceLabel: "bg-probe", tabLabel: `probe-${crypto.randomUUID()}`, paneCommand: cmd },
     runner,
   );
   await Bun.sleep(PROBE_SETTLE_MS);
-  const read = await runner(["pane", "read", out.paneId, "--source", "recent"]);
-  await runner(["workspace", "close", out.workspaceId]);
-  return read.stdout;
+  try {
+    const read = await runner(["pane", "read", out.paneId, "--source", "recent"]);
+    return read.stdout;
+  } finally {
+    await runner(["workspace", "close", out.workspaceId]);
+  }
 }
 
 export function createBgService(opts: {
