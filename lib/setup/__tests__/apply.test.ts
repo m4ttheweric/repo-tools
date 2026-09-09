@@ -407,7 +407,7 @@ describe("runApplyWith — --from resume", () => {
 // The checklist's own row remedies run one step, not "this step and the
 // fourteen after it": a `tool.proxy` button labelled "Trust certificate" used
 // to reach `snapshot.push`.
-describe("runApplyWith — --only", () => {
+describe("runApplyWith: --only", () => {
   test("runs exactly the named step: nothing before it, nothing after it", async () => {
     const { ctx, events } = testCtx();
     const order: string[] = [];

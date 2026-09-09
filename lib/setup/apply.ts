@@ -143,7 +143,7 @@ function resumeStart(applicable: StepDef[], from: StepId | undefined): number {
  */
 function onlyIndex(applicable: StepDef[], only: StepId): number {
   if (!STEP_IDS.includes(only)) {
-    throw new UserActionableError("unknown-step", `unknown --only step id "${only}" — valid ids: ${STEP_IDS.join(", ")}`);
+    throw new UserActionableError("unknown-step", `unknown --only step id "${only}"; valid ids: ${STEP_IDS.join(", ")}`);
   }
   const exact = applicable.findIndex((s) => s.id === only);
   return exact < 0 ? applicable.length : exact;

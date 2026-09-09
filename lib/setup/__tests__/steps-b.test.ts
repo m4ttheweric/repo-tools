@@ -338,7 +338,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(needCalls).toBe(1);
     });
 
-    test("a mattstack-installed proxy, trusted: done without ever calling ctx.need — a from-scratch re-run must not re-raise the admin prompt", async () => {
+    test("a mattstack-installed proxy, trusted: done without ever calling ctx.need, so a from-scratch re-run never re-raises the admin prompt", async () => {
       let needCalled = false;
       const p = fakeProbes({
         home,

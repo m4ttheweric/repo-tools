@@ -1,4 +1,4 @@
-# Privileged proxy helper (mattstack-proxy-install) — design
+# Privileged proxy helper (mattstack-proxy-install): design
 
 RT-106. Ships the helper the app already knows how to run, so `proxy.install`
 stops skipping and fresh installs serve the bundled apps on `.mattstack`
@@ -34,7 +34,7 @@ change is an explicit admin prompt, never an auto-follow.
 
 Two new third-party rows, pinned url+sha256 like every other vendor pin:
 
-- `portless` — the npm registry tarball
+- `portless`: the npm registry tarball
   (`https://registry.npmjs.org/portless/-/portless-<ver>.tgz`), extracted
   into the bundle under `Contents/Helpers/portless-dist/` (kind `helper`,
   `exposeByDefault: false`, entitlements `none`). It is JS, not Mach-O; the
@@ -47,11 +47,12 @@ Update story).
 
 ### 2. The helper (first-party Swift, in-repo)
 
-`rt-tray/proxy-helper/` — a SwiftPM executable target built by
+`rt-tray/proxy-helper/` is a SwiftPM executable target built by
 `rt-tray/build.sh` into `Contents/Helpers/mattstack-proxy-install`, signed
 inside the seal like every helper. Swift, not a Bun compile: the ESCALATED
 INSTALLER binary should not need `allow-jit` (the bundled node the daemon
-runs keeps its `jit` entitlement from deps.lock — do not strip it), and
+runs keeps its `jit` entitlement from deps.lock, which must not be
+stripped), and
 Swift shares the repo's toolchain.
 
 Why in-repo rather than a bundle-apps release row: the helper's argv/ops
@@ -60,15 +61,15 @@ they must ship in lockstep; a release-artifact row would make the app's own
 release circular (the release builds the app that bundles the helper); and
 a ~100KB root binary does not deserve its own tag lifecycle. Consequence:
 the pending deps.lock row is REMOVED (a bundled row requires a url by
-schema), and `check-bundle.sh` gets an explicit first-party assertion — the
+schema), and `check-bundle.sh` gets an explicit first-party assertion: the
 same allowance rt-ui has, plus the runs-from-the-seal smoke the deps.lock
 loop gives fetched helpers.
 
 Ops (argv; the only flag is an unprivileged `--version`, for
-check-bundle's runs-from-the-seal smoke; no paths from argv — every path is
+check-bundle's runs-from-the-seal smoke; no paths from argv, since every path is
 compiled in):
 
-- `install` — idempotent, runs as root:
+- `install`: idempotent, runs as root:
   1. Copy `Contents/Helpers/portless-dist` and the bundled `node` binary
      from the invoking bundle to `/Library/Application Support/mattstack/
      proxy/` (root-owned, 755 dirs / 644 files, binaries 755). The
@@ -77,7 +78,7 @@ compiled in):
      helper's own bundle root (derived from its executable path), and
      before anything is staged the helper verifies the SOURCE CONTENT, not
      just layout: the portless-dist tree and node binary must match
-     sha256s compiled into the helper at build time from deps.lock — a
+     sha256s compiled into the helper at build time from deps.lock, because a
      swapped tree in the user-writable bundle must fail the op, or root
      runs attacker code forever under KeepAlive. The target chain is
      guarded too: `/Library/Application Support` is admin-group writable,
@@ -90,7 +91,7 @@ compiled in):
      entrypoint, port 443, `KeepAlive`, `RunAtLoad`, state under the
      invoking user's `~/.portless` (`UserName` stays root for 443; the
      state dir is passed via `PORTLESS_STATE_DIR` in the plist
-     environment — verified supported by portless's cli — pointing at the
+     environment (verified supported by portless's cli), pointing at the
      invoking user's `~/.portless` per the deck-lane contract; the trust
      run gets the same variable).
   3. Trust the portless CA (NON-FATAL, runs AFTER step 5): the CA does not
@@ -119,19 +120,19 @@ compiled in):
      the one command `launchctl kickstart -k system/sh.portless.proxy`;
      `visudo -c`-validated via a sibling temp file on the same filesystem;
      a failed validation removes the candidate and fails the op.
-  5. `launchctl bootstrap system` the plist (bootout first when present —
+  5. `launchctl bootstrap system` the plist (bootout first when present, since
      re-install is the update path).
   Output contract (dictated by the escalator, PrivilegedInstaller.swift
   93-106): `AuthorizationExecuteWithPrivileges` pipes ONLY the child's
-  stdout and recovers no real exit code — the helper must end every run
+  stdout and recovers no real exit code, so the helper must end every run
   with a `MATTSTACK_EXIT=<n>` trailer on stdout, and a missing trailer
   parses as success. So: one line per sub-step to stdout, failure detail to
   stdout (there is no stderr channel), and the trailer is written on every
   path the helper can catch. The app relays that stdout into `NeedResult`.
-- `remove` — bootout + delete the plist, the sudoers file, the CA trust,
+- `remove`: bootout + delete the plist, the sudoers file, the CA trust,
   and the root copy. Wired into `rt uninstall` (installer ruling 14) and
   the app's existing `proxyRemove()`.
-- `trust` — re-runs only the CA trust write (install step 3) against the
+- `trust`: re-runs only the CA trust write (install step 3) against the
   root copy's `ca.pem`, same `MATTSTACK_TRUST` line and exit trailer, no
   other side effects. It is the Retry behind the untrusted-certificate row
   and raises macOS's trust prompt (one dialog, plus the escalation prompt
@@ -142,7 +143,7 @@ compiled in):
 - `proxy.install` runs the need instead of skipping. The skip gate at
   lib/setup/steps/services.ts:57 resolves today through `bundledToolPath`,
   which reads the bundle's deps.lock and returns null without a
-  `status: "bundled"` row — with the row removed it would skip forever. The
+  `status: "bundled"` row; with the row removed it would skip forever. The
   gate is re-pointed at a direct first-party existence check of
   `Contents/Helpers/mattstack-proxy-install` under the resolved bundle
   (rt-ui-style resolution), and the skip-with-reason path remains for
@@ -161,7 +162,7 @@ compiled in):
   verb through the tray's escalator (`POST /privileged/proxy-trust`, the
   sibling of the existing proxy-install route). The proxy keeps serving in
   that state; only browser trust is missing.
-- deck: no changes — it already talks to portless and holds the kickstart
+- deck: no changes, since it already talks to portless and holds the kickstart
   path; the sudoers rule is what makes its reload work on a fresh machine.
 
 ## Error handling

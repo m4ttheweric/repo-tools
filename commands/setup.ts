@@ -208,13 +208,13 @@ function applyFlags(args: string[]): { nonInteractive: boolean; teamOfOne: boole
  * there is no separate branch to gate; the invariant it promises holds by
  * construction, not by checking the flag.
  */
-/** A step-id flag with no value (or immediately followed by another flag, e.g. a trailing `--from --json`) is the same failure as an unknown step id — silently falling back to "no flag" would redo the whole install instead of refusing. */
+/** A step-id flag with no value (or immediately followed by another flag, e.g. a trailing `--from --json`) is the same failure as an unknown step id: silently falling back to "no flag" would redo the whole install instead of refusing. */
 function resolveStepArg(args: string[], flag: "--from" | "--only"): StepId | undefined {
   const i = args.indexOf(flag);
   if (i < 0) return undefined;
   const value = args[i + 1];
   if (value === undefined || value.startsWith("--")) {
-    throw new UserActionableError("unknown-step", `${flag} requires a step id — valid ids: ${STEP_IDS.join(", ")}`);
+    throw new UserActionableError("unknown-step", `${flag} requires a step id; valid ids: ${STEP_IDS.join(", ")}`);
   }
   return value as StepId;
 }
@@ -224,7 +224,7 @@ function resolveStepSelection(args: string[]): { from?: StepId; only?: StepId } 
   const from = resolveStepArg(args, "--from");
   const only = resolveStepArg(args, "--only");
   if (from !== undefined && only !== undefined) {
-    throw new UserActionableError("unknown-step", "--from and --only cannot be combined — --from resumes from a step, --only runs just that one");
+    throw new UserActionableError("unknown-step", "--from and --only cannot be combined: --from resumes from a step, --only runs just that one");
   }
   return { ...(from !== undefined ? { from } : {}), ...(only !== undefined ? { only } : {}) };
 }
@@ -278,7 +278,7 @@ export async function setupApply(args: string[], _ctx: CommandContext = {}, deps
   } catch (err) {
     if (err instanceof UserActionableError) {
       // Thrown before `plan` ever reaches the stream — a malformed/unknown
-      // --from or --only, or the two given together — so nothing else has
+      // --from or --only, or the two given together, so nothing else has
       // gone out yet; print the same exit-2 envelope every other setup verb
       // uses.
       deps.print(json ? JSON.stringify(userErrorPayload(err, deps.probes.now())) : `rt setup apply: ${err.message}`);
