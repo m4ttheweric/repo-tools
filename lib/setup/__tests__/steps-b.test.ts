@@ -313,15 +313,19 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(await proxyInstallStep.run(ctx)).toEqual({ state: "failed", detail: "admin prompt cancelled" });
     });
 
-    test("idempotent re-run: the second run never re-raises the admin prompt, because the first run's plist is still on disk", async () => {
-      const p = fakeProbes({ home });
+    test("idempotent re-run: the second run never re-raises the admin prompt, because the first run's state is still on disk", async () => {
+      const p = fakeProbes({ home, exec: async () => ({ code: 0, stdout: "", stderr: "" }) });
       let needCalls = 0;
       const need: ApplyContext["need"] = async () => {
         needCalls++;
-        // The real privileged installer's side effect, carried on the SAME
+        // The real privileged installer's side effects, carried on the SAME
         // probes instance across both runs — the fake state a from-scratch
-        // second run would actually see.
+        // second run would actually see. The VERSION file is half of it: a
+        // plist without one is a portless install mattstack never made, which
+        // the second run is supposed to adopt.
         p.writeFile(PORTLESS_LAUNCHD_PLIST, "<plist/>");
+        p.writeFile(PROXY_VERSION_PATH, "0.15.6\n");
+        p.writeFile(join(home, ".portless", "ca.pem"), "-----BEGIN CERTIFICATE-----");
         return { ok: true, detail: "already installed" };
       };
 
@@ -334,9 +338,17 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(needCalls).toBe(1);
     });
 
-    test("the portless LaunchDaemon already exists on disk: done without ever calling ctx.need — a from-scratch re-run must not re-raise the admin prompt", async () => {
+    test("a mattstack-installed proxy, trusted: done without ever calling ctx.need — a from-scratch re-run must not re-raise the admin prompt", async () => {
       let needCalled = false;
-      const p = fakeProbes({ home, files: { "/Library/LaunchDaemons/sh.portless.proxy.plist": "<plist/>" } });
+      const p = fakeProbes({
+        home,
+        files: {
+          [PORTLESS_LAUNCHD_PLIST]: "<plist/>",
+          [PROXY_VERSION_PATH]: "0.15.6\n",
+          [join(home, ".portless", "ca.pem")]: "-----BEGIN CERTIFICATE-----",
+        },
+        exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+      });
       const { ctx } = makeCtx(p, {
         need: async () => {
           needCalled = true;
@@ -346,6 +358,32 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
 
       expect(await proxyInstallStep.run(ctx)).toEqual({ state: "done", detail: "already installed" });
       expect(needCalled).toBe(false);
+    });
+
+    // A plist with no VERSION beside it is portless installed the way deck's
+    // README documents, on a machine mattstack has never touched. It used to
+    // read as "already installed", so no route existed to adopt it and the row
+    // stayed red forever.
+    test("a portless install that predates mattstack: adopted through the install op", async () => {
+      const p = bundledProbes({
+        overrides: {
+          files: {
+            [join(appRoot, "Contents/Helpers/mattstack-proxy-install")]: "bin",
+            [PORTLESS_LAUNCHD_PLIST]: "<plist/>",
+          },
+        },
+      });
+      let captured: unknown;
+      const { ctx, logs } = makeCtx(p, {
+        need: async (_id, request) => {
+          captured = request;
+          return { ok: true, detail: "copy: ok\nMATTSTACK_TRUST=ok" };
+        },
+      });
+
+      expect((await proxyInstallStep.run(ctx)).state).toBe("done");
+      expect(captured).toEqual({ type: "app-privileged", op: "proxy-install" });
+      expect(logs).toContainEqual({ id: "proxy.install", line: "adopting: a portless proxy is installed here outside mattstack" });
     });
 
     // The "Update proxy" remedy, which was a no-op until this: the step read
@@ -400,16 +438,24 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
     });
 
     // A version nobody can compare is a state to report, not one to act on:
-    // tool.proxy already carries it as an error naming the path.
+    // tool.proxy already carries it as an error naming the path. The file
+    // being there at all is what separates this from adoption.
     test("installed but the VERSION file is unreadable: no need raised", async () => {
       const p = bundledProbes({
         tools: ["gitq", "portless"],
-        overrides: { files: { [join(appRoot, "Contents/Helpers/mattstack-proxy-install")]: "bin", [PORTLESS_LAUNCHD_PLIST]: "<plist/>" } },
+        overrides: {
+          files: {
+            [join(appRoot, "Contents/Helpers/mattstack-proxy-install")]: "bin",
+            [PORTLESS_LAUNCHD_PLIST]: "<plist/>",
+            [PROXY_VERSION_PATH]: "0.1.0\n",
+          },
+          unreadable: [PROXY_VERSION_PATH],
+        },
       });
       let needCalled = false;
       const { ctx } = makeCtx(p, { need: async () => { needCalled = true; return { ok: true, detail: "" }; } });
 
-      expect(await proxyInstallStep.run(ctx)).toEqual({ state: "done", detail: "already installed" });
+      expect(await proxyInstallStep.run(ctx)).toEqual({ state: "done", detail: `${PROXY_VERSION_PATH} could not be read` });
       expect(needCalled).toBe(false);
     });
 
@@ -420,7 +466,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       const ca = join(home, ".portless", "ca.pem");
       const p = fakeProbes({
         home,
-        files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", [ca]: "-----BEGIN CERTIFICATE-----" },
+        files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", [PROXY_VERSION_PATH]: "0.15.6\n", [ca]: "-----BEGIN CERTIFICATE-----" },
         exec: async (argv) => ({ code: argv[0] === "security" ? 1 : 0, stdout: "", stderr: "" }),
       });
       let captured: unknown;
@@ -439,7 +485,11 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
     test("installed and the CA is already trusted: done without ever calling ctx.need", async () => {
       const p = fakeProbes({
         home,
-        files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", [join(home, ".portless", "ca.pem")]: "-----BEGIN CERTIFICATE-----" },
+        files: {
+          [PORTLESS_LAUNCHD_PLIST]: "<plist/>",
+          [PROXY_VERSION_PATH]: "0.15.6\n",
+          [join(home, ".portless", "ca.pem")]: "-----BEGIN CERTIFICATE-----",
+        },
         exec: async () => ({ code: 0, stdout: "", stderr: "" }),
       });
       let needCalled = false;
@@ -447,6 +497,31 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
 
       expect(await proxyInstallStep.run(ctx)).toEqual({ state: "done", detail: "already installed" });
       expect(needCalled).toBe(false);
+    });
+
+    // The dead end this closes: the step used to see an absent CA and return
+    // "already installed", so the row's Trust certificate button reported
+    // success and changed nothing, forever. The daemon can be slow to mint the
+    // CA, or the user can have removed ~/.portless.
+    test("installed at the pinned version but the CA never appeared: still raises the trust op", async () => {
+      const p = fakeProbes({
+        home,
+        files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", [PROXY_VERSION_PATH]: "0.15.6\n" },
+      });
+      let captured: unknown;
+      const { ctx } = makeCtx(p, {
+        need: async (_id, request) => {
+          captured = request;
+          return { ok: true, detail: "trust: failed no CA certificate at /Users/x/.portless/ca.pem\nMATTSTACK_TRUST=failed" };
+        },
+      });
+
+      const outcome = await proxyInstallStep.run(ctx);
+      expect(captured).toEqual({ type: "app-privileged", op: "proxy-trust" });
+      expect(outcome.state).toBe("done");
+      expect(outcome.detail).toContain("certificate not trusted (failed)");
+      // Nothing to verify against, so the probe is never run on a missing file.
+      expect(p.calls.exec).not.toContainEqual(expect.arrayContaining(["verify-cert"]));
     });
 
     // A declined certificate is still a successful install: the step says what

@@ -1160,8 +1160,9 @@ describe("toolRows: tool.proxy", () => {
     expect(r.action).toEqual({ type: "run", label: "Trust certificate", verb: ["setup", "apply", "--from", "proxy.install"] });
   });
 
-  // No CA at all is the same story for the user (nothing browsers trust), and
-  // the same remedy: the helper's trust verb reports what it found.
+  // No CA at all is the same story for the user (nothing browsers trust) and
+  // the same remedy: the step raises the trust need for this state too, so the
+  // helper's trust verb runs and reports what it found (steps-b.test.ts).
   test("plist present, VERSION == pinned, no CA on disk -> needs-you", async () => {
     writePinnedPortless("0.15.6");
     const p = bundledProxyProbes({
@@ -1183,6 +1184,18 @@ describe("toolRows: tool.proxy", () => {
     expect(r.action).toEqual({ type: "run", label: "Update proxy", verb: ["setup", "apply", "--from", "proxy.install"] });
   });
 
+  // Every machine that followed deck's README (`portless service install`) is
+  // in this state, including the developer's own. It used to render as an
+  // error with no action, which no remedy anywhere could clear.
+  test("plist present, no VERSION at all -> needs-you, adopted by the update action", async () => {
+    writePinnedPortless("0.15.6");
+    const p = bundledProxyProbes({ files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>" } });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toBe("An existing portless install predates mattstack; Update proxy adopts it");
+    expect(r.action).toEqual({ type: "run", label: "Update proxy", verb: ["setup", "apply", "--from", "proxy.install"] });
+  });
+
   test("plist present, VERSION unreadable -> error", async () => {
     writePinnedPortless("0.15.6");
     const versionPath = "/Library/Application Support/mattstack/proxy/VERSION";
@@ -1193,6 +1206,17 @@ describe("toolRows: tool.proxy", () => {
     const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
     expect(r.status).toBe("error");
     expect(r.detail).toContain(versionPath);
+  });
+
+  // A blank file names no version, so it cannot be compared either; reading it
+  // as the empty version would render "proxy runs portless , bundle pins X".
+  test("plist present, VERSION blank -> error, never a drift row", async () => {
+    writePinnedPortless("0.15.6");
+    const p = bundledProxyProbes({
+      files: { [PORTLESS_LAUNCHD_PLIST]: "<plist/>", "/Library/Application Support/mattstack/proxy/VERSION": "  \n" },
+    });
+    const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
+    expect(r.status).toBe("error");
   });
 
   test("never required, so it can neither block Install nor fail verify", async () => {

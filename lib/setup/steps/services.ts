@@ -71,9 +71,24 @@ export async function proxyCaIsTrusted(p: Pick<Probes, "home" | "exists" | "exec
 /** Written by the privileged helper at install time: the portless version the root copy actually runs. */
 export const PROXY_VERSION_PATH = "/Library/Application Support/mattstack/proxy/VERSION";
 
-/** null when the file is absent or unreadable, which is a state to report, never one to act on. */
+/** null when the file is absent, unreadable, or blank, which is a state to report, never one to act on. */
 export function deployedProxyVersion(p: Pick<Probes, "readFile">): string | null {
-  return p.readFile(PROXY_VERSION_PATH)?.trim() ?? null;
+  const version = p.readFile(PROXY_VERSION_PATH)?.trim();
+  return version === undefined || version === "" ? null : version;
+}
+
+/**
+ * Whether the proxy on this machine is one mattstack never installed: a
+ * `sh.portless.proxy` plist with no VERSION file beside it, which is exactly
+ * what deck's own README produces (`portless service install`). Only meaningful
+ * once the caller has established that the plist exists.
+ *
+ * It is a state to act on, not one to report: the install op boots the running
+ * daemon out before bootstrapping the replacement, so adopting such a machine
+ * costs the same single prompt a first install does.
+ */
+export function proxyPredatesMattstack(p: Pick<Probes, "exists">): boolean {
+  return !p.exists(PROXY_VERSION_PATH);
 }
 
 /** The portless version this bundle's deps.lock pins, or null when there's no resolvable bundle or no portless row. deps.lock is read off real disk (see bundle-layout.ts), not through the Probes seam. */
@@ -95,31 +110,50 @@ export function proxyVersionDrift(p: Probes): { deployed: string; pinned: string
   return { deployed, pinned };
 }
 
+/**
+ * Installed at the pinned version, so the only work the helper can still do
+ * here is the certificate. macOS refuses to cache that authorization, so a
+ * machine that declined once is untrusted until someone answers a second
+ * dialog. It rides its own need, so this never reinstalls a working proxy to
+ * fix a keychain entry.
+ *
+ * An absent CA takes the same route rather than short-circuiting to "already
+ * installed": the helper's trust verb is what can say what it found, and the
+ * row that offered the remedy would otherwise carry a button that reports
+ * success and changes nothing, forever.
+ */
+async function proxyTrustOnly(ctx: ApplyContext): Promise<StepOutcome> {
+  if (await proxyCaIsTrusted(ctx.p)) return { state: "done", detail: "already installed" };
+
+  const reply = await ctx.need("proxy.install", { type: "app-privileged", op: "proxy-trust" });
+  return withTrustOutcome(needOutcome(reply, ctx, {
+    noAppDetail: "mattstack.app is not running; open it to trust the local proxy's certificate",
+    noAppRemedy: "Open mattstack.app, then Retry",
+    timeoutRemedy: "Retry with mattstack.app running",
+  }));
+}
+
 async function proxyInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
-  const installed = ctx.p.exists(PORTLESS_LAUNCHD_PLIST);
-  const drift = installed ? proxyVersionDrift(ctx.p) : null;
-  if (installed && !drift) {
-    // Installed at the pinned version, so the only work the helper can still
-    // do here is the certificate. macOS refuses to cache that authorization,
-    // so a machine that declined once is untrusted until someone answers a
-    // second dialog. It rides its own need, so this never reinstalls a
-    // working proxy to fix a keychain entry.
-    const noCaToTrust = !ctx.p.exists(portlessCaPath(ctx.p.home));
-    if (noCaToTrust || (await proxyCaIsTrusted(ctx.p))) return { state: "done", detail: "already installed" };
+  // Adoption and drift both fall through to the install op below, which IS the
+  // update path (the helper boots the running daemon out before bootstrapping
+  // the replacement). So either costs the same one prompt an install does, and
+  // root reaches a new portless only through it, never by following a bundle
+  // on its own.
+  if (ctx.p.exists(PORTLESS_LAUNCHD_PLIST)) {
+    if (proxyPredatesMattstack(ctx.p)) {
+      ctx.log("proxy.install", "adopting: a portless proxy is installed here outside mattstack");
+    } else {
+      const deployed = deployedProxyVersion(ctx.p);
+      // A version nobody can compare must not be prompted: this step cannot
+      // tell install from update without it, and tool.proxy already reports
+      // that state as an error naming the path.
+      if (deployed === null) return { state: "done", detail: `${PROXY_VERSION_PATH} could not be read` };
 
-    const reply = await ctx.need("proxy.install", { type: "app-privileged", op: "proxy-trust" });
-    return withTrustOutcome(needOutcome(reply, ctx, {
-      noAppDetail: "mattstack.app is not running; open it to trust the local proxy's certificate",
-      noAppRemedy: "Open mattstack.app, then Retry",
-      timeoutRemedy: "Retry with mattstack.app running",
-    }));
+      const drift = proxyVersionDrift(ctx.p);
+      if (!drift) return await proxyTrustOnly(ctx);
+      ctx.log("proxy.install", `updating: proxy runs portless ${drift.deployed}, bundle pins ${drift.pinned}`);
+    }
   }
-
-  // Drift falls through to the install op below, which IS the update path (the
-  // helper boots the running daemon out before bootstrapping the replacement).
-  // So an update costs the same one prompt an install does, and root reaches a
-  // new portless only through it, never by following a bundle on its own.
-  if (drift) ctx.log("proxy.install", `updating: proxy runs portless ${drift.deployed}, bundle pins ${drift.pinned}`);
 
   // The app answers this need by running its bundled privileged helper; a
   // bundle without one can only refuse, which used to end the whole Install

@@ -25,7 +25,7 @@ import { callableBySkills, claudeJsonPath, linearServerNames, nameTaken, readCla
 import type { ExecResult, Probes } from "../probes.ts";
 import type { PackRequirements, ToolRequirement } from "../requirements.ts";
 import { atLeast } from "../semver.ts";
-import { deployedProxyVersion, pinnedPortlessVersion, PORTLESS_LAUNCHD_PLIST, PROXY_VERSION_PATH, proxyCaIsTrusted } from "../steps/services.ts";
+import { deployedProxyVersion, pinnedPortlessVersion, PORTLESS_LAUNCHD_PLIST, PROXY_VERSION_PATH, proxyCaIsTrusted, proxyPredatesMattstack } from "../steps/services.ts";
 import { isValidBrewFormula } from "../tools-install.ts";
 import type { SecretPresence } from "./accounts.ts";
 
@@ -578,6 +578,13 @@ async function proxyRow(p: Probes): Promise<Row> {
     recheck: "on-activate" as const,
   };
   if (!p.exists(PORTLESS_LAUNCHD_PLIST)) return row({ ...base, status: "missing", detail: "not installed", action: reRunProxyInstallAction("Install proxy") });
+
+  // A plist with no VERSION beside it is the machine deck's own README
+  // produces (`portless service install`), not a broken install: the same
+  // remedy adopts it, because the helper replaces whatever daemon is running.
+  if (proxyPredatesMattstack(p)) {
+    return row({ ...base, status: "needs-you", detail: "An existing portless install predates mattstack; Update proxy adopts it", action: reRunProxyInstallAction("Update proxy") });
+  }
 
   const deployedVersion = deployedProxyVersion(p);
   if (deployedVersion === null) return row({ ...base, status: "error", detail: `${PROXY_VERSION_PATH} could not be read` });
