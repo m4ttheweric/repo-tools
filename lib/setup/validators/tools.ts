@@ -16,8 +16,7 @@
  * never collide with this file's own built-in row ids.
  */
 
-import { readDepsLock } from "../../bundle-layout.ts";
-import { appBundlePath, resolveTool } from "../../deps/resolve.ts";
+import { resolveTool } from "../../deps/resolve.ts";
 import { detectEditors } from "../../editors.ts";
 import { BASE_PLUGINS } from "../base-plugins.ts";
 import { row, type Action, type Row } from "../contract.ts";
@@ -26,7 +25,7 @@ import { callableBySkills, claudeJsonPath, linearServerNames, nameTaken, readCla
 import type { ExecResult, Probes } from "../probes.ts";
 import type { PackRequirements, ToolRequirement } from "../requirements.ts";
 import { atLeast } from "../semver.ts";
-import { PORTLESS_LAUNCHD_PLIST, proxyCaIsTrusted } from "../steps/services.ts";
+import { deployedProxyVersion, pinnedPortlessVersion, PORTLESS_LAUNCHD_PLIST, PROXY_VERSION_PATH, proxyCaIsTrusted } from "../steps/services.ts";
 import { isValidBrewFormula } from "../tools-install.ts";
 import type { SecretPresence } from "./accounts.ts";
 
@@ -563,19 +562,9 @@ function pluginsRow(pluginList: ExecResult): Row {
 
 // ─── tool.proxy ─────────────────────────────────────────────────────────────
 
-/** Written by the privileged proxy-install helper (Contents/Helpers/mattstack-proxy-install) at install time: the portless version actually running, compared against what the current bundle pins. */
-const PROXY_VERSION_PATH = "/Library/Application Support/mattstack/proxy/VERSION";
-
-/** Every remedy this row offers runs the same step, which decides from the machine's own state whether it installs the proxy or only trusts its certificate (lib/setup/steps/services.ts). */
+/** Every remedy this row offers runs the same step, which reads the same three facts this row does and decides from them whether to install, update, or only trust (lib/setup/steps/services.ts). A remedy that named a different route could disagree with the row that offered it. */
 function reRunProxyInstallAction(label: string): Action {
   return { type: "run", label, verb: ["setup", "apply", "--from", "proxy.install"] };
-}
-
-/** The portless version this bundle's deps.lock pins, or null when there's no resolvable bundle or no portless row. deps.lock is read off real disk (see bundle-layout.ts), not through the Probes seam. */
-function pinnedPortlessVersion(p: Probes): string | null {
-  const root = appBundlePath(p);
-  if (!root) return null;
-  return readDepsLock(root)?.tools.find((t) => t.name === "portless")?.version ?? null;
 }
 
 async function proxyRow(p: Probes): Promise<Row> {
@@ -590,9 +579,8 @@ async function proxyRow(p: Probes): Promise<Row> {
   };
   if (!p.exists(PORTLESS_LAUNCHD_PLIST)) return row({ ...base, status: "missing", detail: "not installed", action: reRunProxyInstallAction("Install proxy") });
 
-  const deployed = p.readFile(PROXY_VERSION_PATH);
-  if (deployed === null) return row({ ...base, status: "error", detail: `${PROXY_VERSION_PATH} could not be read` });
-  const deployedVersion = deployed.trim();
+  const deployedVersion = deployedProxyVersion(p);
+  if (deployedVersion === null) return row({ ...base, status: "error", detail: `${PROXY_VERSION_PATH} could not be read` });
 
   const pinned = pinnedPortlessVersion(p);
   if (!pinned) return row({ ...base, status: "error", detail: "bundle's deps.lock has no pinned portless version" });

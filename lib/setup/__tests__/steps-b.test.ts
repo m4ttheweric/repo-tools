@@ -17,7 +17,7 @@ import { MERGE_MANIFESTS_MISSING_CODE } from "../skills-materialize.ts";
 import { fakeProbes, fakeTray, ok } from "./fakes.ts";
 import type { Probes } from "../probes.ts";
 
-import { servicesRegisterStep, proxyInstallStep, PORTLESS_LAUNCHD_PLIST } from "../steps/services.ts";
+import { servicesRegisterStep, proxyInstallStep, PORTLESS_LAUNCHD_PLIST, PROXY_VERSION_PATH } from "../steps/services.ts";
 import { deckManagedStep } from "../steps/deck.ts";
 import { skillsMaterializeStep, boardKeysStep, cronTriageStep } from "../steps/skills.ts";
 
@@ -115,7 +115,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
   });
 
   /** Writes the real bundle (deps.lock, rt binary, whichever of deck/gitq/board are requested) to disk and points `mattstack.appPath` at it, then returns a fakeProbes mirroring the same layout so the Probes-side `exists`/`readFile` calls agree with what's really on disk. `deck` is always included — every deck.managed test needs the gate to pass; omit "gitq" or "board" from `tools` to simulate either not being bundled yet. */
-  function bundledProbes(opts: { tools?: ("gitq" | "board" | "console" | "chat")[]; overrides?: Partial<Parameters<typeof fakeProbes>[0]> } = {}): ReturnType<typeof fakeProbes> {
+  function bundledProbes(opts: { tools?: ("gitq" | "board" | "console" | "chat" | "portless")[]; overrides?: Partial<Parameters<typeof fakeProbes>[0]> } = {}): ReturnType<typeof fakeProbes> {
     const names = ["deck", ...(opts.tools ?? ["gitq"])];
     mkdirSync(join(appRoot, "Contents", "Resources"), { recursive: true });
     mkdirSync(join(appRoot, "Contents", "MacOS"), { recursive: true });
@@ -343,6 +343,71 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
           return { ok: true, detail: "" };
         },
       });
+
+      expect(await proxyInstallStep.run(ctx)).toEqual({ state: "done", detail: "already installed" });
+      expect(needCalled).toBe(false);
+    });
+
+    // The "Update proxy" remedy, which was a no-op until this: the step read
+    // a present plist as "already installed" and returned before it ever
+    // compared versions, so a drifted proxy could not be updated from the
+    // checklist at all.
+    test("installed but the deployed VERSION drifts from the bundle pin: re-runs the install op", async () => {
+      const p = bundledProbes({
+        tools: ["gitq", "portless"],
+        overrides: {
+          files: {
+            [join(appRoot, "Contents/Helpers/mattstack-proxy-install")]: "bin",
+            [PORTLESS_LAUNCHD_PLIST]: "<plist/>",
+            [PROXY_VERSION_PATH]: "0.15.6\n",
+          },
+        },
+      });
+      let captured: unknown;
+      const { ctx, logs } = makeCtx(p, {
+        need: async (_id, request) => {
+          captured = request;
+          return { ok: true, detail: "copy: ok\nMATTSTACK_TRUST=ok" };
+        },
+      });
+
+      expect((await proxyInstallStep.run(ctx)).state).toBe("done");
+      expect(captured).toEqual({ type: "app-privileged", op: "proxy-install" });
+      expect(logs).toContainEqual({ id: "proxy.install", line: "updating: proxy runs portless 0.15.6, bundle pins 0.1.0" });
+    });
+
+    // The other half of the same gate, and the behavior that must not change:
+    // a from-scratch Install re-run on a machine already at the pinned version
+    // asks for nothing.
+    test("installed at the pinned version: no need, no prompt", async () => {
+      const p = bundledProbes({
+        tools: ["gitq", "portless"],
+        overrides: {
+          files: {
+            [join(appRoot, "Contents/Helpers/mattstack-proxy-install")]: "bin",
+            [PORTLESS_LAUNCHD_PLIST]: "<plist/>",
+            [PROXY_VERSION_PATH]: "0.1.0\n",
+            [join(home, ".portless", "ca.pem")]: "-----BEGIN CERTIFICATE-----",
+          },
+          exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+        },
+      });
+      let needCalled = false;
+      const { ctx } = makeCtx(p, { need: async () => { needCalled = true; return { ok: true, detail: "" }; } });
+
+      expect(await proxyInstallStep.run(ctx)).toEqual({ state: "done", detail: "already installed" });
+      expect(needCalled).toBe(false);
+    });
+
+    // A version nobody can compare is a state to report, not one to act on:
+    // tool.proxy already carries it as an error naming the path.
+    test("installed but the VERSION file is unreadable: no need raised", async () => {
+      const p = bundledProbes({
+        tools: ["gitq", "portless"],
+        overrides: { files: { [join(appRoot, "Contents/Helpers/mattstack-proxy-install")]: "bin", [PORTLESS_LAUNCHD_PLIST]: "<plist/>" } },
+      });
+      let needCalled = false;
+      const { ctx } = makeCtx(p, { need: async () => { needCalled = true; return { ok: true, detail: "" }; } });
 
       expect(await proxyInstallStep.run(ctx)).toEqual({ state: "done", detail: "already installed" });
       expect(needCalled).toBe(false);

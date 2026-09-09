@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { __test__ as bundleLayoutTest } from "../../bundle-layout.ts";
 import { setSetting } from "../../settings/write.ts";
+import { STEP_IDS } from "../contract.ts";
 import { toolRows, extractVersion } from "../validators/tools.ts";
 import type { ToolsSeams } from "../validators/tools.ts";
 import { fakeProbes, ok, missing } from "./fakes.ts";
@@ -1199,5 +1200,25 @@ describe("toolRows: tool.proxy", () => {
     const p = bundledProxyProbes();
     const r = await pickRow(toolRows(p, [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy");
     expect(r.required).toBe(false);
+  });
+
+  // Every remedy this row offers has to name a step that exists and acts on
+  // the state the row just described. The drift row shipped for a week naming
+  // a step that returned "already installed" before it ever compared
+  // versions, so the button was there and did nothing.
+  test("every remedy names a real step, and drift's names the one that updates", async () => {
+    writePinnedPortless("0.16.0");
+    const rows = await Promise.all([
+      pickRow(toolRows(bundledProxyProbes(), [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy"),
+      pickRow(toolRows(installedProxyProbes(false), [], { hasBrew: true, secrets: NO_SECRETS }, NOOP_SEAMS), "tool.proxy"),
+    ]);
+    expect(rows.map((r) => r.status)).toEqual(["missing", "needs-you"]);
+    for (const r of rows) {
+      expect(r.action?.type).toBe("run");
+      const verb = (r.action as { verb: string[] }).verb;
+      expect(verb.slice(0, 3)).toEqual(["setup", "apply", "--from"]);
+      expect(STEP_IDS as readonly string[]).toContain(verb[3]!);
+    }
+    expect(rows[1]!.detail).toBe("proxy runs portless 0.15.6, bundle pins 0.16.0");
   });
 });
