@@ -12,7 +12,7 @@
  * Every verb needs herdr; without it the daemon answers "herdr unavailable".
  */
 import type { ChatPane, RtResponse } from "../packages/rt-client/src/index.ts";
-import { paneAccounts as paneAccountsRt, paneDirectories as paneDirectoriesRt, paneFocus as paneFocusRt, paneList as paneListRt, panePeek as panePeekRt, paneSend as paneSendRt, paneSpawn as paneSpawnRt } from "../packages/rt-client/src/index.ts";
+import { BG_PREFIX, paneAccounts as paneAccountsRt, paneDirectories as paneDirectoriesRt, paneFocus as paneFocusRt, paneList as paneListRt, panePeek as panePeekRt, paneSend as paneSendRt, paneSpawn as paneSpawnRt } from "../packages/rt-client/src/index.ts";
 import { selfPaneRef } from "../lib/self-pane.ts";
 
 const FLAGS_WITH_VALUES = new Set(["--lines", "--cwd", "--account", "--model", "--effort", "--prompt", "--workspace", "--q", "--sock", "--text"]);
@@ -49,19 +49,28 @@ function opts(args: string[]) {
   return sockPath ? { sockPath } : {};
 }
 
-function renderPane(p: ChatPane): string {
+function renderPane(p: ChatPane, idWidth: number): string {
   const who = p.presence ? `${p.presence.handle} (${p.presence.status})` : "not signed in";
   const where = [p.repo, p.branch].filter(Boolean).join(" · ");
   const title = p.title && p.title !== p.presence?.handle ? ` · ${p.title}` : "";
   const rooms = p.presence?.rooms.length ? `  #${p.presence.rooms.join(" #")}` : "";
-  return `${p.paneId.padEnd(8)} ${p.agentStatus.padEnd(8)} ${who.padEnd(22)} ${p.workspace}${title}${where ? `  ${where}` : ""}${rooms}`;
+  return `${p.paneId.padEnd(idWidth)} ${p.agentStatus.padEnd(8)} ${who.padEnd(22)} ${p.workspace}${title}${where ? `  ${where}` : ""}${rooms}`;
 }
 
 export async function paneList(args: string[]): Promise<void> {
   const data = unwrap(await paneListRt(opts(args)), "pane list");
   if (args.includes("--json")) return void console.log(JSON.stringify({ ok: true, panes: data.panes }));
   if (data.panes.length === 0) return void console.log("no claude panes");
-  console.log(data.panes.map(renderPane).join("\n"));
+  const idWidth = Math.max(...data.panes.map((p) => p.paneId.length));
+  const visible = data.panes.filter((p) => !p.paneId.startsWith(BG_PREFIX));
+  const bg = data.panes.filter((p) => p.paneId.startsWith(BG_PREFIX));
+  const lines = visible.map((p) => renderPane(p, idWidth));
+  if (bg.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("background:");
+    lines.push(...bg.map((p) => renderPane(p, idWidth)));
+  }
+  console.log(lines.join("\n"));
 }
 
 export async function panePeek(args: string[]): Promise<void> {
@@ -89,7 +98,7 @@ export async function paneSpawn(args: string[]): Promise<void> {
     "pane spawn",
   );
   if (args.includes("--json")) return void console.log(JSON.stringify({ ok: true, ...data }));
-  console.log(`${data.ready ? "ready" : "not ready"}  ${renderPane(data.pane)}`);
+  console.log(`${data.ready ? "ready" : "not ready"}  ${renderPane(data.pane, data.pane.paneId.length)}`);
 }
 
 export async function paneSend(args: string[]): Promise<void> {
