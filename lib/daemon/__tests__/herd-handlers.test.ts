@@ -10,6 +10,7 @@ import { createEventsBus } from "../events-bus.ts";
 import { createHerdHandlers, type HerdDeps } from "../handlers/herd.ts";
 import { createBgClaimsStore, type BgClaimsStore } from "../bg-claims-store.ts";
 import { bgSocketPath, type BgService } from "../bg-service.ts";
+import { createBgHandlers } from "../handlers/bg.ts";
 import { createEscapeInjector } from "../gate-escape.ts";
 import type { herdrRequest } from "../../herdr/client.ts";
 
@@ -779,7 +780,7 @@ describe("hidden verbs", () => {
     expect(refused.ok).toBe(false);
     if (refused.ok) throw new Error("unreachable");
     expect(refused.error).toContain(`herd:${s.data.herd}`);
-    expect((await hx.h["herd:wrap-up"]({ herd: s.data.herd })).ok).toBe(true);
+    expect((await hx.h["herd:wrap-up"]({ herd: s.data.herd, closePanes: true })).ok).toBe(true);
     const res = await hx.h["herd:stop-hidden"]({});
     expect(res.ok).toBe(true);
     expect(hx.bgStopCalls()).toBe(1);
@@ -808,18 +809,42 @@ describe("herd:wrap-up", () => {
     return { ...hx, herd, room: s.data.room };
   }
 
-  test("wrap-up releases a hidden herd's bg claim; a visible herd holds none to release", async () => {
+  // Matt's ruling (RT-118 item 5): the herd:<id> claim releases only once the
+  // panes actually close -- --close-panes, after the closes succeed -- never
+  // on a bare wrap-up. Anything short of that leaves the claim for the
+  // lifecycle's pane-close path or the boot sweep to release later.
+  test("wrap-up --close-panes releases a hidden herd's bg claim; a visible herd holds none to release", async () => {
     const hx = harness();
     const hidden = await hx.h["herd:start"]({ ...START, hidden: true });
     if (!hidden.ok) throw new Error(hidden.error);
     expect(hx.claims.list().map((c) => c.owner)).toContain(`herd:${hidden.data.herd}`);
-    expect((await hx.h["herd:wrap-up"]({ herd: hidden.data.herd })).ok).toBe(true);
+    expect((await hx.h["herd:wrap-up"]({ herd: hidden.data.herd, closePanes: true })).ok).toBe(true);
     expect(hx.claims.list().map((c) => c.owner)).not.toContain(`herd:${hidden.data.herd}`);
 
     const visible = await hx.h["herd:start"]({ ...START, name: "vis" });
     if (!visible.ok) throw new Error(visible.error);
-    expect((await hx.h["herd:wrap-up"]({ herd: visible.data.herd })).ok).toBe(true);
+    expect((await hx.h["herd:wrap-up"]({ herd: visible.data.herd, closePanes: true })).ok).toBe(true);
     expect(hx.claims.list()).toEqual([]);
+  });
+
+  test("wrap-up without --close-panes leaves a hidden herd's bg claim; bg:stop then refuses, naming it", async () => {
+    const hx = harness();
+    const hidden = await hx.h["herd:start"]({ ...START, hidden: true });
+    if (!hidden.ok) throw new Error(hidden.error);
+    expect(hx.claims.list().map((c) => c.owner)).toContain(`herd:${hidden.data.herd}`);
+
+    expect((await hx.h["herd:wrap-up"]({ herd: hidden.data.herd })).ok).toBe(true);
+    expect(hx.claims.list().map((c) => c.owner)).toContain(`herd:${hidden.data.herd}`);
+
+    const bgHandlers = createBgHandlers({
+      service: hx.bg,
+      claims: hx.claims,
+      lifecycle: { watch: () => {}, sweepClaims: async () => {} },
+    });
+    const stopRes = await bgHandlers["bg:stop"]({});
+    expect(stopRes.ok).toBe(false);
+    if (stopRes.ok) throw new Error("unreachable");
+    expect(stopRes.error).toContain(`herd:${hidden.data.herd}`);
   });
 
   test("runs exactly the flagged actions: panes, workspace, dispose by registry tree name, job dirs, archive", async () => {

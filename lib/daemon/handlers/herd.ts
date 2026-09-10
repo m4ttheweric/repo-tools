@@ -485,6 +485,12 @@ export function createHerdHandlers(deps: HerdDeps) {
         } catch (err) {
           log.warn({ herd: herdId, err }, "herd wrap-up: workspace close failed");
         }
+        // Released only here, after the panes actually close: a bare
+        // wrap-up (no --close-panes) leaves the herd's job panes running on
+        // the hidden session, so its claim must keep the server up too --
+        // the lifecycle's pane-close path and the boot sweep are the
+        // eventual releasers for everything short of this flag.
+        if (herd.hidden) deps.claims.release(herdOwner(herdId));
       }
 
       const disposed: string[] = []; const refused: Array<{ tree: string; reason: string }> = [];
@@ -507,7 +513,6 @@ export function createHerdHandlers(deps: HerdDeps) {
       }
 
       store.setHerdStatus(herdId, "wrapped");
-      if (herd.hidden) deps.claims.release(herdOwner(herdId));
       return { ok: true, data: { closed, workspaceClosed, disposed, refused, deletedJobDirs, archived } };
     },
   };
