@@ -28,6 +28,8 @@ function unwrap<T>(res: RtResponse<T>, label: string): T {
   return res.data;
 }
 
+type ClaimRow = Commands["bg:status"]["data"]["claims"][number];
+
 export function renderStatus(data: Commands["bg:status"]["data"]): string {
   const lines = [`server: ${data.up ? "up" : "down"}`, `socket: ${data.socket}`, ""];
   if (data.claims.length === 0) {
@@ -52,12 +54,12 @@ export async function bgStatus(args: string[]): Promise<void> {
 
 const RELEASE_USAGE = "usage: rt bg release [<owner>] [--json]";
 
-async function fetchClaimOwnersForPicker(): Promise<Array<{ owner: string; pane: string | null; createdAt: number }>> {
+async function fetchClaimOwnersForPicker(): Promise<ClaimRow[]> {
   const res = await clientStatus();
   return res.ok && res.data ? res.data.claims : [];
 }
 
-async function pickClaimOwner(claims: Array<{ owner: string; pane: string | null; createdAt: number }>): Promise<string | null> {
+async function pickClaimOwner(claims: ClaimRow[]): Promise<string | null> {
   const { filterableSelect } = await import("../lib/pick-wrappers.ts");
   const ownerWidth = Math.max(...claims.map((c) => c.owner.length));
   const options = claims.map((c) => ({

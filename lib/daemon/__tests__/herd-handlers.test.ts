@@ -827,6 +827,34 @@ describe("herd:wrap-up", () => {
     expect(hx.claims.list()).toEqual([]);
   });
 
+  // Review fix (item 5, IMPORTANT): closePane is best-effort and
+  // setJobStatus marks every attempted job "closed" regardless, so the
+  // release must be gated on real success, not on the flag alone.
+  test("wrap-up --close-panes releases the claim once every attempted pane close succeeds", async () => {
+    const hx = harness();
+    const hidden = await hx.h["herd:start"]({ ...START, hidden: true });
+    if (!hidden.ok) throw new Error(hidden.error);
+    const herd = hidden.data.herd;
+    hx.store.upsertJob({ herd, name: "job-a", worktree: "/w/job-a", handle: "job-a", status: "done", pane: "w9:p1" });
+    const res = await hx.h["herd:wrap-up"]({ herd, closePanes: true });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data.closed).toEqual(["job-a"]);
+    expect(hx.claims.list().map((c) => c.owner)).not.toContain(`herd:${herd}`);
+  });
+
+  test("wrap-up --close-panes keeps the claim when every attempted pane close fails", async () => {
+    const hx = harness({ herdrRunnerFor: () => async (args: string[]) => (args[0] === "pane" && args[1] === "close" ? { stdout: "", exitCode: 1 } : { stdout: "{}", exitCode: 0 }) });
+    const hidden = await hx.h["herd:start"]({ ...START, hidden: true });
+    if (!hidden.ok) throw new Error(hidden.error);
+    const herd = hidden.data.herd;
+    hx.store.upsertJob({ herd, name: "job-a", worktree: "/w/job-a", handle: "job-a", status: "done", pane: "w9:p1" });
+    const res = await hx.h["herd:wrap-up"]({ herd, closePanes: true });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.data.closed).toEqual([]);
+    expect(hx.store.getJob(herd, "job-a")!.status).toBe("closed");
+    expect(hx.claims.list().map((c) => c.owner)).toContain(`herd:${herd}`);
+  });
+
   test("wrap-up without --close-panes leaves a hidden herd's bg claim; bg:stop then refuses, naming it", async () => {
     const hx = harness();
     const hidden = await hx.h["herd:start"]({ ...START, hidden: true });
