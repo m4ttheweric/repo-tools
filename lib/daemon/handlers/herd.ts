@@ -472,8 +472,10 @@ export function createHerdHandlers(deps: HerdDeps) {
       let workspaceClosed = false;
 
       if (p?.closePanes === true) {
+        const attempted: string[] = [];
         for (const job of jobs) {
           if (job.pane && job.status !== "closed") {
+            attempted.push(job.name);
             if (await closePane(herd.herdrSocket, job.pane, { herd: herdId, job: job.name })) closed.push(job.name);
           }
           store.setJobStatus(herdId, job.name, "closed");
@@ -484,6 +486,20 @@ export function createHerdHandlers(deps: HerdDeps) {
           if (ws?.workspace_id) { await runner(["workspace", "close", ws.workspace_id]); workspaceClosed = true; }
         } catch (err) {
           log.warn({ herd: herdId, err }, "herd wrap-up: workspace close failed");
+        }
+        // Released only when every pane that was actually attempted really
+        // closed -- closePane is best-effort and setJobStatus above marks a
+        // job "closed" unconditionally, so a failed close must not be read
+        // as "the pane is gone". A partial/total failure keeps the claim;
+        // herd-lifecycle.ts's sweepClaims herd pass is the eventual releaser
+        // once the panes actually die (crash, a later manual close, ...).
+        if (herd.hidden) {
+          const failed = attempted.filter((name) => !closed.includes(name));
+          if (failed.length === 0) {
+            deps.claims.release(herdOwner(herdId));
+          } else {
+            log.warn({ herd: herdId, failed }, "herd wrap-up: some pane closes failed; bg claim kept");
+          }
         }
       }
 
@@ -507,7 +523,6 @@ export function createHerdHandlers(deps: HerdDeps) {
       }
 
       store.setHerdStatus(herdId, "wrapped");
-      if (herd.hidden) deps.claims.release(herdOwner(herdId));
       return { ok: true, data: { closed, workspaceClosed, disposed, refused, deletedJobDirs, archived } };
     },
   };

@@ -358,4 +358,70 @@ describe("herd-lifecycle", () => {
     await sweepPromise;
     expect(bgClaims.list().map((c) => c.owner)).toEqual(["agent:midflight"]);
   });
+
+  // ─── herd pass (RT-118 item 5 review, critical fix) ────────────────────────
+  // A pane-less `herd:<id>` claim (registered by herd:start, never carries a
+  // pane) has no other release path once wrap-up leaves it (item 5's
+  // ruling): the event path only ever fires on a pane close, and the runner
+  // and pane passes above both skip it (no pid to check, no pane to look
+  // up). This third pass is that claim's actual backstop.
+
+  test("sweepClaims releases a pane-less herd claim once its herd row is gone", async () => {
+    const { lc, bgClaims } = fx({
+      bgSocket: "/bg.sock",
+      claims: [{ owner: "herd:ghost", pane: null }],
+      herdr: async () => ({ ok: true, result: { snapshot: { panes: [] } } }),
+    });
+    await lc.sweepClaims();
+    expect(bgClaims.list().map((c) => c.owner)).toEqual([]);
+  });
+
+  test("sweepClaims releases a wrapped herd's claim once none of its jobs has a live pane in the bg snapshot", async () => {
+    const { lc, store, bgClaims } = fx({
+      bgSocket: "/bg.sock",
+      claims: [{ owner: "herd:hd-1", pane: null }],
+      herdr: async () => ({ ok: true, result: { snapshot: { panes: [] } } }),
+    });
+    store.create({ id: "hd-1", repo: "r", room: "herd-hd-1", workspace: "herd: hd-1", shepherdSession: "s", shepherdHandle: "shepherd", herdrSocket: "/bg.sock", hidden: true });
+    store.upsertJob({ herd: "hd-1", name: "job-a", worktree: "/w/job-a", handle: "job-a", status: "done", pane: "w9:p1" });
+    store.setHerdStatus("hd-1", "wrapped");
+    await lc.sweepClaims();
+    expect(bgClaims.list().map((c) => c.owner)).toEqual([]);
+  });
+
+  test("sweepClaims keeps a wrapped herd's claim while one of its jobs still has a live pane in the snapshot", async () => {
+    const { lc, store, bgClaims } = fx({
+      bgSocket: "/bg.sock",
+      claims: [{ owner: "herd:hd-1", pane: null }],
+      herdr: async () => ({ ok: true, result: { snapshot: { panes: [{ pane_id: "w9:p1" }] } } }),
+    });
+    store.create({ id: "hd-1", repo: "r", room: "herd-hd-1", workspace: "herd: hd-1", shepherdSession: "s", shepherdHandle: "shepherd", herdrSocket: "/bg.sock", hidden: true });
+    store.upsertJob({ herd: "hd-1", name: "job-a", worktree: "/w/job-a", handle: "job-a", status: "active", pane: "w9:p1" });
+    store.setHerdStatus("hd-1", "wrapped");
+    await lc.sweepClaims();
+    expect(bgClaims.list().map((c) => c.owner)).toEqual(["herd:hd-1"]);
+  });
+
+  test("sweepClaims keeps an active (not yet wrapped) herd's claim regardless of live panes", async () => {
+    const { lc, store, bgClaims } = fx({
+      bgSocket: "/bg.sock",
+      claims: [{ owner: "herd:demo-1", pane: null }],
+      herdr: async () => ({ ok: true, result: { snapshot: { panes: [] } } }),
+    });
+    expect(store.get("demo-1")!.status).toBe("active");
+    await lc.sweepClaims();
+    expect(bgClaims.list().map((c) => c.owner)).toEqual(["herd:demo-1"]);
+  });
+
+  test("sweepClaims skips the herd pass (but still checks the pane and runner passes) when the snapshot call fails", async () => {
+    const { lc, store, bgClaims } = fx({
+      bgSocket: "/bg.sock",
+      claims: [{ owner: "herd:hd-1", pane: null }],
+      herdr: async () => ({ ok: false, code: "unreachable", message: "herdr unavailable" }),
+    });
+    store.create({ id: "hd-1", repo: "r", room: "herd-hd-1", workspace: "herd: hd-1", shepherdSession: "s", shepherdHandle: "shepherd", herdrSocket: "/bg.sock", hidden: true });
+    store.setHerdStatus("hd-1", "wrapped");
+    await lc.sweepClaims();
+    expect(bgClaims.list().map((c) => c.owner)).toEqual(["herd:hd-1"]);
+  });
 });

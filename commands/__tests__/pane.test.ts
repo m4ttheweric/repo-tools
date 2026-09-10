@@ -242,3 +242,54 @@ test("pane focus exits non-zero when the daemon fails (e.g. no HERDR_WORKSPACE_I
   expect(r.code).toBe(1);
   expect(r.stderr).toContain("HERDR_WORKSPACE_ID is unset");
 });
+
+// ─── pane list bg section (RT-118 item 4) ──────────────────────────────────
+
+test("pane list stays silent about background when the bg server is down (no bg rows)", async () => {
+  const panes = [PANE, { ...PANE, paneId: "w1:p2", presence: undefined, title: "fred" }];
+  replies = { "pane:list": { ok: true, data: { panes } } };
+  const r = await run(paneList, []);
+  expect(r.stdout).not.toContain("background:");
+  expect(r.stdout).toContain("w1:p1");
+  expect(r.stdout).toContain("w1:p2");
+});
+
+test("pane list grows a labeled background: section after visible panes when bg rows are present", async () => {
+  const visible = { ...PANE, paneId: "w1:p1" };
+  const bgRow = { ...PANE, paneId: "bg:w9:p9", presence: undefined, title: "worker" };
+  replies = { "pane:list": { ok: true, data: { panes: [visible, bgRow] } } };
+  const r = await run(paneList, []);
+  const visibleLineIdx = r.stdout.indexOf("w1:p1");
+  const headerIdx = r.stdout.indexOf("background:");
+  const bgLineIdx = r.stdout.indexOf("bg:w9:p9");
+  expect(visibleLineIdx).toBeGreaterThanOrEqual(0);
+  expect(headerIdx).toBeGreaterThan(visibleLineIdx);
+  expect(bgLineIdx).toBeGreaterThan(headerIdx);
+});
+
+test("pane list with only bg rows (no visible claude panes) still shows the background: section", async () => {
+  const bgRow = { ...PANE, paneId: "bg:w9:p9", presence: undefined, title: "worker" };
+  replies = { "pane:list": { ok: true, data: { panes: [bgRow] } } };
+  const r = await run(paneList, []);
+  expect(r.stdout).toContain("background:");
+  expect(r.stdout).toContain("bg:w9:p9");
+});
+
+test("pane list --json stays a flat list regardless of bg rows", async () => {
+  const visible = { ...PANE, paneId: "w1:p1" };
+  const bgRow = { ...PANE, paneId: "bg:w9:p9", presence: undefined, title: "worker" };
+  const panes = [visible, bgRow];
+  replies = { "pane:list": { ok: true, data: { panes } } };
+  const r = await run(paneList, ["--json"]);
+  expect(JSON.parse(r.stdout)).toEqual({ ok: true, panes });
+});
+
+test("pane list id column width follows the longest ref, not a fixed 8", async () => {
+  const visible = { ...PANE, paneId: "w1:p1" };
+  const bgRow = { ...PANE, paneId: "bg:workspace9:pane9999", presence: undefined, title: "worker" };
+  replies = { "pane:list": { ok: true, data: { panes: [visible, bgRow] } } };
+  const r = await run(paneList, []);
+  const idWidth = "bg:workspace9:pane9999".length;
+  expect(r.stdout).toContain(`w1:p1${" ".repeat(idWidth - "w1:p1".length)} `);
+  expect(r.stdout).toContain(`bg:workspace9:pane9999 `);
+});

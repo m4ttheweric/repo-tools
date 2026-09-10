@@ -645,14 +645,17 @@ export function herdStopHidden(
 
 // ─── Background server (daemon-owned background herdr session) ────────────
 
-/** May spawn `herdr server` and wait for it to bind; budget matches bg-service's own 10s readyTimeoutMs plus margin. */
+/** A cold ensure spawns `herdr server`, waits out bg-service's own 10s
+    readyTimeoutMs, then runs its parity probes sequentially -- the 15s
+    default budget every other rt-client call inherits can lose that race,
+    so this is the one wrapper that widens its own. */
 export function bgEnsure(
   a: Commands["bg:ensure"]["payload"] = {},
   o: RtClientOptions = {},
 ): Promise<RtResponse<Commands["bg:ensure"]["data"]>> {
   const payload: Record<string, unknown> = {};
   if (a.claim !== undefined) payload.claim = a.claim;
-  return rtCommand<Commands["bg:ensure"]["data"]>("bg:ensure", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 15_000 });
+  return rtCommand<Commands["bg:ensure"]["data"]>("bg:ensure", payload, { sockPath: o.sockPath, timeoutMs: o.timeoutMs ?? 30_000 });
 }
 
 /** Never ensures/spawns; a plain read of the current state. */
