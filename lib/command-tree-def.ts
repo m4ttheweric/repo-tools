@@ -159,6 +159,37 @@ const gateSubcommands: Record<string, CommandNode> = {
   },
 };
 
+const bgSubcommands: Record<string, CommandNode> = {
+  status: {
+    description: "Background herdr server: up/down, socket, live claims",
+    module: "./commands/bg.ts",
+    fn: "bgStatus",
+    omitBehavior: "list",
+    args: [
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the status record as JSON" },
+    ],
+  },
+  release: {
+    description: "Release one claim on the background server",
+    module: "./commands/bg.ts",
+    fn: "bgRelease",
+    omitBehavior: "picker",
+    args: [
+      { name: "Owner", type: "text", placeholder: "herd:hd-1a2b3c4d", hint: "Claim owner (default: interactive pick from live claims)" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the release record as JSON" },
+    ],
+  },
+  stop: {
+    description: "Stop the background server (refuses while any claim is live)",
+    module: "./commands/bg.ts",
+    fn: "bgStop",
+    omitBehavior: { exempt: "no positional argument" },
+    args: [
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit the stop record as JSON" },
+    ],
+  },
+};
+
 const herdSubcommands: Record<string, CommandNode> = {
   start: {
     description: "Start a herd: registry row, chat room, herdr workspace, gate subscription",
@@ -1158,6 +1189,11 @@ export const TREE: Record<string, CommandNode> = {
   gate: {
     description: "Human-decision gates: pause a subject until answered, parked, or closed",
     subcommands: gateSubcommands,
+  },
+
+  bg: {
+    description: "Daemon-owned background herdr server: status, claims, stop",
+    subcommands: bgSubcommands,
   },
 
   herd: {
