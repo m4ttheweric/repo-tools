@@ -15,6 +15,7 @@ import { existsSync } from "fs";
 import type { Logger } from "pino";
 import type { PortCacheRef, RepoIndex } from "./handlers/types.ts";
 import type { BranchCacheStore } from "../state/index.ts";
+import { composeKey } from "../state/branch-cache.ts";
 import { checkAndNotify } from "../notifier.ts";
 import { getCurrentUserId, resolveUserIdAcrossTracking } from "./freshness.ts";
 import { loadRepoTracking, grants } from "../repo-tracking.ts";
@@ -48,6 +49,60 @@ export interface CacheRefresherDeps {
  * setting (spec "New: branch-cache GC": "30 days is a constant").
  */
 const BRANCH_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** A cold (merged/closed/MR-less) branch is re-asked about at most hourly. */
+export const COLD_RECHECK_MS = 60 * 60 * 1000;
+/**
+ * Overdue cold branches admitted per cycle. Bounds the sourceBranches query:
+ * with hundreds of cold branches sharing a fetchedAt, an uncapped hourly
+ * recheck would re-send them all in one cycle — the exact ~29s query that
+ * sat against GitLab's ~30s budget (2026-09-09). The cap rotates through
+ * them stalest-first instead, a full sweep every dozen or so cycles.
+ */
+export const COLD_PER_CYCLE = 25;
+
+export interface EnrichmentCandidate {
+  path: string;
+  branch: string;
+  /** Checked out in a worktree — active work, always enriched. */
+  worktree: boolean;
+}
+
+/**
+ * Picks which discovered branches this cycle actually asks GitLab/Linear
+ * about. Hot (always sent): worktree branches, branches the cache has never
+ * seen, and branches whose cached MR is still open or draft. Cold (merged,
+ * closed, or known MR-less): re-sent only once their row is older than
+ * COLD_RECHECK_MS, stalest first, at most COLD_PER_CYCLE per cycle — that
+ * slow lane is what still catches a reopened MR or a re-cut branch name.
+ */
+export function selectEnrichmentBranches(
+  candidates: EnrichmentCandidate[],
+  lookup: (branch: string) => { mr: { state?: string } | null; fetchedAt: number } | undefined,
+  now: number,
+): Array<{ path: string; branch: string }> {
+  const hot: Array<{ path: string; branch: string }> = [];
+  const coldDue: Array<{ path: string; branch: string; fetchedAt: number }> = [];
+
+  for (const c of candidates) {
+    const cached = c.worktree ? undefined : lookup(c.branch);
+    if (c.worktree || cached === undefined) {
+      hot.push({ path: c.path, branch: c.branch });
+      continue;
+    }
+    const state = cached.mr?.state;
+    if (state !== undefined && state !== "merged" && state !== "closed") {
+      hot.push({ path: c.path, branch: c.branch });
+      continue;
+    }
+    if (now - cached.fetchedAt > COLD_RECHECK_MS) {
+      coldDue.push({ path: c.path, branch: c.branch, fetchedAt: cached.fetchedAt });
+    }
+  }
+
+  coldDue.sort((a, b) => a.fetchedAt - b.fetchedAt);
+  return [...hot, ...coldDue.slice(0, COLD_PER_CYCLE).map(({ path, branch }) => ({ path, branch }))];
+}
 
 /** Below the 5-min tick, above the slowest legitimate deep sync. */
 const REFRESH_CYCLE_DEADLINE_MS = 4 * 60 * 1000;
@@ -201,22 +256,37 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
           // 1. Discover worktree branches (detached worktrees have no branch).
           // on-deck/* branches are pool plumbing, not feature work — never
           // worth MR/Linear enrichment.
-          const branches: Array<{ path: string; branch: string }> = ((await listWorktreesAsync(repoPath, signal)) ?? [])
-            .filter((w): w is WorktreeEntry & { branch: string } => !!w.branch && !w.branch.startsWith("on-deck/"));
+          const candidates: EnrichmentCandidate[] = ((await listWorktreesAsync(repoPath, signal)) ?? [])
+            .filter((w): w is WorktreeEntry & { branch: string } => !!w.branch && !w.branch.startsWith("on-deck/"))
+            .map((w) => ({ path: w.path, branch: w.branch, worktree: true }));
 
           // 2. Discover local branches (not just worktrees)
-          const worktreeBranchSet = new Set(branches.map(b => b.branch));
+          const worktreeBranchSet = new Set(candidates.map(b => b.branch));
           const localBranches = await runGit(repoPath, ["for-each-ref", "--format=%(refname:short)", "refs/heads/"], { signal });
           if (localBranches.exitCode === 0) {
             for (const name of localBranches.stdout.split("\n")) {
               const trimmed = name.trim();
               if (!trimmed || worktreeBranchSet.has(trimmed) || trimmed.startsWith("on-deck/")) continue;
               if (extractLinearId(trimmed)) {
-                branches.push({ path: repoPath, branch: trimmed });
+                candidates.push({ path: repoPath, branch: trimmed, worktree: false });
               }
             }
           } else {
             log.warn({ repo: repoPath }, "local branch listing failed");
+          }
+
+          // 3. Hot/slow-lane selection: only branches that can still change
+          // go to GitLab every cycle; known-dead ones rotate through hourly.
+          const branches = selectEnrichmentBranches(
+            candidates,
+            (branch) => cache.entries[composeKey(repoName, branch)],
+            Date.now(),
+          );
+          if (branches.length < candidates.length) {
+            log.debug(
+              { repo: repoName, selected: branches.length, discovered: candidates.length },
+              "enrichment hot-lane selection",
+            );
           }
 
           if (branches.length > 0) {
